@@ -1,84 +1,280 @@
-# Blueprint (Skeleton)
+# Roster Monster v2 Blueprint
 
-## Purpose
-- Define the high-level architecture direction for Roster Monster v2.
-- Keep scope explicit before implementation.
-- TODO: tighten into an actionable build plan after contracts are drafted.
+## 1. Project definition
 
-## Why v2 exists
-- v1 constraints and coupling limit reuse.
-- Need a reusable roster allocation core.
-- Need department-specific behavior without rebuilding everything.
-- TODO: document concrete pain points from v1.
+### What Roster Monster v2 is
+Roster Monster v2 is a planning and execution architecture for doctor roster allocation, built as:
+- a **reusable allocation core**
+- plus **department-specific templates**
+- with **Google Sheets retained as the operational front end**
 
-## Goals
-- Build a reusable allocation core.
-- Support department template packs for customization.
-- Keep Google Sheets as operational UI.
-- Deliver CGH ICU/HD as the first implementation.
+### Who it is for
+- Internal roster operations and engineering teams maintaining departmental roster workflows.
+- Department stakeholders who need reliable roster generation using department-specific rules.
 
-## Non-goals
-- No universal self-serve template builder in this phase.
-- No attempt to solve every department upfront.
-- No premature cloud/platform commitments.
+### What problem it solves
+- Produces valid, explainable roster outputs from structured sheet inputs and department rules.
+- Reduces one-off logic by centralizing reusable allocation behavior.
+- Makes department adaptation repeatable through templates instead of ad hoc rewrites.
 
-## Core invariants
-- Core logic should be department-agnostic where possible.
-- Department rules should be expressed via template contract.
-- Input/output flow must be auditable and deterministic.
-- TODO: define minimum determinism guarantees.
+### What it is not
+- Not a universal self-serve roster builder for all departments.
+- Not a replacement UI for Google Sheets.
+- Not an attempt to solve every department in the first release.
 
-## System boundaries / layers
-- Google Sheets front-end layer.
-- Template/contract definition layer.
-- Normalization and core allocation layer.
-- Output/artifact layer.
-- TODO: finalize responsibility boundary between layers.
+**Implementation anchor:** **CGH ICU/HD is the first department implementation**, not the full product scope.
 
-## Features to retain from v1
-- Existing operational workflow centered on Sheets.
-- Domain-specific request semantics where still valid.
-- Practical roster output expectations for stakeholders.
-- TODO: enumerate exact retained behaviors.
+## 2. Why v2 exists
+v2 exists because v1 has structural limits that block reliability and reuse:
+- Parser behavior is too rigid for evolving sheet inputs.
+- Search / solver quality is not good enough for expected roster quality.
+- Worker / cloud path is brittle and hard to trust operationally.
+- Debugging and re-examination are too difficult.
+- Boundaries between parsing, rules, solving, and output are not clean enough.
+- v1 accumulated rushed AI-generated glue with insufficient human ownership and long-term maintainability.
 
-## Features to redesign
-- Internal model normalization.
-- Rule/scoring separations.
-- Execution architecture for local and external modes.
-- TODO: identify v1 behaviors to explicitly deprecate.
+## 3. Goals
 
-## Department-template concept
-- Each department provides a structured template/spec.
-- Core engine consumes template + normalized input.
-- Template captures department-specific slots, groups, and rules.
-- TODO: define versioning strategy for templates.
+### Functional goals
+- Generate valid rosters that satisfy hard constraints.
+- Support ICU/HD first, while preserving a path to additional departments via templates.
+- Preserve Google Sheets as the operator-facing workflow.
 
-## Execution modes
-- Local execution mode for development and validation.
-- External worker mode for scale/hardening later.
-- TODO: decide parity requirements between modes.
+### Engineering goals
+- Enforce clean module boundaries with explicit contracts.
+- Maintain deterministic, reproducible compute from the same snapshot + seed.
+- Improve hardening of parser, solver, and execution paths.
 
-## Observability philosophy
-- Make allocation outcomes explainable.
-- Preserve traceability from inputs to outputs.
-- Surface actionable diagnostics, not raw logs only.
-- TODO: define minimum observability artifacts for first release.
+### Operational goals
+- Provide observable run progress and failure states.
+- Produce artifacts that allow fast re-examination of any run.
+- Support reliable local and external worker execution modes.
 
-## Validation philosophy
-- Validate inputs early and explicitly.
-- Separate hard errors from warnings.
-- Fail clearly on contract violations.
-- TODO: define validation stages and ownership.
+## 4. Non-goals
+v2 is explicitly **not**:
+- A universal self-serve builder for any department.
+- A real-time live scheduling system.
+- A day-1 solution for every department.
+- A replacement for Google Sheets as the main operational UI.
 
-## Build order
-- Docs and architecture alignment.
-- Contracts and domain model.
-- Parser/normalization and rule/scoring foundations.
-- Solver, execution modes, and integration.
-- TODO: map build order to roadmap checkpoints.
+## 5. Core invariants
+These rules are non-negotiable and must never be violated:
+- Hard constraints override everything else.
+- Blocked means blocked.
+- One doctor cannot hold more than one slot on the same date.
+- Invalid candidates must never be assigned.
+- Scoring direction must be consistent: **higher score = better roster**.
+- If no valid candidate exists, the system must report that clearly (not silently degrade).
 
-## Open design questions
-- What is the minimum stable contract for first department rollout?
-- Which rules are core vs template-defined?
-- What score transparency is required for operations users?
-- How strict should backward compatibility be between template versions?
+## 6. Product model
+v2 follows a multi-layer model:
+- **Department Template**: declares department-specific facts and knobs.
+- **Sheet Adapter**: handles Google Sheets read/write integration.
+- **Core Engine**: parses, normalizes, validates, solves, and scores.
+- **Writer / Execution / Observability support layers**: package outputs, run compute in local/cloud modes, and emit diagnostics.
+
+This model separates reusable allocation logic from department-specific behavior.
+
+## 7. Boundary definitions
+
+### 1) Department Template layer
+**Responsibilities**
+- Define slot types, doctor groups, eligibility mapping.
+- Define request codes, blocking/preceding-day rules.
+- Define sheet layout mapping, output mapping, scoring knobs.
+
+**Must not do**
+- Execute Google Sheets I/O directly.
+- Contain solver implementation details.
+
+**Inputs / outputs**
+- Input: template authoring data.
+- Output: validated department template artifact.
+
+### 2) Sheet Adapter layer
+**Responsibilities**
+- Read from and write to Google Sheets.
+- Convert sheet structure into raw input payloads expected by parser.
+
+**Must not do**
+- Decide hard rule validity or scoring.
+- Embed department logic outside declared template mappings.
+
+**Inputs / outputs**
+- Input: sheet identifiers/ranges + template mapping hints.
+- Output: raw sheet snapshot data and writeback payloads.
+
+### 3) Parser + Normalizer layer
+**Responsibilities**
+- Parse raw sheet + template into a common internal model.
+- Normalize values, detect structural issues, report parse/normalization outcomes.
+
+**Must not do**
+- Perform combinatorial search.
+- Override hard-rule decisions.
+
+**Inputs / outputs**
+- Input: sheet snapshot + department template.
+- Output: normalized domain model + issues.
+
+### 4) Rule Engine layer
+**Responsibilities**
+- Act as the single source of truth for hard validity.
+- Determine whether candidate assignments are valid/invalid.
+
+**Must not do**
+- Rank alternatives by preference.
+- Perform transport, orchestration, or sheet I/O.
+
+**Inputs / outputs**
+- Input: normalized model + candidate assignment state.
+- Output: validity decisions + violation reasons.
+
+### 5) Solver / Search layer
+**Responsibilities**
+- Perform pure compute search over possible assignments.
+- Use rule engine validity checks to keep search space legal.
+
+**Must not do**
+- Define hard rules itself.
+- Perform writeback or logging transport.
+
+**Inputs / outputs**
+- Input: normalized model + rule engine interface + seed/config.
+- Output: one or more valid roster candidates (or explicit unsatisfied result).
+
+### 6) Scorer layer
+**Responsibilities**
+- Rank valid rosters using explicit scoring logic.
+- Keep score semantics stable and explainable.
+
+**Must not do**
+- Make invalid rosters appear acceptable.
+- Implicitly change score direction.
+
+**Inputs / outputs**
+- Input: valid roster candidates + scoring knobs.
+- Output: scored/ranked roster candidates.
+
+### 7) Writer / Result layer
+**Responsibilities**
+- Convert solved output into roster artifacts and writeback forms.
+- Emit run outputs for audit and downstream handling.
+
+**Must not do**
+- Re-solve or reinterpret hard validity.
+- Hide unresolved-slot failures.
+
+**Inputs / outputs**
+- Input: selected roster result + metadata.
+- Output: final result artifacts + writeback payload.
+
+### 8) Execution / Worker layer
+**Responsibilities**
+- Run pipeline locally or on external worker/cloud path.
+- Manage job transport, retries, and execution envelopes.
+
+**Must not do**
+- Redefine parser/rule/scoring behavior.
+- Own department business logic.
+
+**Inputs / outputs**
+- Input: run request + snapshot/config references.
+- Output: run completion status + artifacts/events.
+
+### 9) Observability layer
+**Responsibilities**
+- Emit structured logs, progress events, failures, metrics.
+- Preserve traceability across parsing, solving, scoring, and writeback.
+
+**Must not do**
+- Mutate core compute behavior.
+- Replace explicit contracts with implicit diagnostics.
+
+**Inputs / outputs**
+- Input: events from all runtime layers.
+- Output: log/event streams, run summaries, and diagnostic artifacts.
+
+## 8. Contracts that must exist
+The architecture requires explicit contracts (to be defined in dedicated docs/specs):
+- Department template contract.
+- Normalized domain model contract.
+- Snapshot/input contract.
+- Result/output contract.
+- Log/event contract.
+- Writeback contract.
+
+## 9. Features to retain from v1
+- Google Sheets as the operational front end.
+- Snapshot-driven compute model.
+- Explicit scorer as a distinct concept.
+- Benchmarking/campaign concept for comparative runs.
+- Artifact-based debugging workflow.
+- External worker execution option.
+- Seed-based reproducibility.
+
+## 10. Features to redesign
+- Parser architecture and maintainability.
+- Normalization behavior and issue reporting clarity.
+- Search strategy quality/performance.
+- Worker/cloud hardening and reliability.
+- Observability depth and run traceability.
+- Writeback safety and failure handling.
+- Repository/module structure for clear ownership.
+
+## 11. Execution modes
+Intended modes:
+- **Local mode**: development, validation, and deterministic replay.
+- **External worker / cloud mode**: operational scale and remote execution.
+- **Benchmark campaign mode**: repeated controlled runs for strategy/scoring comparison.
+
+## 12. Observability philosophy
+Observability is first-class, not optional. v2 should include:
+- Structured JSON logs.
+- Stable run identifiers (e.g., `runId`, `campaignId`, `chunkIndex`).
+- Clear progress visibility for long-running search.
+- Score and quality metrics for decision transparency.
+- Failure taxonomy with actionable categories.
+- Artifact trail for re-examination.
+
+## 13. Validation philosophy
+v2 correctness should be proven through layered validation:
+- Parser fixtures covering known sheet patterns and malformed inputs.
+- Edge-case snapshots for department-specific corner cases.
+- Rule validation tests on hard constraints and blocking behavior.
+- Scorer consistency checks (including score-direction invariants).
+- Reproducibility checks across identical snapshot + seed runs.
+- Local vs cloud parity checks on equivalent run requests.
+- Shadow comparison against v1 behavior where appropriate.
+
+## 14. Build order
+Planned implementation sequence:
+1. Docs.
+2. Contracts.
+3. Parser / normalizer.
+4. Rule engine.
+5. Scorer.
+6. Solver.
+7. Local execution.
+8. Writer / artifacts.
+9. Cloud worker.
+10. Sheet integration.
+11. Observability hardening.
+
+## 15. Migration strategy
+- Keep v1 live during v2 development.
+- Build v2 in parallel with clear isolation.
+- Use ICU/HD template as first proof case.
+- Avoid early cutover; promote only after parity and reliability confidence.
+
+## 16. Open design questions
+- How flexible should department templates be in the first release?
+- What exact normalized domain model should be adopted first?
+- What first search strategy should v2 ship with?
+- How much of the current ICU sheet format should be preserved versus normalized away?
+
+## 17. Assumptions / scope limits
+- Current ICU sheet is the initial reference point.
+- Near-term ICU/HD templates will likely remain highly similar, with changes mainly in dates and doctor names.
+- Department onboarding remains curated by our team, not self-serve.
+- This blueprint intentionally stays high-level where contracts are not yet finalized.
