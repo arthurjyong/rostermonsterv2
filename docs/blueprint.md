@@ -82,10 +82,12 @@ This model separates reusable allocation logic from department-specific behavior
 - Define slot types, doctor groups, eligibility mapping.
 - Define request codes, blocking/preceding-day rules.
 - Define sheet layout mapping, output mapping, scoring knobs.
+- Act as declarative/configurational artifacts for department behavior.
 
 **Must not do**
 - Execute Google Sheets I/O directly.
 - Contain solver implementation details.
+- Embed arbitrary executable logic.
 
 **Inputs / outputs**
 - Input: template authoring data.
@@ -267,14 +269,22 @@ Planned implementation sequence:
 - Use ICU/HD template as first proof case.
 - Avoid early cutover; promote only after parity and reliability confidence.
 
-## 16. Open design questions
-- How flexible should department templates be in the first release?
-- What exact normalized domain model should be adopted first?
-- What first search strategy should v2 ship with?
-- How much of the current ICU sheet format should be preserved versus normalized away?
+## 16. Initial working decisions for first release
+- Department templates are curated by maintainers for first release onboarding, not end-user self-serve.
+- Routine variation within an approved template is mainly limited to roster period/dates, doctor list, and doctor count.
+- Structural changes are not end-user configurable in first release and require maintainer review/template updates. This includes slot types, doctor-pool design, request semantics, eligibility logic, blocking logic, and allocation logic.
+- The first normalized domain model covers minimum common allocation concepts for ICU/HD and near-term similar departments: roster period, dates, doctors, doctor groups, slot types, per-date slot demand, requests, blocking rules, eligibility mappings, scoring configuration, and writeback targets.
+- The normalized model is independent of raw Google Sheets row/column layout, while template + sheet-adapter mappings handle department sheet specifics.
+- Slot demand is modeled as required assignment count per date per slot type.
+- Standby is normally represented as a slot type with its own demand/rules/writeback mapping, not as a separate solver mode, unless a future department proves otherwise.
+- First shipped search strategy is seeded randomized search (in the same spirit as v1), prioritizing simplicity, reproducibility, explainability, and validation ease over sophistication.
+- For ICU first release, operator-facing workflow should stay as close as practical to the current sheet experience, while internal compute normalizes away fixed row/column assumptions, merged-cell assumptions, and ICU-specific formatting quirks.
+- For ICU/HD, parity with v1 means preserving hard-constraint behavior, main request semantics, operator-facing workflow, and acceptable writeback/output behavior; parity does not require identical internal architecture or implementation.
 
 ## 17. Assumptions / scope limits
 - Current ICU sheet is the initial reference point.
 - Near-term ICU/HD templates will likely remain highly similar, with changes mainly in dates and doctor names.
 - Department onboarding remains curated by our team, not self-serve.
+- Leave/request legends are expected to be largely reusable across departments, even when templates declare them explicitly.
+- Hard constraints are expected to be largely universal across departments; department-specific variation mainly sits in slot structure, eligibility mapping, sheet mapping, and scoring knobs.
 - This blueprint intentionally stays high-level where contracts are not yet finalized.
