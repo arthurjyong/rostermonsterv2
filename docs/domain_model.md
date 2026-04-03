@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 - Define the normalized internal model used in v2 **after parser/normalizer** and **before solver, scorer, diagnostics, and writeback adapter**.
-- Provide an implementation-facing contract that is conservative, practical, and grounded in known v1 behavior.
+- Provide an implementation-facing contract that is conservative, practical, and grounded in confirmed v1 ICU/HD semantics where appropriate.
 - Explicitly mark where v2 intentionally diverges from v1 so implementers do not accidentally regress semantics.
 
 ## 2. Scope
@@ -26,27 +26,29 @@ This document does **not** cover:
 - **Explicit penalty-bearing effects**: soft penalties are represented explicitly, not hidden in ad hoc scorer logic.
 - **First-class search transparency**: non-winning search information must remain representable.
 - **Retention flexibility**: support normal best-only retention plus optional top-K/full retention for debugging and benchmarking.
+- **Generic core + template instantiation**: core concepts stay template-agnostic; ICU/HD values below are the current template instance, not a globally fixed v2 universe.
 
 ## 4. v1 compatibility and intentional v2 differences
 
-### 4.1 Preserve from v1
+### 4.1 Preserve from v1 (current ICU/HD template semantics)
 - Runtime doctor identity is `doctorId`; display name is human-facing/output-facing.
-- Current concrete doctor groups remain:
+- Current ICU/HD template doctor groups are:
   - `ICU_ONLY`
   - `ICU_HD`
   - `HD_ONLY`
-- Current concrete slot types remain:
+- Current ICU/HD template slot types are:
   - `MICU_CALL`
   - `MICU_STANDBY`
   - `MHD_CALL`
   - `MHD_STANDBY`
-- Standby remains a real slot type in the normalized model.
+- Standby remains an explicit `SlotType`.
 - Request parsing remains split between raw request code and normalized machine effects.
 - `CR` remains a soft preference signal and never overrides hard validity.
 
 ### 4.2 Intentional v2 differences
 - Score direction is **`HIGHER_IS_BETTER`** (v1 was lower-is-better).
-- Slot demand is explicit via `SlotDemand.requiredCount` (instead of implicit one-slot assumptions).
+- Slot demand is explicit via `SlotDemand.requiredCount` (v1 core representation effectively assumed one demand unit per `(dateKey, slotType)`).
+- Assignment representation is multiplicity-safe and does not depend on a fixed v1-style per-day slot map.
 - Search/debug artifacts are first-class domain outputs.
 - System supports optional deep retention (top-K/full candidate, including full chunk retention) while keeping best-only as default.
 
@@ -61,14 +63,15 @@ This document does **not** cover:
 - **`RosterPeriod`**: scope object for one roster run period (date range and related context).
 - **`RosterDay`**: one date inside a period; supports ordering and date-local metadata.
 - **`Doctor`**: assignable person identity and static attributes used by rules/scoring.
-- **`DoctorGroup`**: group taxonomy used for slot eligibility.
-- **`SlotType`**: duty category identity (includes standby categories).
+- **`DoctorGroup`**: template-defined group taxonomy used for slot eligibility.
+- **`SlotType`**: template-defined duty category identity (includes standby categories when present).
+- **`SlotTypeDefinition`**: normalized slot metadata for each slot type identity.
 - **`SlotDemand`**: explicit demand units for `(date, slotType)` with `requiredCount`.
 - **`RequestCodeDefinition`**: mapping from raw request code to normalized effect semantics.
 - **`Request`**: raw/parsed per-doctor per-day request facts.
 - **`DailyEffectState`**: normalized day-level machine effects derived from requests.
 - **`EligibilityRule`**: baseline eligibility mapping (for example, slot type to allowed groups).
-- **`Assignment`**: smallest assignment atom for one demand unit.
+- **`AssignmentUnit`**: smallest multiplicity-safe retained assignment unit.
 - **`AllocationResult`**: solved allocation output, including unfilled demand and linked outputs.
 - **`ScoreResult`**: total/component score with explicit score direction.
 - **`ValidationIssue`**: structured issue object for parse/normalize/rule/allocation validation findings.
@@ -98,32 +101,64 @@ Represents one assignable doctor.
 - Group membership can be direct field(s) or normalized mapping; semantics must remain explicit.
 
 ### 7.4 DoctorGroup
-Current v1-grounded values:
+`DoctorGroup` is a normalized concept whose values are template-defined.
+
+Current ICU/HD template values:
 - `ICU_ONLY`
 - `ICU_HD`
 - `HD_ONLY`
 
 ### 7.5 SlotType
-Current v1-grounded values:
+`SlotType` is a normalized concept whose values are template-defined.
+
+Current ICU/HD template values:
 - `MICU_CALL`
 - `MICU_STANDBY`
 - `MHD_CALL`
 - `MHD_STANDBY`
 
-Important: slot-type identity is domain semantics. Fill order (for example, call before standby) is solver strategy, not slot-type definition.
+Standby remains a normal `SlotType` identity, not a special global solver mode. In current ICU/HD semantics, standby has fill-order implications and soft-score implications, but no standby-only hard validity rule.
 
-### 7.6 SlotDemand
+### 7.6 SlotTypeDefinition
+Normalized metadata for each `SlotType`, referenced by solver/scorer/reporting.
+
+Minimum useful fields:
+- `slotType` (identity)
+- `displayLabel`
+- `workloadWeight` (or equivalent burden weight)
+- optional fairness grouping/classification
+- optional reporting semantics (for example, `countsAsCall`, `countsAsStandby`)
+
+Note: solver fill order is strategy/policy; it should not be encoded as core slot metadata beyond brief policy references.
+
+### 7.7 SlotDemand
 Demand is explicit per `(dateKey, slotType)`:
 - `requiredCount` is mandatory and first-class.
-- v1-compatible ICU/HD default is often `requiredCount = 1`, but the model must not hardcode that assumption.
+- v1 core representation effectively assumed one demand unit per `(dateKey, slotType)`.
+- v2 intentionally generalizes this via `requiredCount`, which may be `0`, `1`, or greater than `1`.
+- This is an intentional v2 divergence from v1 core representation assumptions.
+- Downstream adapters/writers may flatten to one-slot-per-row outputs if a target template requires that shape.
 
 ## 8. Requests and normalized daily effects
 
 ### 8.1 RequestCodeDefinition
 Defines request-code semantics once:
-- raw code identity (for example, `AL`, `TL`, `X`, `CR`)
+- raw code identity (for example, `AL`, `CR`, `PM_OFF`)
 - optional human label
 - normalized machine effects produced by that code
+
+Current ICU/HD template handled codes:
+- `CR`
+- `NC`
+- `AL`
+- `TL`
+- `SL`
+- `MC`
+- `HL`
+- `NSL`
+- `OPL`
+- `PM_OFF`
+- `EXAM`
 
 ### 8.2 Request
 Captures per-doctor per-date request input:
@@ -134,42 +169,52 @@ Captures per-doctor per-date request input:
 - parse issues (if any)
 
 ### 8.3 DailyEffectState (normalized effects)
-Normalized effect state separates machine semantics from policy severity. Core effects include:
-- **Hard same-day block**: doctor cannot be assigned on that date.
-- **Previous-day leave/training-related effect**: penalty-bearing normalized effect on following day; not intrinsically hard-invalid.
-- **`CR` preference signal**: soft preference marker for scoring/search prioritization.
+Normalized effect state separates machine semantics from policy severity. In current ICU/HD template semantics:
+- `CR` produces a soft preference effect only.
+- Same-day hard block applies for: `NC`, `AL`, `TL`, `SL`, `MC`, `HL`, `NSL`, `OPL`, `PM_OFF`, `EXAM`.
+- Derived previous-day soft effect applies from: `AL`, `TL`, `SL`, `MC`, `HL`, `NSL`, `OPL`, `PM_OFF`, `EXAM`.
+- No next-day derived effect exists.
 
 ### 8.4 Semantics vs severity policy
 - Domain model stores **what effect exists**.
 - Policy/scoring config determines **how strong the penalty/preference is**.
-- Previous-day penalty severity may range from negligible to effectively prohibitive, but remains policy-defined unless explicitly promoted to hard rule.
+- The previous-day derived effect is soft in the current ICU/HD template; severity may be high, but conceptually it remains soft (not hard invalidity).
+- Later templates may make severity template-configurable without changing normalized effect shape.
+- `CR` never overrides hard validity.
 
 ## 9. Eligibility and hard constraints
 
 ### 9.1 Baseline eligibility vs dynamic availability
 - Baseline eligibility: slot-type/group compatibility (`EligibilityRule`).
-- Dynamic availability: day-specific effect state from requests (hard block and soft effects).
+- Dynamic availability: day-specific effect state from requests (hard blocks and soft effects).
 - These are separate concepts and should be evaluated separately.
 
 ### 9.2 Core hard invariants
 The model must support enforcing at least these hard invariants:
-- No assignment to an ineligible slot.
-- No assignment when same-day hard-blocked.
-- At most one slot per doctor per date.
-- Back-to-back call hard rule where policy/template defines it as hard.
+- Doctor must be eligible for the slot type.
+- Same-day hard block forbids assignment on that date.
+- A doctor cannot hold more than one slot on the same date.
+- Back-to-back prohibition applies to call slots only.
+- No standby-specific hard rule exists.
 - One fill per demand unit (no double-fill of a single unit).
+
+Hard invalidity must remain distinct from soft-objective terms.
 
 ## 10. Assignment and allocation result model
 
-### 10.1 Assignment atom
-Smallest assignment unit:
-- `(dateKey, slotType, doctorId | null)`
+### 10.1 AssignmentUnit atom
+Smallest retained assignment unit:
+- `(dateKey, slotType, unitIndex, doctorId | null)`
 
-`null` supports explicit representation of unfilled demand units.
+Notes:
+- `unitIndex` preserves multiplicity when `requiredCount > 1`.
+- `unitIndex` also preserves multiple explicit unfilled units.
+- `doctorId = null` supports explicit unfilled demand representation.
+- This is the normalized v2 core; a v1-style fixed per-day slot map is a compatibility/view/writeback projection for current ICU/HD, not the core representation.
 
 ### 10.2 AllocationResult
 Minimum useful contents:
-- assignment set (including explicit unfilled units where applicable)
+- multiplicity-safe collection (typically array/list) of `AssignmentUnit`
 - unfilled-demand summary (by date/slot type)
 - linkage to `ScoreResult`
 - linkage to `ValidationIssue` list
@@ -185,14 +230,28 @@ Minimum useful contents:
   - named component scores
   - optional deeper breakdowns for diagnostics/explainability
 
-### 11.2 Historical note
-- v1 scoring convention was lower-is-better.
-- v2 intentionally reverses this.
-- Component definitions must be sign-consistent with higher-is-better to avoid mixed semantics.
+### 11.2 First-release component identifiers (v1-compatible naming)
+For first release, keep current v1-derived component identifiers for compatibility:
+- `unfilledPenalty`
+- `pointBalanceWithinSection`
+- `pointBalanceGlobal`
+- `spacingPenalty`
+- `preLeavePenalty`
+- `crReward`
+- `dualEligibleIcuBonus`
+- `standbyAdjacencyPenalty`
+- `standbyCountFairnessPenalty`
+
+Clarifications:
+- First-release naming follows current v1 names for compatibility.
+- Future nomenclature cleanup is allowed later without changing underlying score concepts.
+- Under `HIGHER_IS_BETTER`, reward terms contribute positively and penalty terms contribute negatively.
+- `preLeavePenalty` is a legacy label; its trigger set is broader than leave-only codes.
+- `pointBalanceWithinSection` and `pointBalanceGlobal` are both retained in first release even though their intents partially overlap.
 
 ### 11.3 Soft preferences and penalties
 - `CR` remains soft but can be strongly prioritized by scoring/search policy.
-- Previous-day leave/training effect remains penalty-bearing by default, with policy-controlled magnitude.
+- Previous-day derived effect remains soft but penalty-bearing, with policy-controlled magnitude.
 
 ## 12. Search diagnostics and retained search artifacts
 
@@ -241,8 +300,9 @@ Keep shape simple and stable; richer subfields can be layered later without chan
 - Writeback formatting/mapping is an adapter concern, not a core domain concern.
 - Core allocation remains `doctorId`-based.
 - Writer may resolve `doctorId` to display names or sheet-specific cells at the boundary.
+- Adapters may project normalized `AssignmentUnit` collections into template-specific shapes.
 
 ## 15. Open questions / explicitly deferred choices
 - [TBD] Exact retained payload shape in full-candidate retention mode (how verbose per candidate/chunk).
-- [TBD] Final standardized score component list for first release.
 - [TBD] Whether `DailyEffectState` remains final naming or is renamed before contract freeze.
+- [TBD] Deeper future scoring refinements and nomenclature cleanup beyond first-release compatible component naming.
