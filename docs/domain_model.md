@@ -1,9 +1,10 @@
-# Domain Model Draft
+# Domain Model
 
 ## 1. Purpose
 - Define the normalized internal model used in v2 **after parser/normalizer** and **before solver, scorer, diagnostics, and writeback adapter**.
 - Provide an implementation-facing contract that is conservative, practical, and grounded in confirmed v1 ICU/HD semantics where appropriate.
 - Explicitly mark where v2 intentionally diverges from v1 so implementers do not accidentally regress semantics.
+- Document first-release decisions that are considered settled, while explicitly listing controlled deferrals.
 
 ## 2. Scope
 This document covers:
@@ -30,7 +31,7 @@ This document does **not** cover:
 
 ## 4. v1 compatibility and intentional v2 differences
 
-### 4.1 Preserve from v1 (current ICU/HD template semantics)
+### 4.1 Preserve from v1 (current ICU/HD template-instance semantics)
 - Runtime doctor identity is `doctorId`; display name is human-facing/output-facing.
 - Current ICU/HD template doctor groups are:
   - `ICU_ONLY`
@@ -147,7 +148,7 @@ Defines request-code semantics once:
 - optional human label
 - normalized machine effects produced by that code
 
-Current ICU/HD template handled codes:
+Current ICU/HD template-instance handled codes:
 - `CR`
 - `NC`
 - `AL`
@@ -169,7 +170,7 @@ Captures per-doctor per-date request input:
 - parse issues (if any)
 
 ### 8.3 DailyEffectState (normalized effects)
-Normalized effect state separates machine semantics from policy severity. In current ICU/HD template semantics:
+Normalized effect state separates machine semantics from policy severity. In current ICU/HD template-instance semantics:
 - `CR` produces a soft preference effect only.
 - Same-day hard block applies for: `NC`, `AL`, `TL`, `SL`, `MC`, `HL`, `NSL`, `OPL`, `PM_OFF`, `EXAM`.
 - Derived previous-day soft effect applies from: `AL`, `TL`, `SL`, `MC`, `HL`, `NSL`, `OPL`, `PM_OFF`, `EXAM`.
@@ -302,7 +303,8 @@ Keep shape simple and stable; richer subfields can be layered later without chan
 - Writer may resolve `doctorId` to display names or sheet-specific cells at the boundary.
 - Adapters may project normalized `AssignmentUnit` collections into template-specific shapes.
 
-## 15. Open questions / explicitly deferred choices
-- [TBD] Exact retained payload shape in full-candidate retention mode (how verbose per candidate/chunk).
-- [TBD] Whether `DailyEffectState` remains final naming or is renamed before contract freeze.
-- [TBD] Deeper future scoring refinements and nomenclature cleanup beyond first-release compatible component naming.
+## 15. First-release deferred extensions
+The following items are intentionally deferred and are not required to change first-release model semantics:
+- **Retention payload depth extension**: finalize exact retained payload shape for full-candidate retention mode (per-candidate/per-chunk verbosity).
+- **Naming refinement follow-up**: confirm whether `DailyEffectState` remains the long-term label or receives a naming-only refinement in a later revision.
+- **Scoring nomenclature follow-up**: evaluate future naming cleanup beyond first-release v1-compatible component identifiers, without changing underlying score concepts.
