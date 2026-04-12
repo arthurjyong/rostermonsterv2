@@ -146,7 +146,7 @@ Snapshot uses explicit ordered day records.
 - `dayIndex` is a non-negative integer
 - `dayIndex` is unique within `dayRecords`
 - `dayRecords` preserve extracted order
-- `dayIndex` should form a contiguous emitted sequence starting from `0`
+- `dayIndex` must form a contiguous emitted sequence starting from `0`
 - keep `rawDateText` only for current ICU/HD scope
 - adapter does not repair duplicate dates or broken ordering
 - parser decides whether duplicate dates / broken ordering make the snapshot structurally invalid
