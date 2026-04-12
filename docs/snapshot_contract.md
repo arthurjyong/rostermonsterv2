@@ -29,16 +29,17 @@ Settled boundary points:
 
 ## 3. Adapter/parser split
 ### Adapter guarantees
-The adapter is responsible for extraction fidelity and traceability:
+The adapter is responsible for extraction fidelity, traceability, and template-declared logical mapping resolution needed to build snapshot locators:
 - preserve extracted values as seen in source
 - preserve extracted day order exactly
 - emit required trace/provenance metadata
+- resolve template-declared logical mapping keys required for `sourceLocator` (including `sectionKey`)
 - avoid semantic interpretation during extraction
 - do **not** repair duplicate dates or broken day ordering
 
 ### Parser-owned interpretation and structural judgment
 The parser owns interpretation and structural judgment, including:
-- mapping raw labels to template semantics
+- mapping raw snapshot facts into normalized template/domain semantics
 - normalization into domain-model objects
 - semantic parse issues
 - deciding whether structural findings (for example duplicate dates or broken day order) invalidate the snapshot
@@ -130,11 +131,20 @@ Snapshot uses explicit ordered day records.
 ## 9. Request record contract (settled first-release position)
 Request records remain raw and linked to day records.
 
+### Mandatory request-record fields
+- `sourceDoctorKey`
+- `dayIndex`
+- `rawRequestText`
+- `sourceLocator`
+- `physicalSourceRef`
+
 ### Request-record requirements
 - include raw request content as `rawRequestText` only
 - `rawRequestText` preserves exact raw cell text (not trimmed or normalized)
 - blank request cells still emit request records
-- request records link to day records by `dayIndex`
+- exactly one request record exists for each extracted doctor-day request cell (including blank cells)
+- request records must be uniquely identifiable by (`sourceDoctorKey`, `dayIndex`)
+- request records link to doctor records by `sourceDoctorKey` and to day records by `dayIndex`
 
 ### Request-record forbidden content
 Request records must not include:
@@ -162,6 +172,7 @@ Use stricter typed shape by record kind, with consistent naming (`doctorIndexInS
 
 Notes:
 - `sectionKey` refers to template-declared logical section identity, not monthly operator input.
+- `sectionKey` is a logical mapping key for traceability and is not normalized doctor-group meaning.
 
 ## 11. `physicalSourceRef` contract (settled direction)
 `physicalSourceRef` is the concrete sheet-facing extraction trace and remains separate from `sourceLocator`.
