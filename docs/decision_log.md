@@ -47,3 +47,33 @@
 - **Date:** 2026-04-01
 - **Status:** Accepted
 - **Decision:** CGH ICU/HD is the first department implementation target.
+
+### D-0006: Template vs snapshot vs normalized model are explicit boundaries
+- **Date:** 2026-04-12
+- **Status:** Accepted
+- **Decision:** The architecture uses three distinct contracts: department template, per-run snapshot input, and normalized domain model output.
+
+### D-0007: Template contract is normative and template-governed
+- **Date:** 2026-04-12
+- **Status:** Accepted
+- **Decision:** `docs/template_contract.md` is the normative contract for first-release department templates and their governance.
+
+### D-0008: Snapshot contract defines raw per-run parser input boundary
+- **Date:** 2026-04-12
+- **Status:** Accepted
+- **Decision:** `docs/snapshot_contract.md` defines the raw, per-run input boundary before parser interpretation/normalization.
+
+### D-0009: Normalized domain model is parser/normalizer-owned output
+- **Date:** 2026-04-12
+- **Status:** Accepted
+- **Decision:** `docs/domain_model.md` defines parser/normalizer-owned normalized outputs consumed by downstream engine layers.
+
+### D-0010: Sheets front end retained with reusable core intent
+- **Date:** 2026-04-12
+- **Status:** Accepted
+- **Decision:** Google Sheets remains the operational front end while roster-allocation logic is designed as a reusable core.
+
+### D-0011: ICU/HD is the concrete reference/parity target for first release
+- **Date:** 2026-04-12
+- **Status:** Accepted
+- **Decision:** ICU/HD remains the concrete reference implementation and parity target for first-release behavior.
