@@ -79,11 +79,25 @@ Extraction summary direction:
 - keep it structural only
 - align counts/coverage framing with `doctorRecords`, `dayRecords`, and `requestRecords`
 
-### Explicitly open: period identity design
-Still open (intentionally not finalized here):
-- exact period identity representation inside `metadata`
-- do not force calendar-month assumptions
-- do not silently hard-code year/month shape
+### `periodRef` (settled first-release shape)
+`metadata.periodRef` is always present with:
+- `periodRef.periodId`
+- `periodRef.periodLabel`
+
+Rules:
+- `periodRef` is always present
+- `periodId` is mandatory and non-empty
+- `periodLabel` is mandatory as a field but may be empty
+- `periodId` is always adapter-generated
+- do not assume calendar-month shape
+- do not force year/month fields
+- do not include normalized `startDate` / `endDate` in `metadata`
+
+### Extraction summary (settled first-release shape)
+Extraction summary is structural only (not a reporting object), and explicitly includes:
+- `doctorRecordCount`
+- `dayRecordCount`
+- `requestRecordCount`
 
 ## 7. Doctor record contract (first-release scope)
 Doctor records stay raw and structural, not semantic.
@@ -101,6 +115,7 @@ Doctor records stay raw and structural, not semantic.
 - `rawSectionText` is mandatory but may be empty
 - exactly one non-empty `sourceLocator`
 - exactly one non-empty `physicalSourceRef`
+- doctor records must be uniquely identifiable by (`sectionKey`, `doctorIndexInSection`)
 
 ### Meaning of `rawSectionText`
 - `rawSectionText` is the raw visible section/header text captured from the source sheet region used to place that doctor under a template-declared logical section
@@ -120,16 +135,24 @@ Doctor records must not include:
 ## 8. Day record contract (settled first-release position)
 Snapshot uses explicit ordered day records.
 
-### Day-record requirements
-- day records are explicit entries in `dayRecords`
-- adapter preserves extracted day order exactly
+### Mandatory day-record fields
+- `dayIndex`
+- `rawDateText`
+- `sourceLocator`
+- `physicalSourceRef`
+
+### Day-record rules
+- `dayIndex` is mandatory
+- `dayIndex` is a non-negative integer
+- `dayIndex` is unique within `dayRecords`
+- `dayRecords` preserve extracted order
+- `dayIndex` should form a contiguous emitted sequence starting from `0`
+- keep `rawDateText` only for current ICU/HD scope
 - adapter does not repair duplicate dates or broken ordering
 - parser decides whether duplicate dates / broken ordering make the snapshot structurally invalid
-- for current ICU/HD template scope, keep `rawDateText` only
-- do not introduce hybrid raw date parts at this stage
 
 ## 9. Request record contract (settled first-release position)
-Request records remain raw and linked to day records.
+Request records remain raw and linked to both doctor records and day records.
 
 ### Mandatory request-record fields
 - `sourceDoctorKey`
@@ -138,7 +161,7 @@ Request records remain raw and linked to day records.
 - `sourceLocator`
 - `physicalSourceRef`
 
-### Request-record requirements
+### Request-record rules
 - include raw request content as `rawRequestText` only
 - `rawRequestText` preserves exact raw cell text (not trimmed or normalized)
 - blank request cells still emit request records
@@ -173,6 +196,10 @@ Use stricter typed shape by record kind, with consistent naming (`doctorIndexInS
 Notes:
 - `sectionKey` refers to template-declared logical section identity, not monthly operator input.
 - `sectionKey` is a logical mapping key for traceability and is not normalized doctor-group meaning.
+- uniqueness constraints tied to locator paths are:
+  - (`sectionKey`, `doctorIndexInSection`) unique within `doctorRecords`
+  - `dayIndex` unique within `dayRecords`
+  - (`sourceDoctorKey`, `dayIndex`) unique within `requestRecords`
 
 ## 11. `physicalSourceRef` contract (settled direction)
 `physicalSourceRef` is the concrete sheet-facing extraction trace and remains separate from `sourceLocator`.
@@ -186,6 +213,7 @@ Intent:
 - preserve human-readable tab context (`sheetName`)
 - preserve stable sheet-tab identity (`sheetGid`)
 - preserve exact extracted source cells (`a1Refs`)
+- do not collapse multiple true source cells into a fake single reference
 
 ## 12. Whole-snapshot structural validation taxonomy
 Validation taxonomy here classifies **structural snapshot findings** only.
@@ -204,7 +232,6 @@ Clarifications:
 - parser owns structural invalidation decisions
 
 ## 13. Open questions / deferred decisions (intentionally narrow)
-Still open:
-- exact period identity design inside `metadata` (without forcing calendar-month schema)
+No additional open structural questions are introduced in this document.
 
-No other previously open items in this document should be treated as unresolved at this stage.
+Any future changes to shape or semantics should be treated as explicit contract/version updates in the relevant contract docs, not implicit reopenings here.
