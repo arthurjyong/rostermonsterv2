@@ -3,14 +3,14 @@
 ## Contract status and current scope
 This is a **first-pass contract draft** for the snapshot/input boundary.
 
-It is intended to be useful immediately for parser and adapter implementation work, while making unresolved decisions explicit. Some details are intentionally not finalized yet.
+It is intended to be useful immediately for adapter and parser implementation work, while keeping only genuinely unresolved details explicit.
 
 This draft separates:
 - decisions already settled
 - decisions deliberately deferred
 
 ## 1. Purpose of the snapshot contract
-The snapshot contract defines what raw run-specific input facts are captured for one roster run period before parser interpretation.
+The snapshot contract defines what raw run-specific input facts are captured for one roster run period **before parser interpretation and normalization**.
 
 The goal is to preserve what was extracted from source inputs in a traceable way, without embedding downstream semantics or normalized domain objects.
 
@@ -22,27 +22,28 @@ The boundary is:
 
 Snapshot data is intentionally upstream of normalization and interpretation.
 
-## 3. Core contract stance
-Snapshot should contain raw run-specific facts, not template semantics and not normalized downstream objects.
+Settled boundary points:
+- Snapshot records what was seen; parser decides what it means.
+- Per-date slot demand belongs to the template, not the snapshot.
+- Template owns doctor-group vocabulary and meaning.
 
-**Snapshot records what was seen. Parser decides what it means.**
-
-## 4. Adapter/parser split
+## 3. Adapter/parser split
 ### Adapter guarantees
 The adapter is responsible for extraction fidelity and traceability:
 - preserve extracted values as seen in source
-- preserve extraction order where required (for period/day records)
+- preserve extracted day order exactly
 - emit required trace/provenance metadata
 - avoid semantic interpretation during extraction
+- do **not** repair duplicate dates or broken day ordering
 
-### Parser-owned interpretation
+### Parser-owned interpretation and structural judgment
 The parser owns interpretation and structural judgment, including:
 - mapping raw labels to template semantics
 - normalization into domain-model objects
 - semantic parse issues
-- structural invalidation decisions defined at parser/domain boundary
+- deciding whether structural findings (for example duplicate dates or broken day order) invalidate the snapshot
 
-## 5. Explicit exclusions from snapshot
+## 4. Explicit exclusions from snapshot
 Snapshot must not carry:
 - slot definitions
 - doctor-group taxonomy / eligibility policy
@@ -50,87 +51,149 @@ Snapshot must not carry:
 - per-date slot demand
 - normalized domain objects
 - solver/scorer/result/writeback artifacts
+- parsed request-code lists or normalized daily effects
 
-Settled boundary decisions:
-- Per-date slot demand belongs to the template, not the snapshot.
-- If slot demand changes, that is a template-level structural change, not a monthly snapshot override.
-- Template owns doctor-group vocabulary and meaning.
-- Snapshot may carry monthly raw doctor-group labels as operational input.
+## 5. Top-level snapshot object shape (settled)
+Use one top-level snapshot object with consistent naming style:
+- `metadata`
+- `doctorRecords`
+- `dayRecords`
+- `requestRecords`
 
-## 6. Required always-present minimal metadata
-Small trace/debug metadata is always present (not optional).
+Naming style should remain consistent as `...Records` collections.
 
-Current agreed minimal identity/provenance metadata (exact field schema still open):
+## 6. Metadata and extraction summary (settled direction)
+`metadata` is always present and should stay minimal and structural.
+
+Always-present metadata intent:
 - snapshot identity
 - template reference
 - source identity
 - generation timestamp
 - period identity
-- very small extraction summary
+- small extraction summary
 
-This section defines required metadata intent, not a finalized schema.
+Extraction summary direction:
+- keep it small (not a reporting object)
+- keep it structural only
+- align counts/coverage framing with `doctorRecords`, `dayRecords`, and `requestRecords`
+
+### Explicitly open: period identity design
+Still open (intentionally not finalized here):
+- exact period identity representation inside `metadata`
+- do not force calendar-month assumptions
+- do not silently hard-code year/month shape
 
 ## 7. Doctor record contract (first-release scope)
-This section is intentionally narrow.
+Doctor records stay raw and structural, not semantic.
 
 ### Mandatory doctor-record fields (current agreement)
 - `sourceDoctorKey`
 - `displayName`
-- `rawGroupLabel`
+- `rawSectionText`
 - `sourceLocator`
 - `physicalSourceRef`
 
 ### Mandatory doctor-record rules (current agreement)
 - exactly one non-empty `sourceDoctorKey`
 - non-empty `displayName`
-- exactly one non-empty `rawGroupLabel`
-- exactly one doctor group per doctor for ICU/HD first release
-- missing / unknown / duplicated / conflicting group assignment = hard structural error
+- `rawSectionText` is mandatory but may be empty
 - exactly one non-empty `sourceLocator`
 - exactly one non-empty `physicalSourceRef`
+
+### Meaning of `rawSectionText`
+- `rawSectionText` is the raw visible section/header text captured from the source sheet region used to place that doctor under a template-declared logical section
+- `rawSectionText` is audit/debug only
+- `rawSectionText` is never structural identity
+- `rawSectionText` is never normalized doctor-group meaning
+- grouping remains a template decision, not routine monthly operational input
 
 ### Doctor-record forbidden content
 Doctor records must not include:
 - canonical `doctorId`
-- canonical `doctorGroup`
+- canonical doctor-group semantics
 - eligibility result
 - interpreted semantics
 - scorer/solver/writeback fields
 
-### Trace-field nuance (settled intent, unresolved exact format)
-- `sourceLocator` is a logical trace field.
-- `physicalSourceRef` is a concrete Google Sheets extraction trace.
+## 8. Day record contract (settled first-release position)
+Snapshot uses explicit ordered day records.
 
-Exact formatting/shape for both fields is still open.
-
-## 8. Request record contract (settled now)
-Settled first-pass position:
-- snapshot request records keep `rawRequestText`
-- snapshot request records do not include:
-  - `parsedCodeList`
-  - canonical request codes
-  - normalized daily effects
-  - parse issues tied to semantic interpretation
-
-Additional request-record fields beyond `rawRequestText` are not finalized yet.
-
-## 9. Period/date records (settled now)
-Settled first-pass position:
-- snapshot contains explicit ordered day entries
-- adapter preserves sheet order exactly as extracted
-- adapter does not repair duplicates or broken ordering
+### Day-record requirements
+- day records are explicit entries in `dayRecords`
+- adapter preserves extracted day order exactly
+- adapter does not repair duplicate dates or broken ordering
 - parser decides whether duplicate dates / broken ordering make the snapshot structurally invalid
+- for current ICU/HD template scope, keep `rawDateText` only
+- do not introduce hybrid raw date parts at this stage
 
-Exact final day-entry shape is still open.
+## 9. Request record contract (settled first-release position)
+Request records remain raw and linked to day records.
 
-## 10. Open questions / deferred decisions
-The following items are intentionally unresolved in this first-pass draft:
-- exact field format of `sourceLocator`
-- exact field format of `physicalSourceRef`
-- full request-record field set beyond `rawRequestText`
-- exact period/day entry shape
-- exact top-level snapshot object shape
-- exact whole-snapshot invalidation rules
-- exact extraction summary fields
+### Request-record requirements
+- include raw request content as `rawRequestText` only
+- `rawRequestText` preserves exact raw cell text (not trimmed or normalized)
+- blank request cells still emit request records
+- request records link to day records by `dayIndex`
 
-These are deferred decisions and should not be silently completed in implementation.
+### Request-record forbidden content
+Request records must not include:
+- `parsedCodeList`
+- canonical request codes
+- normalized daily effects
+- semantic parse issues
+
+## 10. `sourceLocator` contract (settled direction)
+`sourceLocator` is a logical/template-facing trace field. It is not a generic loose key/value blob.
+
+Use stricter typed shape by record kind, with consistent naming (`doctorIndexInSection`, not `doctorOrdinalInSection`):
+
+- **Doctor record locator**
+  - `surfaceKey = doctorRows`
+  - `path = { sectionKey, doctorIndexInSection }`
+
+- **Day record locator**
+  - `surfaceKey = dayRecords`
+  - `path = { dayIndex }`
+
+- **Request record locator**
+  - `surfaceKey = requestGrid`
+  - `path = { sourceDoctorKey, dayIndex }`
+
+Notes:
+- `sectionKey` refers to template-declared logical section identity, not monthly operator input.
+
+## 11. `physicalSourceRef` contract (settled direction)
+`physicalSourceRef` is the concrete sheet-facing extraction trace and remains separate from `sourceLocator`.
+
+Required contents:
+- `sheetName` (mandatory)
+- `sheetGid` (mandatory)
+- `a1Refs` (ordered non-empty list)
+
+Intent:
+- preserve human-readable tab context (`sheetName`)
+- preserve stable sheet-tab identity (`sheetGid`)
+- preserve exact extracted source cells (`a1Refs`)
+
+## 12. Whole-snapshot structural validation taxonomy
+Validation taxonomy here classifies **structural snapshot findings** only.
+
+Categories:
+- top-level shape
+- record-shape integrity
+- reference integrity
+- uniqueness / collision
+- ordering / coverage
+- provenance integrity
+
+Clarifications:
+- this taxonomy does not carry request semantics, doctor-group semantics, solver/scorer issues, or downstream normalized-domain validity
+- category is not the same as severity
+- parser owns structural invalidation decisions
+
+## 13. Open questions / deferred decisions (intentionally narrow)
+Still open:
+- exact period identity design inside `metadata` (without forcing calendar-month schema)
+
+No other previously open items in this document should be treated as unresolved at this stage.
