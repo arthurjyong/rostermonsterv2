@@ -202,6 +202,7 @@ The architecture requires explicit contracts (to be defined in dedicated docs/sp
 - Department template contract.
 - Normalized domain model contract.
 - Snapshot/input contract.
+- Parser / normalizer contract defining the boundary between snapshot input and normalized domain output.
 - Result/output contract.
 - Log/event contract.
 - Writeback contract.

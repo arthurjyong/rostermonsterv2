@@ -9,9 +9,11 @@ This repo is in a **contract-first and architecture-first pre-implementation pha
 - `docs/blueprint.md` — High-level architecture, product boundaries, and layer responsibilities.
 - `docs/template_contract.md` — First-release **normative** department template contract and governance rules.
 - `docs/snapshot_contract.md` — Per-run raw snapshot input contract at the parser boundary.
+- `docs/parser_normalizer_contract.md` — Explicit parser/normalizer boundary contract between snapshot input and normalized domain output.
 - `docs/domain_model.md` — Implementation-facing normalized domain model contract for parser/normalizer outputs and downstream engine layers.
 - `docs/roadmap.md` — Phased build sequence from docs/contracts through parser, solver, execution, and hardening.
 - `docs/decision_log.md` — Ongoing record of key product and architecture decisions.
 
 ## Near-term next step
-Start Phase 2 parser/input handling work by tightening the parser–normalizer boundary and implementation-facing parser design against the now-defined template, snapshot, and normalized domain contracts.
+The parser–normalizer boundary is now defined in `docs/parser_normalizer_contract.md`.
+The next checkpoint is to review remaining contract consistency and then move to the next narrow implementation-facing boundary.
