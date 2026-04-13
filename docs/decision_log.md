@@ -77,3 +77,8 @@
 - **Date:** 2026-04-12
 - **Status:** Accepted
 - **Decision:** ICU/HD remains the concrete reference implementation and parity target for first-release behavior.
+
+### D-0012: Parser/normalizer boundary checkpoint is accepted
+- **Date:** 2026-04-13
+- **Status:** Accepted
+- **Decision:** `docs/parser_normalizer_contract.md` is adopted as the explicit parser/normalizer boundary contract, with `ParserResult` as the parser-stage wrapper, binary consumability (`CONSUMABLE` / `NON_CONSUMABLE`), and no partial downstream handoff for `NON_CONSUMABLE` results.

@@ -146,7 +146,8 @@ Contract consequence:
 
 Implementation note (still compatible with this contract): internal code may merge adjacent stages, but boundary intent and ordering semantics must remain intact.
 
-### First-release ICU/HD request parsing policy (normative)
+## 12) First-release ICU/HD request parsing policy
+### Proposed in this checkpoint (normative)
 - Raw request text is governed by a fixed declared ICU/HD grammar, not free text.
 - Parser must re-validate raw snapshot request text itself and must not blindly trust upstream sheet validation.
 - Blank string is valid and means no request codes.
@@ -155,11 +156,11 @@ Implementation note (still compatible with this contract): internal code may mer
 - If parser cannot deterministically derive downstream-governing request facts, parser result must be `NON_CONSUMABLE`.
 
 Compatibility rules in this policy:
-- Duplicate recognized request codes may be normalized to one canonical occurrence, but parser must emit a parser-stage issue/warning for the duplicate.
-- Duplicate recognized request codes alone do not require `NON_CONSUMABLE` when downstream-governing meaning remains deterministic (for example: `"AL, AL"` normalizes to canonical `AL` plus duplicate issue/warning).
+- Duplicate recognized request codes may be normalized to one canonical occurrence, but parser must emit a parser-stage issue with non-blocking severity for the duplicate.
+- Duplicate recognized request codes alone do not by itself make the parser result `NON_CONSUMABLE` when downstream-governing meaning remains deterministic (for example: `"AL, AL"` normalizes to canonical `AL` plus duplicate parser-stage issue with non-blocking severity).
 - `EMCC` remains an allowed raw ICU/HD token and is normalized to canonical `PM_OFF` semantics.
 
-## 12) Structural non-consumability
+## 13) Structural non-consumability
 ### Proposed in this checkpoint
 `NON_CONSUMABLE` is required when parser cannot safely trust structural shape or linkage of input. Typical examples:
 - invalid top-level snapshot shape,
@@ -169,7 +170,7 @@ Compatibility rules in this policy:
 - ordering/coverage defects,
 - missing required snapshot provenance fields where this contract/snapshot contract requires them.
 
-## 13) Semantic / normalization non-consumability
+## 14) Semantic / normalization non-consumability
 ### Proposed in this checkpoint
 `NON_CONSUMABLE` is required when parser has records but cannot safely determine normalized downstream-governing meaning. Typical examples:
 - request parsing ambiguity affecting hard-block or derived machine effects,
@@ -181,7 +182,7 @@ Compatibility rules in this policy:
 
 **Parser uncertainty about downstream-governing facts is not a warning-only condition; it is a non-consumability condition.**
 
-## 14) Consumable results with issues
+## 15) Consumable results with issues
 ### Proposed in this checkpoint
 `CONSUMABLE` parser results may still include issues when issues do not block deterministic downstream-governing normalization.
 
@@ -190,7 +191,7 @@ First-release direction:
 - issue severity is not itself an admission surrogate,
 - non-blocking issues remain visible via `ParserResult.issues`.
 
-## 15) Provenance expectations in normalized outputs
+## 16) Provenance expectations in normalized outputs
 ### Proposed in this checkpoint
 This contract imposes a **parser-stage traceability obligation**.
 
@@ -206,9 +207,9 @@ Required clarifications:
 - obligation is parser-stage traceability, not yet a universal provenance field-shape standard.
 
 ### Still open in this checkpoint
-Exact concrete provenance field names/embedding patterns inside each normalized object remain open and are deferred from this contract (see Section 18).
+Exact concrete provenance field names/embedding patterns inside each normalized object remain open and are deferred from this contract (see Section 19).
 
-## 16) Explicit handoff to rule engine
+## 17) Explicit handoff to rule engine
 ### Repo-settled anchor
 Rule engine is downstream runtime hard-validity authority.
 
@@ -230,7 +231,7 @@ Rule engine must never reconstruct from raw snapshot state:
 
 **The rule engine evaluates normalized legality; it does not recover lost parser meaning.**
 
-## 17) Consistency with adjacent contracts
+## 18) Consistency with adjacent contracts
 ### Repo-settled alignments
 - Consistent with snapshot contract: snapshot remains raw, pre-interpretation, trace-preserving input.
 - Consistent with domain model: normalized objects are parser/normalizer outputs consumed downstream.
@@ -239,7 +240,7 @@ Rule engine must never reconstruct from raw snapshot state:
 ### Proposed in this checkpoint
 - `ParserResult` formalizes parser-stage admission/handoff shape for first release while remaining aligned with snapshot/domain boundaries.
 
-## 18) Explicit deferrals
+## 19) Explicit deferrals
 The following are explicitly deferred and not fixed by this document:
 - exact concrete field names for provenance storage inside normalized objects,
 - internal implementation decomposition across files/modules,
@@ -248,7 +249,7 @@ The following are explicitly deferred and not fixed by this document:
 - parser-only diagnostic artifact shapes outside `ParserResult`,
 - exact concrete parser function/API signature.
 
-## 19) Current checkpoint status
+## 20) Current checkpoint status
 ### Repo-settled in prior docs
 - boundary position and high-level role split (snapshot vs parser/normalizer vs domain vs downstream rule engine).
 
