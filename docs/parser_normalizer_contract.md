@@ -126,12 +126,13 @@ Propagation and authority rule set (first-release decision):
 1. `ParserResult.issues` is the complete authoritative list of parser-stage issues.
 2. Every parser-stage issue affecting consumability must appear in `ParserResult.issues`.
 3. Every parser-stage issue required for downstream diagnostics must appear in `ParserResult.issues`.
-4. Request parse issues must also appear on the relevant normalized `Request`.
+4. Request parse issues must also appear on the relevant normalized `Request` when a normalized `Request` exists in a `CONSUMABLE` output.
 5. Other entity-local issue content is optional unless later standardized.
 6. Entity-local issue content must never be the sole record of an admission-relevant parser-stage issue.
 
 Contract consequence:
 - entity-local issue detail is supplemental only and must not replace the top-level parser-stage issue channel.
+- when `consumability = NON_CONSUMABLE` and `normalizedModel = null`, `ParserResult.issues` remains the only required issue record under this contract.
 
 ## 11) Transformation stages
 ### Proposed in this checkpoint (ordered first-release contract shape)
@@ -257,7 +258,7 @@ The following are explicitly deferred and not fixed by this document:
 - no partial normalized downstream handoff when non-consumable,
 - explicit split of structural vs semantic/normalization non-consumability,
 - explicit issue schema vs issue channel vs admission decision distinction,
-- explicit parser-stage issue propagation authority (`ParserResult.issues` authoritative; request parse issues also carried on normalized `Request`; entity-local issue detail supplemental only),
+- explicit parser-stage issue propagation authority (`ParserResult.issues` authoritative; request parse issues also carried on normalized `Request` for consumable outputs; entity-local issue detail supplemental only),
 - explicit request parsing determinism policy (declared ICU/HD grammar; no guess-on-ambiguity; deterministic failure => `NON_CONSUMABLE`),
 - explicit duplicate recognized request-token handling and `EMCC -> PM_OFF` normalization compatibility rule,
 - explicit parser-to-rule-engine handoff assumptions and prohibitions.
