@@ -37,6 +37,14 @@ The following are treated as **repo-settled anchors**:
 - Ensure parser-stage interpretation is deterministic enough for downstream legality evaluation.
 - Emit parser outcomes in a shape that supports implementation, diagnostics, and downstream admission decisions.
 
+### Downstream-governing facts (normative definition)
+For this contract, **downstream-governing facts** are normalized facts that downstream legality evaluation depends on. They include at minimum:
+- normalized doctor identity,
+- normalized day/date identity,
+- request-derived hard/soft machine effects,
+- instantiated eligibility facts needed by downstream legality evaluation,
+- instantiated demand facts needed by downstream legality evaluation.
+
 ## 5) Boundary position
 **Repo-settled**:
 - Upstream: snapshot contract provides raw records and structural trace fields.
@@ -82,7 +90,11 @@ Parser input boundary is:
 - trace/provenance metadata emitted by adapter/snapshot contract.
 
 ### Proposed in this checkpoint
-First-release parser contract assumes parser input is admissible for parsing attempts when top-level snapshot object exists, then parser decides consumability through staged checks.
+This contract defines no separate pre-parser rejection channel. Malformed or incomplete snapshot-shaped input is handled within parser result production.
+
+Boundary rule:
+- even malformed top-level snapshot input is handled through `ParserResult`, not through out-of-band rejection;
+- parser may return `NON_CONSUMABLE` for malformed top-level input.
 
 ## 9) Parser outputs
 ### Proposed in this checkpoint (first-release decision)
@@ -110,10 +122,16 @@ These concerns are explicitly separate:
 - **Issue channel**: `ParserResult.issues`.
 - **Admission decision**: `ParserResult.consumability`.
 
-Proposed channel decision:
-- `ParserResult.issues` is the authoritative parser-stage issue channel.
-- Entity-local issue detail may exist where domain model expects it.
-- Entity-local issue detail must not replace the top-level parser-stage issue list.
+Propagation and authority rule set (first-release decision):
+1. `ParserResult.issues` is the complete authoritative list of parser-stage issues.
+2. Every parser-stage issue affecting consumability must appear in `ParserResult.issues`.
+3. Every parser-stage issue required for downstream diagnostics must appear in `ParserResult.issues`.
+4. Request parse issues must also appear on the relevant normalized `Request`.
+5. Other entity-local issue content is optional unless later standardized.
+6. Entity-local issue content must never be the sole record of an admission-relevant parser-stage issue.
+
+Contract consequence:
+- entity-local issue detail is supplemental only and must not replace the top-level parser-stage issue channel.
 
 ## 11) Transformation stages
 ### Proposed in this checkpoint (ordered first-release contract shape)
@@ -127,23 +145,38 @@ Proposed channel decision:
 
 Implementation note (still compatible with this contract): internal code may merge adjacent stages, but boundary intent and ordering semantics must remain intact.
 
+### First-release ICU/HD request parsing policy (normative)
+- Raw request text is governed by a fixed declared ICU/HD grammar, not free text.
+- Parser must re-validate raw snapshot request text itself and must not blindly trust upstream sheet validation.
+- Blank string is valid and means no request codes.
+- Non-blank request text must be parsed under the declared grammar.
+- Parser must not guess meaning from malformed or uncertain request text.
+- If parser cannot deterministically derive downstream-governing request facts, parser result must be `NON_CONSUMABLE`.
+
+Compatibility rules in this policy:
+- Duplicate recognized request codes may be normalized to one canonical occurrence, but parser must emit a parser-stage issue/warning for the duplicate.
+- Duplicate recognized request codes alone do not require `NON_CONSUMABLE` when downstream-governing meaning remains deterministic (for example: `"AL, AL"` normalizes to canonical `AL` plus duplicate issue/warning).
+- `EMCC` remains an allowed raw ICU/HD token and is normalized to canonical `PM_OFF` semantics.
+
 ## 12) Structural non-consumability
 ### Proposed in this checkpoint
-`NON_CONSUMABLE` is required when structural conditions prevent deterministic parser output. Examples:
+`NON_CONSUMABLE` is required when parser cannot safely trust structural shape or linkage of input. Typical examples:
 - invalid top-level snapshot shape,
-- missing required fields breaking deterministic interpretation,
-- unresolved/ambiguous references,
+- missing required fields preventing deterministic interpretation,
+- unresolved or ambiguous cross-record references,
 - uniqueness/collision defects,
 - ordering/coverage defects,
-- missing required provenance fields from snapshot contract where relevant.
+- missing required snapshot provenance fields where this contract/snapshot contract requires them.
 
 ## 13) Semantic / normalization non-consumability
 ### Proposed in this checkpoint
-`NON_CONSUMABLE` is also required when semantic/normalization interpretation cannot produce deterministic downstream-governing facts. Examples:
+`NON_CONSUMABLE` is required when parser has records but cannot safely determine normalized downstream-governing meaning. Typical examples:
 - request parsing ambiguity affecting hard-block or derived machine effects,
 - parser cannot deterministically apply required template-declared semantics needed for this snapshot,
+- unresolved ambiguity in normalized doctor/group identity,
+- unresolved ambiguity in downstream-governing slot/demand/eligibility facts,
 - normalized model assembly cannot produce complete internally consistent downstream input,
-- unresolved ambiguity in normalized doctor/group identity or downstream-governing slot/demand/eligibility facts.
+- parser cannot deterministically derive downstream-governing request facts under the declared request grammar.
 
 **Parser uncertainty about downstream-governing facts is not a warning-only condition; it is a non-consumability condition.**
 
@@ -163,10 +196,13 @@ This contract imposes a **parser-stage traceability obligation**.
 It does **not yet** impose a universal provenance field-shape standard across all normalized entities.
 
 Minimum first-release expectation:
-Any normalized entity or normalized fact derived from snapshot content must remain traceable back to:
-- relevant snapshot record kind,
-- relevant logical locator,
-- relevant physical source reference where applicable.
+Normalized entities or facts whose origin includes one or more snapshot records must remain traceable to those origin records/locators in stable, recoverable form.
+
+Required clarifications:
+- template-only normalized definitions do not require snapshot provenance,
+- this obligation requires recoverable linkage back to origin snapshot records/locators where applicable,
+- this does not require copying physical sheet references into every normalized object,
+- obligation is parser-stage traceability, not yet a universal provenance field-shape standard.
 
 ### Still open in this checkpoint
 Exact concrete provenance field names/embedding patterns inside each normalized object remain open and are deferred from this contract (see Section 18).
@@ -221,6 +257,9 @@ The following are explicitly deferred and not fixed by this document:
 - no partial normalized downstream handoff when non-consumable,
 - explicit split of structural vs semantic/normalization non-consumability,
 - explicit issue schema vs issue channel vs admission decision distinction,
+- explicit parser-stage issue propagation authority (`ParserResult.issues` authoritative; request parse issues also carried on normalized `Request`; entity-local issue detail supplemental only),
+- explicit request parsing determinism policy (declared ICU/HD grammar; no guess-on-ambiguity; deterministic failure => `NON_CONSUMABLE`),
+- explicit duplicate recognized request-token handling and `EMCC -> PM_OFF` normalization compatibility rule,
 - explicit parser-to-rule-engine handoff assumptions and prohibitions.
 
 ### Still open / deferred
