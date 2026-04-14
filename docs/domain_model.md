@@ -11,7 +11,7 @@ This document covers:
 - Core domain entities and relationships.
 - Identity/reference data needed by solver/scorer.
 - Hard-constraint semantics and assignment invariants.
-- Request-code semantics vs normalized machine effects.
+- Normalized request semantics and normalized machine effects.
 - Allocation, scoring, validation, and search-diagnostics result objects.
 - Candidate-retention policy options (default and optional deep modes).
 
@@ -68,7 +68,6 @@ This document does **not** cover:
 - **`SlotType`**: template-defined duty category identity (includes standby categories when present).
 - **`SlotTypeDefinition`**: normalized slot metadata for each slot type identity.
 - **`SlotDemand`**: explicit demand units for `(date, slotType)` with `requiredCount`.
-- **`RequestCodeDefinition`**: mapping from raw request code to normalized effect semantics.
 - **`Request`**: raw/parsed per-doctor per-day request facts.
 - **`DailyEffectState`**: normalized day-level machine effects derived from requests.
 - **`EligibilityRule`**: baseline eligibility mapping (for example, slot type to allowed groups).
@@ -142,44 +141,31 @@ Demand is explicit per `(dateKey, slotType)`:
 
 ## 8. Requests and normalized daily effects
 
-### 8.1 RequestCodeDefinition
-Defines request-code semantics once:
-- raw code identity (for example, `AL`, `CR`, `PM_OFF`)
-- optional human label
-- normalized machine effects produced by that code
-
-Current ICU/HD template-instance handled codes:
-- `CR`
-- `NC`
-- `AL`
-- `TL`
-- `SL`
-- `MC`
-- `HL`
-- `NSL`
-- `OPL`
-- `PM_OFF`
-- `EXAM`
-
-### 8.2 Request
+### 8.1 Request
 Captures per-doctor per-date request input:
 - `doctorId`
 - `dateKey`
 - raw request text
-- parsed code list
+- recognized raw tokens
+- canonical request classes
+- resolved machine effects
 - parse issues (if any)
 
-### 8.3 DailyEffectState (normalized effects)
+ICU/HD first-release request-language details (accepted raw vocabulary, raw-to-canonical mapping, canonical request classes, machine-effect mapping, combinations, duplicates, and request-level consumability rules) are defined in `docs/request_semantics_contract.md`.
+
+Parser-stage issue authority remains top-level at `ParserResult.issues` (`docs/parser_normalizer_contract.md`). Request parse issues are mirrored onto normalized `Request` only when a normalized `Request` exists in a `CONSUMABLE` parser output.
+
+### 8.2 DailyEffectState (normalized effects)
 Normalized effect state separates machine semantics from policy severity. In current ICU/HD template-instance semantics:
-- `CR` produces a soft preference effect only.
-- Same-day hard block applies for: `NC`, `AL`, `TL`, `SL`, `MC`, `HL`, `NSL`, `OPL`, `PM_OFF`, `EXAM`.
-- Derived previous-day soft effect applies from: `AL`, `TL`, `SL`, `MC`, `HL`, `NSL`, `OPL`, `PM_OFF`, `EXAM`.
+- `CR` produces `callPreferencePositive` only.
+- Same-day hard block (`sameDayHardBlock`) applies for `NC`, `FULL_DAY_OFF`, and `PM_OFF` classes.
+- Previous-day call soft-penalty trigger (`prevDayCallSoftPenaltyTrigger`) applies for `FULL_DAY_OFF` and `PM_OFF` classes.
 - No next-day derived effect exists.
 
-### 8.4 Semantics vs severity policy
+### 8.3 Semantics vs severity policy
 - Domain model stores **what effect exists**.
 - Policy/scoring config determines **how strong the penalty/preference is**.
-- The previous-day derived effect is soft in the current ICU/HD template; severity may be high, but conceptually it remains soft (not hard invalidity).
+- `prevDayCallSoftPenaltyTrigger` is soft in the current ICU/HD template; severity may be high, but conceptually it remains soft (not hard invalidity).
 - Later templates may make severity template-configurable without changing normalized effect shape.
 - `CR` never overrides hard validity.
 
@@ -252,7 +238,7 @@ Clarifications:
 
 ### 11.3 Soft preferences and penalties
 - `CR` remains soft but can be strongly prioritized by scoring/search policy.
-- Previous-day derived effect remains soft but penalty-bearing, with policy-controlled magnitude.
+- `prevDayCallSoftPenaltyTrigger` remains soft but penalty-bearing, with policy-controlled magnitude.
 
 ## 12. Search diagnostics and retained search artifacts
 
