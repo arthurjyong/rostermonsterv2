@@ -39,6 +39,7 @@
 ## Phase 9: sheet integration
 - Integrate operational sheet flow with v2 pipeline.
 - Validate end-to-end behavior for first department rollout.
+- Later-phase: add template-driven generation support for structured request-form input sheets declared by template layout contracts.
 
 ## Phase 10: observability / benchmarking hardening
 - Strengthen diagnostics, explainability, and performance benchmarks.
