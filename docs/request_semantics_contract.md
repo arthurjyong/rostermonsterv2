@@ -145,11 +145,11 @@ Parser must not guess.
 Rules:
 1. Unknown token(s) are not silently ignored.
 2. Malformed delimiter patterns (for example slash-separated forms) are not auto-corrected.
-3. Mixed known + unknown content is only `CONSUMABLE` if downstream-governing request facts can still be derived deterministically under parser/normalizer rules; otherwise it is `NON_CONSUMABLE`.
+3. Any presence of unknown token(s) makes the request `NON_CONSUMABLE`, including mixed known + unknown content.
 4. If deterministic downstream-governing request facts cannot be derived, result must be `NON_CONSUMABLE`.
 5. Issue semantics must be explicit, but exact issue-code string standardization is deferred unless required elsewhere.
 
-First-release default intent for unknown or malformed content is conservative: non-guessing, explicit issues, and non-consumable whenever determinism is broken.
+First-release default intent for unknown or malformed content is conservative: non-guessing, explicit issues, and non-consumable handling for any unknown token presence or broken grammar determinism.
 
 ## 13. Consumable vs non-consumable rules
 A parsed request is `CONSUMABLE` when all downstream-governing request facts are deterministically derivable under this contract.
@@ -200,4 +200,3 @@ Legend:
 | `EMCC, PM_OFF` | `{EMCC, PM_OFF}` | `{PM_OFF}` | `{sameDayHardBlock, prevDayCallSoftPenaltyTrigger}` | non-blocking duplicate-after-alias-normalization issue | `CONSUMABLE` |
 | `CR/NC` | n/a (malformed delimiter) | n/a | n/a | blocking malformed-grammar issue (non-comma delimiter) | `NON_CONSUMABLE` |
 | `CR, XYZ` | `{CR}` (with unknown remainder present) | indeterminate under unknown-token presence | indeterminate | blocking unknown-token issue; parser must not guess | `NON_CONSUMABLE` |
-
