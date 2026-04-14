@@ -13,6 +13,8 @@ It explicitly separates:
 
 Scope is limited to parser-stage boundary behavior and handoff shape. This is not a solver, scorer, writeback, or execution design document.
 
+ICU/HD first-release request-language details (raw grammar, token vocabulary, raw/canonical/effect mappings, combinations, duplicates, and request-level consumability rules) are governed by `docs/request_semantics_contract.md`.
+
 ## 2) Status discipline used in this document
 Each normative statement in this document is classified as one of:
 - **Repo-settled**: already anchored by existing repo contracts/blueprint/decision log.
@@ -109,6 +111,7 @@ Proposed top-level components:
 Proposed first-release admission rule:
 - `consumability = CONSUMABLE`: `normalizedModel` is present and downstream-consumable.
 - `consumability = NON_CONSUMABLE`: `normalizedModel = null`; downstream receives no partial normalized handoff.
+- for `NON_CONSUMABLE` request parses, any partially recognized subset detail may appear only in `ParserResult.issues[*].context` and must not be emitted as a normalized side payload.
 
 This `ParserResult` shape is adopted in this checkpoint and is not claimed as previously repo-settled.
 
@@ -148,17 +151,12 @@ Implementation note (still compatible with this contract): internal code may mer
 
 ## 12) First-release ICU/HD request parsing policy
 ### Proposed in this checkpoint (normative)
-- Raw request text is governed by a fixed declared ICU/HD grammar, not free text.
+- ICU/HD first-release request-language specifics are defined by `docs/request_semantics_contract.md`; this parser contract does not duplicate that specification.
 - Parser must re-validate raw snapshot request text itself and must not blindly trust upstream sheet validation.
 - Blank string is valid and means no request codes.
-- Non-blank request text must be parsed under the declared grammar.
+- Non-blank request text must be parsed under the declared request grammar.
 - Parser must not guess meaning from malformed or uncertain request text.
 - If parser cannot deterministically derive downstream-governing request facts, parser result must be `NON_CONSUMABLE`.
-
-Compatibility rules in this policy:
-- Duplicate recognized request codes may be normalized to one canonical occurrence, but parser must emit a parser-stage issue with non-blocking severity for the duplicate.
-- Duplicate recognized request codes alone do not by itself make the parser result `NON_CONSUMABLE` when downstream-governing meaning remains deterministic (for example: `"AL, AL"` normalizes to canonical `AL` plus duplicate parser-stage issue with non-blocking severity).
-- `EMCC` remains an allowed raw ICU/HD token and is normalized to canonical `PM_OFF` semantics.
 
 ## 13) Structural non-consumability
 ### Proposed in this checkpoint

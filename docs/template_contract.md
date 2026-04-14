@@ -12,7 +12,7 @@ A template may declare department-specific facts and mappings, including:
 - slot model (slot types and slot definitions)
 - doctor-group model
 - eligibility mapping
-- request semantics (within approved vocabulary)
+- request-semantics surface at the template boundary (within approved vocabulary)
 - blocking / preceding-day semantics
 - sheet layout mapping
 - output mapping
@@ -96,13 +96,15 @@ For first release, each template must define at minimum:
    - deterministic resolution behavior with no hidden code-side overrides
 
 5. **Request semantics mapping**
-   - mapping from raw request codes to approved normalized semantics
+   - mapping from raw request input surface to approved normalized semantics
    - clear distinction between hard-blocking effects and soft preference/penalty effects
+
+   For ICU/HD first release, the detailed request-language contract (raw grammar, accepted tokens, raw-to-canonical mapping, canonical-to-machine-effect mapping, combinations, duplicates, and consumability outcomes) is defined in `docs/request_semantics_contract.md`.
 
 6. **Blocking / preceding-day rules mapping**
    - baseline rule vocabulary used by the template for first release:
      - same-day hard block
-     - previous-day derived soft effect
+     - previous-day call soft-penalty trigger (`prevDayCallSoftPenaltyTrigger`)
      - soft request preference (for example CR-like semantics)
 
 7. **Sheet layout mapping**
