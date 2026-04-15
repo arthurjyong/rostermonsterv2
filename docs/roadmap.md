@@ -39,7 +39,7 @@
 
 ## Phase 9: sheet integration + generation
 - Integrate operational sheet flow with v2 pipeline.
-- Include first-release template-driven generation of empty operator-facing request-form sheet shells aligned to `docs/sheet_generation_contract.md`.
+- Include first-release template-driven generation of full operator-facing sheet shells aligned to `docs/sheet_generation_contract.md`, including template-declared lower roster/output shell surfaces that may later be operator-prefilled before completion.
 - Validate end-to-end behavior for first department rollout, including operator post-generation edits within allowed structural boundaries.
 
 ## Phase 10: observability / benchmarking hardening
