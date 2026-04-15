@@ -123,9 +123,11 @@ Standby remains a normal `SlotType` identity, not a special global solver mode. 
 ### 7.6 SlotTypeDefinition
 Normalized metadata for each `SlotType`, referenced by solver/scorer/reporting.
 
-Minimum useful fields:
+First-release minimum required fields (aligned to upstream guaranteed slot facts):
 - `slotType` (identity)
 - `displayLabel`
+
+Optional metadata (not first-release minimum requirements):
 - optional fairness grouping/classification
 - optional reporting semantics (for example, `countsAsCall`, `countsAsStandby`)
 

@@ -69,7 +69,7 @@ These rules are non-negotiable and must never be violated:
 ## 6. Product model
 v2 follows a multi-layer model:
 - **Department Template**: declares department-specific structure, mappings, and contract bindings.
-- **Template-declared request form layout** may later support generation of structured operator-facing request-form sheets, while generation mechanics remain outside this blueprint checkpoint.
+- **Template-declared request form layout** is intended to drive generation of structured operator-facing request-form sheets; generation mechanics remain outside this blueprint checkpoint.
 - **Sheet Adapter**: handles Google Sheets read/write integration.
 - **Core Engine**: parses, normalizes, validates, solves, and scores.
 - **Writer / Execution / Observability support layers**: package outputs, run compute in local/cloud modes, and emit diagnostics.
@@ -279,7 +279,7 @@ Planned implementation sequence:
 - Structural and mapping changes are not end-user configurable in first release and require maintainer-reviewed template updates. This includes slot/group structure, group-based eligibility declarations, and logical input/output mapping surfaces.
 - Request meaning and request-effect changes are handled in the request semantics contract (or rebinding to a different contract version), not by silently restating semantics inside template-layer docs/artifacts.
 - Allocation/search/scorer implementation changes are core-layer changes, not template-layer changes.
-- The first normalized domain model covers minimum common allocation concepts for ICU/HD and near-term similar departments: roster period, dates, doctors, doctor groups, slot types, per-date slot demand, requests, blocking rules, and eligibility mappings. Scoring is critical but first-release scoring-configuration contract details are intentionally not closed in this blueprint; writeback targeting remains downstream adapter/result-contract scope.
+- The first normalized domain model covers minimum common allocation concepts for ICU/HD and near-term similar departments: roster period, dates, doctors, doctor groups, slot types, per-date slot demand, requests, blocking rules, and eligibility mappings. Scoring is critical, but this blueprint does not claim a closed first-release scoring-configuration contract; writeback targeting remains downstream adapter/result-contract scope (not normalized-core contract scope).
 - The normalized model is independent of raw Google Sheets row/column layout, while template + sheet-adapter mappings handle department sheet specifics.
 - Slot demand is modeled as required assignment count per date per slot type.
 - Standby is normally represented as a slot type with its own demand/rules semantics (with any writeback mapping handled downstream), not as a separate solver mode, unless a future department proves otherwise.
