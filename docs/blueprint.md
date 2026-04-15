@@ -69,7 +69,7 @@ These rules are non-negotiable and must never be violated:
 ## 6. Product model
 v2 follows a multi-layer model:
 - **Department Template**: declares department-specific structure, mappings, and contract bindings.
-- **Template-declared request form layout** is intended to drive generation of structured operator-facing request-form sheets; generation mechanics remain outside this blueprint checkpoint.
+- **Template-declared request form layout** and `docs/sheet_generation_contract.md` define first-release template-driven generation requirements for empty operator-facing request-form sheet shells; generation mechanics remain outside this blueprint checkpoint.
 - **Sheet Adapter**: handles Google Sheets read/write integration.
 - **Core Engine**: parses, normalizes, validates, solves, and scores.
 - **Writer / Execution / Observability support layers**: package outputs, run compute in local/cloud modes, and emit diagnostics.
