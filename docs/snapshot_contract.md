@@ -62,6 +62,7 @@ Use one top-level snapshot object with consistent naming style:
 - `doctorRecords`
 - `dayRecords`
 - `requestRecords`
+- `prefilledAssignmentRecords`
 
 Naming style should remain consistent as `...Records` collections.
 
@@ -100,6 +101,7 @@ Extraction summary is structural only (not a reporting object), and explicitly i
 - `doctorRecordCount`
 - `dayRecordCount`
 - `requestRecordCount`
+- `prefilledAssignmentRecordCount`
 
 ## 7. Doctor record contract (first-release scope)
 Doctor records stay raw and structural, not semantic.
@@ -196,18 +198,57 @@ Use stricter typed shape by record kind, with consistent naming (`doctorIndexInS
   - `surfaceKey = requestCells`
   - `path = { sourceDoctorKey, dayIndex }`
 
+- **Prefilled-assignment record locator**
+  - `surfaceKey = outputMapping`
+  - `path = { surfaceId, rowOffset, dayIndex }`
+
 Notes:
 - `sectionKey` refers to template-declared logical section identity, not monthly operator input.
 - `sectionKey` is a logical mapping key for traceability and is not normalized doctor-group meaning by itself.
 - `dayAxis` aligns directly with template `inputSheetLayout.dayAxis`.
 - `requestCells` is the single derived logical extraction surface retained for first release, spanning section-scoped doctor rows against the template day axis; this keeps locator naming close to template vocabulary without introducing parallel locator surface names.
+- `outputMapping` locator paths for prefilled assignments must stay aligned to template-declared lower-shell surfaces and assignment-row offsets, and remain raw/trace-focused rather than semantic.
 - canonical doctor-group semantics are resolved by parser via template artifact declarations keyed by `sectionKey`.
 - uniqueness constraints tied to locator paths are:
   - (`sectionKey`, `doctorIndexInSection`) unique within `doctorRecords`
   - `dayIndex` unique within `dayRecords`
   - (`sourceDoctorKey`, `dayIndex`) unique within `requestRecords`
+  - (`surfaceId`, `rowOffset`, `dayIndex`) unique within `prefilledAssignmentRecords`
 
-## 11. `physicalSourceRef` contract (settled direction)
+## 11. Prefilled assignment record contract (checkpoint 2 raw snapshot scope)
+`prefilledAssignmentRecords` preserve operator-populated lower roster/output-shell cell contents as raw input facts seen in declared parse surfaces.
+
+These records are:
+- upstream of parser interpretation
+- distinct from `requestRecords`
+- raw trace data only (no normalized assignment meaning at snapshot layer)
+
+### Mandatory prefilled-assignment-record fields
+- `dayIndex`
+- `rawAssignedDoctorText`
+- `surfaceId`
+- `rowOffset`
+- `sourceLocator`
+- `physicalSourceRef`
+
+### Prefilled-assignment-record rules
+- include one raw record for each extracted populated operator-prefilled assignment cell within declared parse surfaces
+- do not emit records for random populated content outside declared parse surfaces
+- records link to `dayRecords` by `dayIndex`
+- records link to template-declared output-shell structure by (`surfaceId`, `rowOffset`)
+- `rawAssignedDoctorText` preserves exact raw cell text (not trimmed or normalized)
+- records must be uniquely identifiable by (`surfaceId`, `rowOffset`, `dayIndex`)
+- do not silently merge records or normalize meaning at snapshot layer
+
+### Prefilled-assignment-record forbidden content
+Prefilled assignment records must not include:
+- canonical doctor identity
+- normalized slot semantics beyond declared locator identity (`surfaceId`, `rowOffset`)
+- fixed/locked assignment meaning
+- legality judgments
+- solver/scorer/writeback semantics
+
+## 12. `physicalSourceRef` contract (settled direction)
 `physicalSourceRef` is the concrete sheet-facing extraction trace and remains separate from `sourceLocator`.
 
 Required contents:
@@ -221,7 +262,7 @@ Intent:
 - preserve exact extracted source cells (`a1Refs`)
 - do not collapse multiple true source cells into a fake single reference
 
-## 12. Whole-snapshot structural validation taxonomy
+## 13. Whole-snapshot structural validation taxonomy
 Validation taxonomy here classifies **structural snapshot findings** only.
 
 Categories:
@@ -237,7 +278,7 @@ Clarifications:
 - category is not the same as severity
 - parser owns structural invalidation decisions
 
-## 13. Open questions / deferred decisions (intentionally narrow)
+## 14. Open questions / deferred decisions (intentionally narrow)
 No additional open structural questions are introduced in this document.
 
 Any future changes to shape or semantics should be treated as explicit contract/version updates in the relevant contract docs, not implicit reopenings here.
