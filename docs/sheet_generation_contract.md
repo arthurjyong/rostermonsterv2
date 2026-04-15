@@ -1,7 +1,7 @@
 # Sheet Generation Contract (First-Release, Operator-Facing Shell)
 
 ## 1. Purpose and status
-This document defines the first-release contract for **template-driven generation of an empty operator-facing sheet shell** for ICU/HD-style workflows.
+This document defines the first-release contract for **template-driven generation of the full operator-facing sheet shell** for ICU/HD-style workflows.
 
 Status:
 - Contract-first, implementation-facing checkpoint.
@@ -11,16 +11,18 @@ Status:
 Boundary with adjacent concerns:
 - **Template artifact contract** declares structural inputs used by generation.
 - **This contract** declares what generation must produce and what edits are allowed after generation.
-- **Parser contracts** govern how populated sheets are interpreted after operators enter data.
+- **Parser contracts** govern how populated sheets are interpreted after operators enter data, including any later-populated lower roster/output shell cells.
 - **Writer/orchestration mechanics** remain outside this document.
 
 ## 2. First-release generation goal
-Generation must produce an **empty request-form shell** that is:
+Generation must produce the **full operator-facing sheet shell** that is:
 - template-driven,
 - operator-facing,
 - structurally close to the current ICU/HD workflow.
 
 For first release:
+- generation may emit this shell empty,
+- the generated shell must already include the template-declared lower roster/output shell surfaces that operators may later prefill,
 - structural fidelity is required,
 - exact cosmetic/pixel-perfect fidelity is not required.
 
@@ -53,20 +55,25 @@ Generated shell must include at least:
 3. grouped doctor-entry sections,
 4. placeholder doctor rows,
 5. call-point rows,
-6. lower empty roster/output shell rows.
+6. lower roster/output shell rows and cells.
 
 These are required structural regions for first release.
+The lower roster/output shell is part of the generated first-release sheet shell, not a downstream-only writeback target.
 
 ## 6. Operator-allowed edits after generation
 After generation, operators may:
 - fill doctor names in column A,
 - add rows within a section,
 - delete rows within a section,
-- edit call-point values.
+- edit call-point values,
+- prefill lower roster/output shell cells before any later completion pass.
 
 Parser-facing expectation:
 - Names entered in column A become source doctor names for later parsing.
+- The lower roster/output shell remains template-owned declared structure after generation.
+- When operators prefill lower-shell cells, those populated cells become an allowed input surface for later partial-completion parsing contracts.
 - Parser robustness relies on section/segment structure, not fixed hardcoded row counts.
+- This contract does not define parser semantics for those populated lower-shell cells.
 
 ## 7. Disallowed structural drift
 End users must not perform major structural rearrangement of template-owned logical regions, including:

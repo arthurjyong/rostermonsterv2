@@ -1,7 +1,7 @@
 # Department Template Artifact Contract (Implementation-Facing First Pass)
 
 ## 1. Purpose and status
-This document defines the **parser-consumable department template artifact** used by v2 for one department’s structural template.
+This document defines the **parser-consumable department template artifact** used by v2 for one department’s structural template and operator-facing sheet-shell declarations.
 
 Status in this checkpoint:
 - **Implementation-facing first pass**.
@@ -18,7 +18,7 @@ The artifact covers department structural declarations needed for parser interpr
 - group-to-slot eligibility declarations
 - request semantics binding surface (narrow)
 - input request-form layout contract (`inputSheetLayout`)
-- output mapping contract (`outputMapping`)
+- output mapping contract (`outputMapping`) for operator-facing lower roster/output shell surfaces
 - explicit minimal scoring stub
 
 ### Out of scope
@@ -36,6 +36,7 @@ Settled for first release:
 - Monthly doctor membership and monthly period data are not stored in this artifact.
 - The artifact remains declarative.
 - Output mapping is included in the same artifact but remains a separate section from input layout.
+- `outputMapping` is the declarative owner of lower roster/output shell structure used by generation, later operator-prefill parsing, and later writeback.
 - Shape-level contract is primary; serialization format is secondary.
 
 ## 4. Required sections (shape-level)
@@ -150,23 +151,33 @@ Section-based doctor-group derivation (first-release ICU/HD):
 
 Parser-facing intent:
 - clean parsing of operator-entered requests
-- support first-release generation of fresh empty operator-facing request-form shells from the same declared layout contract (see `docs/sheet_generation_contract.md`)
+- support first-release generation of the request-entry region within a fresh operator-facing sheet shell, with lower roster/output shell structure declared separately in `outputMapping` (see `docs/sheet_generation_contract.md`)
 - allow operator adjustments to date range and section manpower without contract breakage
 
 ## 10. `outputMapping` contract (settled)
+`outputMapping` defines the template-owned operator-facing output shell surfaces, especially the lower roster/output shell that may be generated empty, later partially operator-prefilled, and later targeted for writeback.
+
 Settled constraints:
 - Included in the same artifact as a dedicated section.
 - Kept separate from `inputSheetLayout`.
 - Declarative only.
-- Logical mapping plus declared destination surfaces/anchors.
-- Must not include writer procedure or runtime write orchestration.
+- Logical mapping plus declared destination surfaces/anchors and first-release lower-shell assignment-row structure.
+- Lower roster/output shell surfaces are template-owned structure, not ad hoc writer-only coordinates.
+- Declared lower-shell surfaces may be used across generation, later operator-prefill input, and later writeback.
+- On surfaces marked `operatorPrefill: allowed`, populated cells are an allowed input surface for later snapshot/parser checkpoints.
+- Must not include generator procedure, parser procedure, writer procedure, or runtime write orchestration.
 
 Field vocabulary:
 - `surfaces`
 - `surfaceId`
+- `surfaceRole`
 - `sheetName`
 - `anchorCell`
 - `orientation`
+- `operatorPrefill`
+- `assignmentRows`
+- `assignmentRows[].slotId`
+- `assignmentRows[].rowOffset`
 
 ## 11. Scoring posture (settled)
 Settled constraints:
@@ -191,6 +202,9 @@ A template artifact is invalid if any of the following are true:
 - any `inputSheetLayout.sections[]` record is missing canonical `groupId`
 - any `inputSheetLayout.sections[].groupId` is empty or otherwise invalid
 - any `inputSheetLayout.sections[].groupId` references an unknown `doctorGroups[].groupId`
+- any first-release lower roster/output shell surface in `outputMapping.surfaces[]` omits required structural fields (`surfaceRole`, `operatorPrefill`, `assignmentRows`)
+- any `outputMapping.surfaces[].assignmentRows[]` record references an unknown `slotId`
+- any `outputMapping.surfaces[].assignmentRows[].rowOffset` is duplicated within the same surface
 - forbidden procedural/runtime content appears in declarative sections (`inputSheetLayout`, `outputMapping`, `scoring`)
 
 ## 13. Parser-facing guarantees
@@ -204,7 +218,9 @@ If the artifact is valid, parser-facing consumers may assume:
 - request-layout parsing surface is structurally declared via `inputSheetLayout`
 - doctor→group normalization is explicit and deterministic through `inputSheetLayout.sections[]` declarations (`sectionKey` lookup + section-level canonical `groupId`)
 - request semantics binding points to the settled request semantics contract via `contractId` + `contractVersion`
-- output mapping semantics are declared separately from input layout
+- output mapping semantics are declared separately from input layout, and lower roster/output shell structure is template-owned rather than writer-only
+- first-release lower-shell assignment row order is explicit through `outputMapping.surfaces[].assignmentRows[]`
+- surfaces marked `operatorPrefill: allowed` may later be treated as allowed sheet input when populated by operators
 
 ## 14. Explicit deferrals
 Deferred beyond this checkpoint:
@@ -301,10 +317,21 @@ inputSheetLayout:
 
 outputMapping:
   surfaces:
-    - surfaceId: assignments
+    - surfaceId: lowerRosterAssignments
+      surfaceRole: LOWER_ROSTER_ASSIGNMENTS
       sheetName: Roster
       anchorCell: B4
       orientation: dateByColumn
+      operatorPrefill: allowed
+      assignmentRows:
+        - slotId: MICU_CALL
+          rowOffset: 0
+        - slotId: MICU_STANDBY
+          rowOffset: 1
+        - slotId: MHD_CALL
+          rowOffset: 2
+        - slotId: MHD_STANDBY
+          rowOffset: 3
 
 scoring:
   templateKnobs: []
