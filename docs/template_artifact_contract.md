@@ -151,7 +151,7 @@ Section-based doctor-group derivation (first-release ICU/HD):
 
 Parser-facing intent:
 - clean parsing of operator-entered requests
-- support first-release generation of the request-entry region within a fresh operator-facing sheet shell, with lower roster/output shell structure declared separately in `outputMapping` (see `docs/sheet_generation_contract.md`)
+- support first-release generation of the full operator-facing sheet shell, where `inputSheetLayout` declares request-entry regions and `outputMapping` declares lower roster/output shell structure (see `docs/sheet_generation_contract.md`)
 - allow operator adjustments to date range and section manpower without contract breakage
 
 ## 10. `outputMapping` contract (settled)
