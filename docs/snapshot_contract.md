@@ -189,16 +189,18 @@ Use stricter typed shape by record kind, with consistent naming (`doctorIndexInS
   - `path = { sectionKey, doctorIndexInSection }`
 
 - **Day record locator**
-  - `surfaceKey = dayRecords`
+  - `surfaceKey = dayAxis`
   - `path = { dayIndex }`
 
 - **Request record locator**
-  - `surfaceKey = requestGrid`
+  - `surfaceKey = requestCells`
   - `path = { sourceDoctorKey, dayIndex }`
 
 Notes:
 - `sectionKey` refers to template-declared logical section identity, not monthly operator input.
 - `sectionKey` is a logical mapping key for traceability and is not normalized doctor-group meaning by itself.
+- `dayAxis` aligns directly with template `inputSheetLayout.dayAxis`.
+- `requestCells` is a derived logical extraction surface spanning section-scoped doctor rows against the template day axis; this keeps locator naming close to template vocabulary without adding a separate template block name.
 - canonical doctor-group semantics are resolved by parser via template artifact declarations keyed by `sectionKey`.
 - uniqueness constraints tied to locator paths are:
   - (`sectionKey`, `doctorIndexInSection`) unique within `doctorRecords`
