@@ -91,6 +91,10 @@ Parser input boundary is:
 - template-governed interpretation context,
 - trace/provenance metadata emitted by adapter/snapshot contract.
 
+First-release ICU/HD template interpretation inputs used at this boundary include:
+- section-based doctor-group derivation declarations on `inputSheetLayout.sections[]` (`sectionKey` + canonical `groupId`),
+- slot declarations with `requiredCountPerDay` for fixed per-day demand instantiation.
+
 ### Proposed in this checkpoint
 This contract defines no separate pre-parser rejection channel. Malformed or incomplete snapshot-shaped input is handled within parser result production.
 
@@ -177,6 +181,11 @@ Implementation note (still compatible with this contract): internal code may mer
 - unresolved ambiguity in downstream-governing slot/demand/eligibility facts,
 - normalized model assembly cannot produce complete internally consistent downstream input,
 - parser cannot deterministically derive downstream-governing request facts under the declared request grammar.
+
+First-release ICU/HD parser obligations within this semantic stage:
+- resolve canonical doctor group by reading snapshot doctor `sourceLocator.path.sectionKey`, locating the declared template section, then reading that section’s canonical `groupId`,
+- instantiate normalized slot demand by combining normalized day set + template slot declarations + each slot’s `requiredCountPerDay`,
+- treat unresolved/ambiguous doctor-group derivation or unresolved/ambiguous demand instantiation as `NON_CONSUMABLE`.
 
 **Parser uncertainty about downstream-governing facts is not a warning-only condition; it is a non-consumability condition.**
 

@@ -134,6 +134,7 @@ Note: solver fill order is strategy/policy; it should not be encoded as core slo
 ### 7.7 SlotDemand
 Demand is explicit per `(dateKey, slotType)`:
 - `requiredCount` is mandatory and first-class.
+- In current ICU/HD first release, parser instantiates this from template slot declarations (`requiredCountPerDay`) across normalized days.
 - v1 core representation effectively assumed one demand unit per `(dateKey, slotType)`.
 - v2 intentionally generalizes this via `requiredCount`, which may be `0`, `1`, or greater than `1`.
 - This is an intentional v2 divergence from v1 core representation assumptions.

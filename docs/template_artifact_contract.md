@@ -57,6 +57,7 @@ Each slot record includes:
 - `label`
 - `slotFamily`
 - `slotKind`
+- `requiredCountPerDay`
 
 First-release ICU/HD slot identities:
 - `MICU_CALL`
@@ -67,6 +68,7 @@ First-release ICU/HD slot identities:
 Minimum explicit slot semantics:
 - `slotFamily` (`MICU` or `MHD`)
 - `slotKind` (`CALL` or `STANDBY`)
+- `requiredCountPerDay` (template-declared fixed per-day demand for this slot within the template version)
 
 ## 6. Doctor-group definitions (settled)
 Each doctor-group record includes:
@@ -134,10 +136,17 @@ Field vocabulary:
 - `dayAxis.direction`
 - `sections`
 - `sectionKey`
+- `groupId`
 - `placement.anchorMode`
 - `placement.blockRef`
 - `doctorRows.nameColumn`
 - `doctorRows.requestStartColumn`
+
+Section-based doctor-group derivation (first-release ICU/HD):
+- each `inputSheetLayout.sections[]` record must declare canonical `groupId`
+- `sectionKey` remains logical extraction/layout identity used to locate the section record
+- `sectionKey` is not canonical group meaning by itself
+- parser resolves doctor group by locating the declared section via `sectionKey` and reading that section’s canonical `groupId`
 
 Parser-facing intent:
 - clean parsing of operator-entered requests
@@ -177,7 +186,11 @@ A template artifact is invalid if any of the following are true:
 - first-release ICU/HD required slot or group IDs are absent
 - eligibility references unknown `slotId` or unknown `groupId`
 - required slot semantics (`slotFamily`, `slotKind`) are missing
+- `requiredCountPerDay` is missing, non-integer, or negative on any slot record
 - input layout and output mapping content are mixed together
+- any `inputSheetLayout.sections[]` record is missing canonical `groupId`
+- any `inputSheetLayout.sections[].groupId` is empty or otherwise invalid
+- any `inputSheetLayout.sections[].groupId` references an unknown `doctorGroups[].groupId`
 - forbidden procedural/runtime content appears in declarative sections (`inputSheetLayout`, `outputMapping`, `scoring`)
 
 ## 13. Parser-facing guarantees
@@ -185,9 +198,11 @@ If the artifact is valid, parser-facing consumers may assume:
 - section names and core record shapes are stable for this contract checkpoint (`identity`, `slots`, `doctorGroups`, `eligibility`, `requestSemanticsBinding`, `inputSheetLayout`, `outputMapping`, `scoring`)
 - `identity` includes `templateId`, `templateVersion`, and `label`
 - each slot record includes `slotId`, `label`, `slotFamily`, and `slotKind`
+- each slot record includes explicit `requiredCountPerDay`, enabling deterministic SlotDemand instantiation from normalized days + slot declarations
 - each doctor-group record includes `groupId` and `label`
 - eligibility is explicit and deterministic as `slotId` + `eligibleGroups`
 - request-layout parsing surface is structurally declared via `inputSheetLayout`
+- doctor→group normalization is explicit and deterministic through `inputSheetLayout.sections[]` declarations (`sectionKey` lookup + section-level canonical `groupId`)
 - request semantics binding points to the settled request semantics contract via `contractId` + `contractVersion`
 - output mapping semantics are declared separately from input layout
 
@@ -214,18 +229,22 @@ slots:
     label: MICU Call
     slotFamily: MICU
     slotKind: CALL
+    requiredCountPerDay: 1
   - slotId: MICU_STANDBY
     label: MICU Standby
     slotFamily: MICU
     slotKind: STANDBY
+    requiredCountPerDay: 1
   - slotId: MHD_CALL
     label: MHD Call
     slotFamily: MHD
     slotKind: CALL
+    requiredCountPerDay: 1
   - slotId: MHD_STANDBY
     label: MHD Standby
     slotFamily: MHD
     slotKind: STANDBY
+    requiredCountPerDay: 1
 
 doctorGroups:
   - groupId: ICU_ONLY
@@ -256,6 +275,23 @@ inputSheetLayout:
     direction: horizontal
   sections:
     - sectionKey: MICU
+      groupId: ICU_ONLY
+      placement:
+        anchorMode: belowBlock
+        blockRef: dayAxis
+      doctorRows:
+        nameColumn: A
+        requestStartColumn: B
+    - sectionKey: MICU_HD
+      groupId: ICU_HD
+      placement:
+        anchorMode: belowBlock
+        blockRef: dayAxis
+      doctorRows:
+        nameColumn: A
+        requestStartColumn: B
+    - sectionKey: MHD
+      groupId: HD_ONLY
       placement:
         anchorMode: belowBlock
         blockRef: dayAxis
