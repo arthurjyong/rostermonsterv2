@@ -14,7 +14,7 @@ A template may declare department-specific facts and mappings, including:
 - first-release eligibility mapping (group-based only: `slot -> groups`)
 - request-semantics binding surface at the template boundary
 - sheet layout mapping
-- output mapping
+- output mapping for template-owned lower roster/output shell surfaces
 - scoring section presence (explicit minimal first-release stub)
 
 ### Out of scope
@@ -66,7 +66,7 @@ A version bump is required when structural or semantic behavior changes in ways 
 - doctor-group derivation declarations (including section-level canonical `groupId` mappings)
 - eligibility logic
 - request semantics binding target (`contractId` / `contractVersion`)
-- logical sheet/output mapping contract
+- logical sheet/output mapping contract, including lower roster/output shell surface structure
 
 ### 5.4 Changes that do not require a version bump
 Routine month-to-month variation does **not** require a version bump when the same approved structural template still applies, including:
@@ -109,7 +109,8 @@ For first release, each template must define at minimum:
    - enough information for adapter/parser to locate the declared logical regions
 
 7. **Output mapping**
-   - logical destination mapping from allocation outputs to sheet/output surfaces
+   - declarative mapping from allocation outputs to template-owned sheet/output surfaces
+   - includes lower roster/output shell surfaces that may be generated empty, later operator-prefilled, and later targeted by writeback against the same declared mapping
 
 8. **Scoring section**
    - explicit minimal first-release stub:
