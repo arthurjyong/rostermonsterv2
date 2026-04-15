@@ -200,7 +200,7 @@ Notes:
 - `sectionKey` refers to template-declared logical section identity, not monthly operator input.
 - `sectionKey` is a logical mapping key for traceability and is not normalized doctor-group meaning by itself.
 - `dayAxis` aligns directly with template `inputSheetLayout.dayAxis`.
-- `requestCells` is a derived logical extraction surface spanning section-scoped doctor rows against the template day axis; this keeps locator naming close to template vocabulary without adding a separate template block name.
+- `requestCells` is the single derived logical extraction surface retained for first release, spanning section-scoped doctor rows against the template day axis; this keeps locator naming close to template vocabulary without introducing parallel locator surface names.
 - canonical doctor-group semantics are resolved by parser via template artifact declarations keyed by `sectionKey`.
 - uniqueness constraints tied to locator paths are:
   - (`sectionKey`, `doctorIndexInSection`) unique within `doctorRecords`

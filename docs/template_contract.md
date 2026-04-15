@@ -97,11 +97,12 @@ For first release, each template must define at minimum:
    - no doctor-level override layer unless introduced by a future contract
    - deterministic resolution behavior with no hidden code-side overrides
 
-5. **Request semantics mapping**
+5. **Request semantics binding**
    - binding to the applicable request semantics contract via contract identity/version
 
    For ICU/HD first release, detailed request-language semantics (including raw grammar/tokens, raw-to-canonical mapping, machine-effect mapping, combinations/duplicates handling, and consumability outcomes) are defined in `docs/request_semantics_contract.md` and are bound through template request-semantics binding.
-   Request-driven blocking / previous-day effects are also realized through that bound request semantics contract; template artifacts must not duplicate request-semantics tables solely to restate those effects.
+   Request-driven blocking / previous-day effects are realized through that bound request semantics contract, not through a separate parallel template section.
+   Template artifacts must not duplicate request-semantics tables solely to restate those effects.
 
 6. **Sheet layout mapping**
    - logical anchors/sections and mapping assumptions required for parsing
