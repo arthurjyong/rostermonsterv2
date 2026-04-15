@@ -68,6 +68,11 @@ Parser owns:
 Parser additionally owns:
 - explicit parser-stage admission decision for downstream consumption,
 - explicit rejection when parser uncertainty affects downstream-governing facts.
+- reading `prefilledAssignmentRecords` at parser boundary,
+- exact deterministic resolution of prefilled doctor text against names entered in doctor-entry sections,
+- interpretation of template-declared lower-shell row/slot structure for populated prefilled cells,
+- construction of normalized fixed-assignment facts for downstream use when prefilled assignments are resolvable,
+- parser-stage issue emission with enough source context for loud failure reporting.
 
 **Parser-stage derivation of normalized hard effects is allowed.**
 
@@ -90,6 +95,8 @@ Parser input boundary is:
 - snapshot-shaped raw run data,
 - template-governed interpretation context,
 - trace/provenance metadata emitted by adapter/snapshot contract.
+
+For this checkpoint, parser input explicitly includes snapshot `prefilledAssignmentRecords` and template-declared lower-shell parse surfaces used to interpret those records.
 
 First-release ICU/HD template interpretation inputs used at this boundary include:
 - section-based doctor-group derivation declarations on `inputSheetLayout.sections[]` (`sectionKey` + canonical `groupId`), interpreted from snapshot doctor `sourceLocator.path.sectionKey`,
@@ -183,6 +190,29 @@ Implementation note (still compatible with this contract): internal code may mer
 - unresolved, invalid, or missing upstream eligibility declarations needed for deterministic instantiation (`eligibility[]` as `slotId` + `eligibleGroups`),
 - normalized model assembly cannot produce complete internally consistent downstream input,
 - parser cannot deterministically derive downstream-governing request facts under the declared request grammar.
+
+Prefilled-assignment parser-stage non-consumability cases (checkpoint 3):
+- prefilled doctor name not found in doctor-entry section names,
+- ambiguous doctor identity for prefilled doctor text,
+- same doctor duplicated across groups such that identity is not uniquely resolvable,
+- unresolved or broken date identity for a populated prefilled cell,
+- populated prefilled cell inside declared lower-shell parse surfaces that cannot be mapped to declared slot/day structure,
+- corrupted duplicate mapping for the same slot/day,
+- same doctor fixed into two slots on the same date.
+
+For populated prefilled cells inside declared parse surfaces, parser must not silently ignore meaningful cell content: parser must either deterministically normalize it or emit parser-stage issues and return `NON_CONSUMABLE`.
+
+Allowed operator-priority fixed-assignment override at parser boundary (checkpoint 3):
+- if a prefilled assignment is structurally and semantically resolvable at parser boundary, parser may admit and normalize that fixed assignment even when that specific fixed assignment would otherwise violate request-derived hard block, baseline eligibility, or ordinary back-to-back prohibition,
+- this is not parser adjudication of full candidate legality,
+- this override applies only to that fixed assignment itself,
+- parser is not relaxing the general downstream rule set,
+- downstream legality checking remains downstream.
+
+Separation rule (checkpoint 3):
+- parser ambiguity/unresolvability for prefilled assignments => `NON_CONSUMABLE`,
+- allowed fixed-assignment override for a resolvable prefilled assignment => parsable/admitted and normalized as a real downstream-governing fact,
+- legality evaluation beyond this parser-boundary exception model remains downstream.
 
 First-release ICU/HD parser obligations within this semantic stage:
 - resolve canonical doctor group by reading snapshot doctor `sourceLocator.path.sectionKey`, locating the declared template section in `inputSheetLayout.sections[]`, then reading that section’s canonical `groupId`,
