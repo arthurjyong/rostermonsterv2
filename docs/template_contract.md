@@ -101,19 +101,16 @@ For first release, each template must define at minimum:
    - binding to the applicable request semantics contract via contract identity/version
 
    For ICU/HD first release, detailed request-language semantics (including raw grammar/tokens, raw-to-canonical mapping, machine-effect mapping, combinations/duplicates handling, and consumability outcomes) are defined in `docs/request_semantics_contract.md` and are bound through template request-semantics binding.
+   Request-driven blocking / previous-day effects are also realized through that bound request semantics contract; template artifacts must not duplicate request-semantics tables solely to restate those effects.
 
-6. **Blocking / preceding-day rules mapping**
-   - For ICU/HD first release, request-driven blocking / previous-day effects are realized through the bound request semantics contract in `docs/request_semantics_contract.md`.
-   - Template artifacts must not duplicate request-semantics tables solely to restate those request-driven effects.
-
-7. **Sheet layout mapping**
+6. **Sheet layout mapping**
    - logical anchors/sections and mapping assumptions required for parsing
    - enough information for adapter/parser to locate the declared logical regions
 
-8. **Output mapping**
+7. **Output mapping**
    - logical destination mapping from allocation outputs to sheet/output surfaces
 
-9. **Scoring section**
+8. **Scoring section**
    - explicit minimal first-release stub:
      - `scoring.templateKnobs: []`
    - richer scoring-knob surfaces are deferred unless introduced by a future contract checkpoint
