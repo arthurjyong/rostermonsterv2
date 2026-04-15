@@ -1,14 +1,15 @@
 # Roadmap (Phased Skeleton)
 
 ## Phase 0: docs / architecture
-- Establish blueprint, contracts, and modeling direction.
-- Capture initial decisions and open questions.
+- Close architecture-level boundary wording across template artifact, snapshot, parser boundary, and domain model contracts.
+- Record only remaining narrow open items after contract-surface alignment.
 
 ## Phase 1: contracts
-- Draft and stabilize template contract shape.
-- Define validation expectations for contracts.
+- Stabilize contract surfaces and ownership boundaries for template artifact, snapshot, and parser/normalizer handoff.
+- Lock validation expectations needed for deterministic downstream-governing interpretation.
 
 ## Phase 2: parser + normalization
+- Implement parser/normalizer against closed contract surfaces (not before boundary closure).
 - Parse sheet-oriented inputs into normalized model.
 - Produce deterministic input bundles for downstream stages.
 
