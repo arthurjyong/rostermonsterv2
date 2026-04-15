@@ -63,7 +63,9 @@ Within a released template version, the following are stable contract surfaces:
 ### 5.3 Changes that require a version bump
 A version bump is required when structural or semantic behavior changes in ways that affect interpretation, validation, or code assumptions, including changes to:
 - slot model
+- template-declared slot demand counts (`requiredCountPerDay`)
 - doctor-group model
+- doctor-group derivation declarations (including section-level canonical `groupId` mappings)
 - eligibility logic
 - request semantics
 - blocking logic
@@ -86,10 +88,12 @@ For first release, each template must define at minimum:
 2. **Slot definitions**
    - template-local slot identifiers and labels
    - slot semantics used by eligibility, rules, and output mapping
+   - template-declared fixed per-day demand per slot for first release (`requiredCountPerDay`)
 
 3. **Doctor groups**
    - group identifiers
-   - group membership mapping inputs
+   - explicit group-membership derivation inputs
+   - for ICU/HD first release, doctor-group derivation is section-based through declared input layout sections, where each section declares canonical `groupId`
 
 4. **Eligibility mapping**
    - which groups/doctors are eligible for which slot types
