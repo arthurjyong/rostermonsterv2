@@ -68,7 +68,7 @@ These rules are non-negotiable and must never be violated:
 
 ## 6. Product model
 v2 follows a multi-layer model:
-- **Department Template**: declares department-specific facts and knobs.
+- **Department Template**: declares department-specific structure, mappings, and contract bindings.
 - **Template-declared request form layout** may later support generation of structured operator-facing request-form sheets, while generation mechanics remain outside this blueprint checkpoint.
 - **Sheet Adapter**: handles Google Sheets read/write integration.
 - **Core Engine**: parses, normalizes, validates, solves, and scores.
@@ -80,9 +80,10 @@ This model separates reusable allocation logic from department-specific behavior
 
 ### 1) Department Template layer
 **Responsibilities**
-- Define slot types, doctor groups, eligibility mapping.
-- Define request codes, blocking/preceding-day rules.
-- Define sheet layout mapping, output mapping, scoring knobs.
+- Define slot/group structure and first-release group-based eligibility declarations.
+- Define request/input sheet layout mapping and output mapping.
+- Bind to the appropriate request semantics contract used for request interpretation.
+- Carry the scoring section as an explicit minimal first-release stub (`scoring.templateKnobs: []`).
 - Act as declarative/configurational artifacts for department behavior.
 
 **Must not do**
@@ -110,6 +111,7 @@ This model separates reusable allocation logic from department-specific behavior
 ### 3) Parser + Normalizer layer
 **Responsibilities**
 - Parse raw sheet + template into a common internal model.
+- Interpret raw snapshot request content using template declarations plus the bound request semantics contract.
 - Normalize values, detect structural issues, report parse/normalization outcomes.
 
 **Must not do**
@@ -274,7 +276,9 @@ Planned implementation sequence:
 ## 16. Initial working decisions for first release
 - Department templates are curated by maintainers for first release onboarding, not end-user self-serve.
 - Routine variation within an approved template is mainly limited to roster period/dates, doctor list, and doctor count.
-- Structural changes are not end-user configurable in first release and require maintainer review/template updates. This includes slot types, doctor-pool design, request semantics, eligibility logic, blocking logic, and allocation logic.
+- Structural and mapping changes are not end-user configurable in first release and require maintainer-reviewed template updates. This includes slot/group structure, group-based eligibility declarations, and logical input/output mapping surfaces.
+- Request meaning and request-effect changes are handled in the request semantics contract (or rebinding to a different contract version), not by silently restating semantics inside template-layer docs/artifacts.
+- Allocation/search/scorer implementation changes are core-layer changes, not template-layer changes.
 - The first normalized domain model covers minimum common allocation concepts for ICU/HD and near-term similar departments: roster period, dates, doctors, doctor groups, slot types, per-date slot demand, requests, blocking rules, eligibility mappings, scoring configuration, and writeback targets.
 - The normalized model is independent of raw Google Sheets row/column layout, while template + sheet-adapter mappings handle department sheet specifics.
 - Slot demand is modeled as required assignment count per date per slot type.
@@ -288,5 +292,5 @@ Planned implementation sequence:
 - Near-term ICU/HD templates will likely remain highly similar, with changes mainly in dates and doctor names.
 - Department onboarding remains curated by our team, not self-serve.
 - Leave/request legends are expected to be largely reusable across departments, even when templates declare them explicitly.
-- Hard constraints are expected to be largely universal across departments; department-specific variation mainly sits in slot structure, eligibility mapping, sheet mapping, and scoring knobs.
+- Hard constraints are expected to be largely universal across departments; department-specific variation mainly sits in slot/group structure, group-based eligibility declarations, sheet mapping, request semantics binding choice, and minimal scoring stub presence.
 - This blueprint intentionally stays high-level where contracts are not yet finalized.
