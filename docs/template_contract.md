@@ -99,13 +99,14 @@ For first release, each template must define at minimum:
    - mapping from raw request input surface to approved normalized semantics
    - clear distinction between hard-blocking effects and soft preference/penalty effects
 
-   For ICU/HD first release, the detailed request-language contract (raw grammar, accepted tokens, raw-to-canonical mapping, canonical-to-machine-effect mapping, combinations, duplicates, and consumability outcomes) is defined in `docs/request_semantics_contract.md`.
+   For ICU/HD first release, the detailed request-language contract (raw grammar, accepted tokens, raw-to-canonical mapping, canonical-to-machine-effect mapping, combinations, duplicates, and consumability outcomes) is defined in `docs/request_semantics_contract.md` and is bound through template request-semantics binding.
 
 6. **Blocking / preceding-day rules mapping**
    - baseline rule vocabulary used by the template for first release:
      - same-day hard block
      - previous-day call soft-penalty trigger (`prevDayCallSoftPenaltyTrigger`)
      - soft request preference (for example CR-like semantics)
+   - For ICU/HD first release, request-driven blocking / preceding-day effects are realized through the bound request semantics contract and do not require a duplicate parallel artifact section solely to restate the same request-driven effects.
 
 7. **Sheet layout mapping**
    - logical anchors/sections and mapping assumptions required for parsing
