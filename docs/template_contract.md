@@ -1,7 +1,7 @@
 # Department Template Contract (First-Release Normative)
 
 ## 1. Purpose
-A department template is a **declarative artifact** that defines department-specific roster structure, semantics, and mapping surfaces so the reusable allocation core can operate correctly.
+A department template is a **declarative artifact** that defines department-specific roster structure and binding/mapping surfaces so the reusable allocation core can operate correctly.
 
 The template is the primary place where department policy is declared for first release.
 
@@ -11,12 +11,11 @@ The template is the primary place where department policy is declared for first 
 A template may declare department-specific facts and mappings, including:
 - slot model (slot types and slot definitions)
 - doctor-group model
-- eligibility mapping
-- request-semantics surface at the template boundary (within approved vocabulary)
-- blocking / preceding-day semantics
+- first-release eligibility mapping (group-based only: `slot -> groups`)
+- request-semantics binding surface at the template boundary
 - sheet layout mapping
 - output mapping
-- approved scoring-knob surface
+- scoring section presence (explicit minimal first-release stub)
 
 ### Out of scope
 A template must **not** contain:
@@ -53,12 +52,11 @@ The versioned object is the **department structural template**, not the monthly 
 Within a released template version, the following are stable contract surfaces:
 - slot definitions
 - doctor groups
-- eligibility mapping
-- request semantics
-- blocking/preceding-day rules
+- group-based eligibility mapping
+- request semantics binding
 - sheet layout mapping contract
 - output mapping contract
-- approved scoring-knob surface
+- scoring section shape
 
 ### 5.3 Changes that require a version bump
 A version bump is required when structural or semantic behavior changes in ways that affect interpretation, validation, or code assumptions, including changes to:
@@ -67,8 +65,7 @@ A version bump is required when structural or semantic behavior changes in ways 
 - doctor-group model
 - doctor-group derivation declarations (including section-level canonical `groupId` mappings)
 - eligibility logic
-- request semantics
-- blocking logic
+- request semantics binding target (`contractId` / `contractVersion`)
 - logical sheet/output mapping contract
 
 ### 5.4 Changes that do not require a version bump
@@ -96,21 +93,18 @@ For first release, each template must define at minimum:
    - for ICU/HD first release, doctor-group derivation is section-based through declared input layout sections, where each section declares canonical `groupId`
 
 4. **Eligibility mapping**
-   - which groups/doctors are eligible for which slot types
+   - first-release group-based eligibility only: which groups are eligible for which slot types (`slot -> groups`)
+   - no doctor-level override layer unless introduced by a future contract
    - deterministic resolution behavior with no hidden code-side overrides
 
 5. **Request semantics mapping**
-   - mapping from raw request input surface to approved normalized semantics
-   - clear distinction between hard-blocking effects and soft preference/penalty effects
+   - binding to the applicable request semantics contract via contract identity/version
 
-   For ICU/HD first release, the detailed request-language contract (raw grammar, accepted tokens, raw-to-canonical mapping, canonical-to-machine-effect mapping, combinations, duplicates, and consumability outcomes) is defined in `docs/request_semantics_contract.md` and is bound through template request-semantics binding.
+   For ICU/HD first release, detailed request-language semantics (including raw grammar/tokens, raw-to-canonical mapping, machine-effect mapping, combinations/duplicates handling, and consumability outcomes) are defined in `docs/request_semantics_contract.md` and are bound through template request-semantics binding.
 
 6. **Blocking / preceding-day rules mapping**
-   - baseline rule vocabulary used by the template for first release:
-     - same-day hard block
-     - previous-day call soft-penalty trigger (`prevDayCallSoftPenaltyTrigger`)
-     - soft request preference (for example CR-like semantics)
-   - For ICU/HD first release, request-driven blocking / preceding-day effects are realized through the bound request semantics contract and do not require a duplicate parallel artifact section solely to restate the same request-driven effects.
+   - For ICU/HD first release, request-driven blocking / previous-day effects are realized through the bound request semantics contract in `docs/request_semantics_contract.md`.
+   - Template artifacts must not duplicate request-semantics tables solely to restate those request-driven effects.
 
 7. **Sheet layout mapping**
    - logical anchors/sections and mapping assumptions required for parsing
@@ -119,19 +113,20 @@ For first release, each template must define at minimum:
 8. **Output mapping**
    - logical destination mapping from allocation outputs to sheet/output surfaces
 
-9. **Scoring knob declarations (approved surface only)**
-   - list of allowed per-template knobs and accepted ranges/enums, if used
+9. **Scoring section**
+   - explicit minimal first-release stub:
+     - `scoring.templateKnobs: []`
+   - richer scoring-knob surfaces are deferred unless introduced by a future contract checkpoint
 
 ### First-release determinism rules for required sections
 - **Identifier policy:** slot and group identifiers must be explicit, stable within a template version, and unique within their section.
 - **Overlapping groups:** allowed when explicitly declared; eligibility semantics must remain deterministic.
 - **Eligibility precedence:** no implicit precedence; effective eligibility must be derivable directly from template declarations.
-- **Request priority representation:** request semantics are represented through normalized hard/soft effects and approved scoring knobs, not ad hoc procedural priority code.
+- **Request priority representation:** request semantics are represented through the bound request semantics contract plus explicit template declarations, not ad hoc procedural priority code.
 
 ## 7. Optional template sections
 Optional sections are allowed only when they remain declarative and do not violate core boundary rules. Examples:
 - additional metadata labels for reporting
-- optional scoring knobs within approved surface
 - optional diagnostics-oriented mapping metadata
 
 If an optional section is present, it becomes part of the released template’s stable contract for that version.
@@ -173,9 +168,9 @@ At minimum, first-release validation should confirm:
 - required sections exist and are internally consistent
 - identifiers satisfy uniqueness/stability rules
 - eligibility mappings are deterministic and well-formed
-- request semantics map only to approved vocabulary
+- request semantics binding is present and points to an approved request semantics contract identity/version
 - sheet/output mappings are structurally valid against declared logical anchors
-- declared scoring knobs remain inside approved surface
+- scoring section follows the explicit minimal first-release stub
 
 Validation lifecycle expectation:
 - routine roster data updates are operational checks
