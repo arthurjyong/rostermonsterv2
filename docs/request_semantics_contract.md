@@ -14,7 +14,16 @@ It defines, for request text only:
 
 This contract is implementation-facing and intentionally narrow.
 
-## 2. Boundary position relative to template / snapshot / parser / domain model
+## 2. Contract identity and versioning
+Contract identity/version for binding:
+- `contractId: ICU_HD_REQUEST_SEMANTICS`
+- `contractVersion: 1`
+
+Version bump rule (normative):
+- bump `contractVersion` only when request interpretation changes.
+- do **not** bump for wording cleanup, formatting, added examples, or clarification that does not change behavior.
+
+## 3. Boundary position relative to template / snapshot / parser / domain model
 This contract sits between:
 - raw request text as present in snapshot rows, and
 - normalized Request semantics used downstream.
@@ -27,7 +36,7 @@ Boundary alignment:
 
 This file defines only the request-semantics sub-contract within that boundary.
 
-## 3. What this contract governs and what it does not govern
+## 4. What this contract governs and what it does not govern
 This contract governs:
 - how raw ICU/HD request text is lexed and parsed,
 - which raw request tokens are accepted,
@@ -45,12 +54,12 @@ This contract does **not** govern:
 - spreadsheet extraction mechanics,
 - or generic parser result structure already owned elsewhere.
 
-## 4. ICU/HD first-release raw request input model
+## 5. ICU/HD first-release raw request input model
 Input for this contract is the raw request text for a single doctor on a single date (possibly blank).
 
 The parser must re-validate this raw text directly and must not rely on spreadsheet-side validation.
 
-## 5. Lexical and grammar rules
+## 6. Lexical and grammar rules
 Normative rules:
 1. Delimiter grammar is **comma-separated only**.
 2. Parsing is trim-tolerant around tokens and commas.
@@ -61,7 +70,7 @@ Normative rules:
 Operational consequence:
 - If text cannot be deterministically parsed under comma-only grammar, parser must not guess.
 
-## 6. Accepted raw token vocabulary
+## 7. Accepted raw token vocabulary
 Accepted raw ICU/HD tokens are exactly:
 - `CR`
 - `NC`
@@ -78,14 +87,14 @@ Accepted raw ICU/HD tokens are exactly:
 
 No additional raw tokens are recognized by this first-release contract.
 
-## 7. Canonical normalized request classes
+## 8. Canonical normalized request classes
 Canonical normalized request classes are exactly:
 - `CR`
 - `NC`
 - `FULL_DAY_OFF`
 - `PM_OFF`
 
-## 8. Raw-to-canonical mapping
+## 9. Raw-to-canonical mapping
 Raw-to-canonical mapping is exact and closed:
 - `CR` -> `CR`
 - `NC` -> `NC`
@@ -100,7 +109,7 @@ Raw-to-canonical mapping is exact and closed:
 - `EMCC` -> `PM_OFF`
 - `PM_OFF` -> `PM_OFF`
 
-## 9. Canonical-to-machine-effect mapping
+## 10. Canonical-to-machine-effect mapping
 Machine-effect vocabulary for ICU/HD first release is exactly:
 - `sameDayHardBlock`
 - `prevDayCallSoftPenaltyTrigger`
@@ -117,7 +126,7 @@ Canonical-to-machine-effect mapping is exact:
 
 No additional machine effects are introduced by this contract.
 
-## 10. Combination handling rules
+## 11. Combination handling rules
 Combined recognized codes are allowed.
 
 For deterministic combinations of recognized tokens, parser behavior is:
@@ -130,7 +139,7 @@ For deterministic combinations of recognized tokens, parser behavior is:
 Normative special case:
 - `CR` + blocking-class combinations (for example `CR, NC`, `CR, EXAM`, `CR, PM_OFF`) remain `CONSUMABLE`, preserve provenance, preserve full union of effects, and emit a non-blocking parser issue rather than structural rejection.
 
-## 11. Duplicate handling rules
+## 12. Duplicate handling rules
 Duplicates of recognized codes are allowed but must be normalized without changing meaning.
 
 Required behavior:
@@ -139,7 +148,7 @@ Required behavior:
 3. Emit a non-blocking parser issue.
 4. Apply this rule both to direct duplicates and alias duplicates that collapse after raw-to-canonical mapping.
 
-## 12. Unknown / malformed / mixed-known-unknown handling
+## 13. Unknown / malformed / mixed-known-unknown handling
 Parser must not guess.
 
 Rules:
@@ -151,14 +160,14 @@ Rules:
 
 First-release default intent for unknown or malformed content is conservative: non-guessing, explicit issues, and non-consumable handling for any unknown token presence or broken grammar determinism.
 
-## 13. Consumable vs non-consumable rules
+## 14. Consumable vs non-consumable rules
 A parsed request is `CONSUMABLE` when all downstream-governing request facts are deterministically derivable under this contract.
 
 A parsed request is `NON_CONSUMABLE` when determinism is not possible from the provided raw text (including unknown/malformed content that blocks deterministic derivation).
 
 Recognized-only awkward combinations and duplicates are not, by themselves, grounds for `NON_CONSUMABLE`; they stay `CONSUMABLE` with non-blocking issues.
 
-## 14. Required normalized Request-level outputs for consumable parses
+## 15. Required normalized Request-level outputs for consumable parses
 For a `CONSUMABLE` parsed request, normalized request semantics must include:
 1. recognized raw tokens,
 2. canonical class set,
@@ -167,7 +176,7 @@ For a `CONSUMABLE` parsed request, normalized request semantics must include:
 
 These outputs are request-semantic payload requirements only and do not redefine the generic parser result envelope.
 
-## 15. Explicit deferrals
+## 16. Explicit deferrals
 This contract explicitly defers:
 - solver interpretation and conflict resolution behavior,
 - objective/scoring impact magnitude,
@@ -178,7 +187,7 @@ This contract explicitly defers:
 
 This contract also does not reopen settled boundaries already defined in blueprint/template/snapshot/parser/domain docs.
 
-## 16. Worked examples (ICU/HD first release)
+## 17. Worked examples (ICU/HD first release)
 Legend:
 - Raw tokens/classes/effects are shown as deterministic sets in canonical order.
 - "Issue semantics" uses descriptive labels (non-normative strings) to keep meaning explicit without over-standardizing issue codes.
