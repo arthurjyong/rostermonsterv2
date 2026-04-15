@@ -25,7 +25,9 @@ Snapshot data is intentionally upstream of normalization and interpretation.
 Settled boundary points:
 - Snapshot records what was seen; parser decides what it means.
 - Per-date slot demand belongs to the template, not the snapshot.
-- Template owns doctor-group vocabulary and meaning.
+- Template owns doctor-group vocabulary and canonical meaning.
+- Parser resolves canonical doctor-group semantics from upstream template-artifact declaration surfaces (not from snapshot doctor rows themselves).
+- Parser instantiates normalized slot demand from template-declared `requiredCountPerDay` across normalized days (not from snapshot-side defaults).
 
 ## 3. Adapter/parser split
 ### Adapter guarantees
@@ -122,6 +124,7 @@ Doctor records stay raw and structural, not semantic.
 - `rawSectionText` is audit/debug only
 - `rawSectionText` is never structural identity
 - `rawSectionText` is never normalized doctor-group meaning
+- canonical doctor-group meaning is resolved by parser from template-declared section/group surfaces, not from snapshot text fields
 - grouping remains a template decision, not routine monthly operational input
 
 ### Doctor-record forbidden content
@@ -195,7 +198,8 @@ Use stricter typed shape by record kind, with consistent naming (`doctorIndexInS
 
 Notes:
 - `sectionKey` refers to template-declared logical section identity, not monthly operator input.
-- `sectionKey` is a logical mapping key for traceability and is not normalized doctor-group meaning.
+- `sectionKey` is a logical mapping key for traceability and is not normalized doctor-group meaning by itself.
+- canonical doctor-group semantics are resolved by parser via template artifact declarations keyed by `sectionKey`.
 - uniqueness constraints tied to locator paths are:
   - (`sectionKey`, `doctorIndexInSection`) unique within `doctorRecords`
   - `dayIndex` unique within `dayRecords`
