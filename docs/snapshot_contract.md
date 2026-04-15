@@ -239,6 +239,7 @@ These records are:
 - `rawAssignedDoctorText` preserves exact raw cell text (not trimmed or normalized)
 - records must be uniquely identifiable by (`surfaceId`, `rowOffset`, `dayIndex`)
 - do not silently merge records or normalize meaning at snapshot layer
+- snapshot layer does not decide whether a populated prefilled cell is valid/consumable; parser decides interpretation later
 
 ### Prefilled-assignment-record forbidden content
 Prefilled assignment records must not include:
