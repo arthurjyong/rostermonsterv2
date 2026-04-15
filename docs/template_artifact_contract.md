@@ -5,7 +5,7 @@ This document defines the **parser-consumable department template artifact** use
 
 Status in this checkpoint:
 - **Implementation-facing first pass**.
-- Intended to become **normative quickly** once open field-shape questions are closed.
+- Intended to become **normative quickly** once remaining limited deferrals are closed.
 - Realizes `docs/template_contract.md` and does not replace it.
 
 ## 2. Boundary and non-goals
@@ -19,7 +19,7 @@ The artifact covers department structural declarations needed for parser interpr
 - request semantics binding surface (narrow)
 - input request-form layout contract (`inputSheetLayout`)
 - output mapping contract (`outputMapping`)
-- minimal scoring posture (if present)
+- explicit minimal scoring stub
 
 ### Out of scope
 This artifact must not redefine or embed:
@@ -39,18 +39,24 @@ Settled for first release:
 - Shape-level contract is primary; serialization format is secondary.
 
 ## 4. Required sections (shape-level)
-The top-level section names remain open (see Open Issues), but the artifact must contain these logical sections:
-1. identity / version
-2. slot definitions
-3. doctor-group definitions
-4. eligibility declarations
-5. request semantics binding
+The artifact must contain these top-level sections:
+1. `identity`
+2. `slots`
+3. `doctorGroups`
+4. `eligibility`
+5. `requestSemanticsBinding`
 6. `inputSheetLayout`
 7. `outputMapping`
-8. optional minimal scoring surface or explicit scoring deferral posture
+8. `scoring`
 
-## 5. Slot definitions (settled content, open field names)
+## 5. Slot definitions (settled)
 Slots are first-class records.
+
+Each slot record includes:
+- `slotId`
+- `label`
+- `slotFamily`
+- `slotKind`
 
 First-release ICU/HD slot identities:
 - `MICU_CALL`
@@ -59,12 +65,14 @@ First-release ICU/HD slot identities:
 - `MHD_STANDBY`
 
 Minimum explicit slot semantics:
-- service/family (`MICU` or `MHD`)
-- slot kind (`CALL` or `STANDBY`)
+- `slotFamily` (`MICU` or `MHD`)
+- `slotKind` (`CALL` or `STANDBY`)
 
-Field names for these properties are intentionally left open in this pass.
+## 6. Doctor-group definitions (settled)
+Each doctor-group record includes:
+- `groupId`
+- `label`
 
-## 6. Doctor-group definitions (settled content, open field names)
 First-release ICU/HD group identities:
 - `ICU_ONLY`
 - `ICU_HD`
@@ -75,38 +83,43 @@ Settled constraints:
 - Monthly membership is external to this artifact.
 - First release is group-based and does not include doctor-level override machinery.
 
-## 7. Eligibility (settled behavior, open direction)
-First-release eligibility is group-to-slot only.
+## 7. Eligibility (settled)
+First-release eligibility is represented as `slot -> groups`.
+
+Settled explicit record-list shape:
+- `slotId`
+- `eligibleGroups`
 
 Settled constraints:
 - No doctor-level override layer in first release.
 - Omission means ineligible unless a later settled field explicitly declares otherwise.
 - Eligibility must be fully derivable from artifact declarations without hidden parser-side defaults.
 
-Open direction:
-- representation direction remains unresolved (`group -> slots` vs `slot -> groups`).
-
-## 8. Request semantics binding (narrow)
+## 8. Request semantics binding (narrow, settled)
 This section binds template request parsing to the already-settled ICU/HD request semantics contract in `docs/request_semantics_contract.md`.
 
-This section must stay narrow and must not carry:
+This section must stay narrow and does not restate:
+- raw request tokens
+- canonical classes
+- machine effects
 - propagation rules
-- CR guarantee logic
-- scorer behavior
-- allocator behavior
-- reward/penalty decay behavior
+- malformed/duplicate handling
 
-Open posture:
-- whether this section is reference-only vs reference + limited bound vocabulary fields.
+Request-driven blocking and preceding-day effects are realized through the bound request semantics contract and are not duplicated in this artifact.
 
-## 9. `inputSheetLayout` contract
+Field shape:
+- `contractId`
+- `contractVersion`
+
+## 9. `inputSheetLayout` contract (settled)
 `inputSheetLayout` defines the request-entry surface only.
 
 Settled constraints:
 - No backward-compatibility requirement for old v1 request form shape.
 - v2 may declare a cleaner request-form shape.
-- Use named logical blocks.
+- Use named logical blocks plus lightweight relative anchors.
 - Do not mix output mapping into this section.
+- Do not include generator procedure.
 - Use one named request-form sheet in first release.
 - Day axis is rule-based, not hardcoded month-span coordinates.
 - Section model is repeatable section definitions.
@@ -115,106 +128,148 @@ Settled constraints:
 - `MICU Call Point` / `MHD Call Point` rows are not part of `inputSheetLayout`; they are template-owned defaults outside input layout blocks.
 - Tolerate presentation drift, not structural drift.
 
+Field vocabulary:
+- `sheetName`
+- `dayAxis.anchorCell`
+- `dayAxis.direction`
+- `sections`
+- `sectionKey`
+- `placement.anchorMode`
+- `placement.blockRef`
+- `doctorRows.nameColumn`
+- `doctorRows.requestStartColumn`
+
 Parser-facing intent:
 - clean parsing of operator-entered requests
 - support future generation of fresh empty request forms from the same declared layout contract
 - allow operator adjustments to date range and section manpower without contract breakage
 
-Open detail:
-- exact anchor/placement field shape.
-
-## 10. `outputMapping` contract
+## 10. `outputMapping` contract (settled)
 Settled constraints:
 - Included in the same artifact as a dedicated section.
 - Kept separate from `inputSheetLayout`.
 - Declarative only.
+- Logical mapping plus declared destination surfaces/anchors.
 - Must not include writer procedure or runtime write orchestration.
 
-Open detail:
-- how concrete mapping must be (logical-only vs logical + destination surfaces/anchors).
+Field vocabulary:
+- `surfaces`
+- `surfaceId`
+- `sheetName`
+- `anchorCell`
+- `orientation`
 
-## 11. Scoring posture
+## 11. Scoring posture (settled)
 Settled constraints:
+- Keep an explicit minimal scoring stub.
 - Do not mirror all v1 `SCORER_CONFIG` inside template artifact.
-- Keep scoring surface minimal if present.
 - Do not allow artifact to become runtime scorer-config dump.
 - Day-level point rows are not part of `inputSheetLayout`.
 
-Open posture:
-- minimal optional section vs explicit stub vs largely deferred.
+First-release shape:
+- `scoring.templateKnobs` (empty list allowed)
 
 ## 12. Hard artifact validity expectations
 A template artifact is invalid if any of the following are true:
-- required logical sections are missing
-- slot IDs or group IDs are duplicated
+- required top-level sections are missing (`identity`, `slots`, `doctorGroups`, `eligibility`, `requestSemanticsBinding`, `inputSheetLayout`, `outputMapping`, `scoring`)
+- slot records contain duplicate `slotId`
+- doctor-group records contain duplicate `groupId`
 - first-release ICU/HD required slot or group IDs are absent
-- eligibility references unknown group/slot identities
-- semantics needed for slot identity (service/family, slot kind) are missing
+- eligibility references unknown `slotId` or unknown `groupId`
+- required slot semantics (`slotFamily`, `slotKind`) are missing
 - input layout and output mapping content are mixed together
-- forbidden runtime/procedural content appears in declarative sections
+- forbidden procedural/runtime content appears in declarative sections (`inputSheetLayout`, `outputMapping`, `scoring`)
 
 ## 13. Parser-facing guarantees
 If the artifact is valid, parser-facing consumers may assume:
-- slot and group identity vocabulary is stable within the artifact version
-- eligibility is explicit and deterministic from declared content
+- section names and core record shapes are stable for this contract checkpoint (`identity`, `slots`, `doctorGroups`, `eligibility`, `requestSemanticsBinding`, `inputSheetLayout`, `outputMapping`, `scoring`)
+- `identity` includes `templateId`, `templateVersion`, and `label`
+- each slot record includes `slotId`, `label`, `slotFamily`, and `slotKind`
+- each doctor-group record includes `groupId` and `label`
+- eligibility is explicit and deterministic as `slotId` + `eligibleGroups`
 - request-layout parsing surface is structurally declared via `inputSheetLayout`
-- request semantics binding points to the settled request semantics contract
+- request semantics binding points to the settled request semantics contract via `contractId` + `contractVersion`
 - output mapping semantics are declared separately from input layout
 
 ## 14. Explicit deferrals
 Deferred beyond this checkpoint:
-- final top-level naming and metadata field-shape closure
-- final eligibility orientation closure
-- final concrete anchor schema closure for layout/mapping
-- detailed scorer contract integration beyond minimal posture
-- writer/generator mechanics
+- richer future scoring knob surface beyond the minimal stub
+- future generator/writer mechanics
+- future expansion beyond ICU/HD first release
 
-## 15. Open issues (must remain open in this pass)
-1. Exact top-level section names.
-2. Exact metadata shape.
-3. Exact field names for slot definitions.
-4. Exact field names for doctor-group definitions.
-5. Eligibility representation direction (`group -> slots` vs `slot -> groups`).
-6. Request binding thickness (`reference only` vs `reference + limited bound vocabulary fields`).
-7. `outputMapping` concreteness (`logical only` vs `logical + declared destination surfaces/anchors`).
-8. Scoring posture (`minimal optional section` vs `explicit stub` vs largely deferred).
-9. Exact anchor/placement field shape inside `inputSheetLayout`.
+## 15. Remaining deferrals
+This contract checkpoint keeps only the explicit deferrals listed above. Previously open naming/shape questions in this document are now settled for this first-pass artifact contract.
 
-## 16. ICU/HD skeletal specimen (non-normative field names)
-The following is a shape illustration only. Field names are placeholders and not settled.
+## 16. ICU/HD skeletal specimen (non-normative)
+The following is a non-normative shape illustration aligned to the settled first-pass field vocabulary.
 
 ```yaml
 identity:
   templateId: cgh_icu_hd
-  templateVersion: v2-first-pass
+  templateVersion: 1
+  label: CGH ICU/HD
 
 slots:
-  - id: MICU_CALL
-    family: MICU
-    kind: CALL
-  - id: MICU_STANDBY
-    family: MICU
-    kind: STANDBY
-  - id: MHD_CALL
-    family: MHD
-    kind: CALL
-  - id: MHD_STANDBY
-    family: MHD
-    kind: STANDBY
+  - slotId: MICU_CALL
+    label: MICU Call
+    slotFamily: MICU
+    slotKind: CALL
+  - slotId: MICU_STANDBY
+    label: MICU Standby
+    slotFamily: MICU
+    slotKind: STANDBY
+  - slotId: MHD_CALL
+    label: MHD Call
+    slotFamily: MHD
+    slotKind: CALL
+  - slotId: MHD_STANDBY
+    label: MHD Standby
+    slotFamily: MHD
+    slotKind: STANDBY
 
 doctorGroups:
-  - id: ICU_ONLY
-  - id: ICU_HD
-  - id: HD_ONLY
+  - groupId: ICU_ONLY
+    label: ICU only
+  - groupId: ICU_HD
+    label: ICU + HD
+  - groupId: HD_ONLY
+    label: HD only
 
-eligibility: <OPEN_DIRECTION>
+eligibility:
+  - slotId: MICU_CALL
+    eligibleGroups: [ICU_ONLY, ICU_HD]
+  - slotId: MICU_STANDBY
+    eligibleGroups: [ICU_ONLY, ICU_HD]
+  - slotId: MHD_CALL
+    eligibleGroups: [ICU_HD, HD_ONLY]
+  - slotId: MHD_STANDBY
+    eligibleGroups: [ICU_HD, HD_ONLY]
+
 requestSemanticsBinding:
-  contractRef: docs/request_semantics_contract.md
+  contractId: ICU_HD_REQUEST_SEMANTICS
+  contractVersion: 1
+
 inputSheetLayout:
-  requestFormSheet: <NAME>
-  dayAxis: <RULE_BASED>
-  sections: <REPEATABLE>
+  sheetName: Requests
+  dayAxis:
+    anchorCell: B3
+    direction: horizontal
+  sections:
+    - sectionKey: MICU
+      placement:
+        anchorMode: belowBlock
+        blockRef: dayAxis
+      doctorRows:
+        nameColumn: A
+        requestStartColumn: B
+
 outputMapping:
-  mapping: <DECLARATIVE>
-scoring: <MINIMAL_OR_DEFERRED>
+  surfaces:
+    - surfaceId: assignments
+      sheetName: Roster
+      anchorCell: B4
+      orientation: dateByColumn
+
+scoring:
+  templateKnobs: []
 ```
