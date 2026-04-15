@@ -72,6 +72,7 @@ Parser-facing expectation:
 - Names entered in column A become source doctor names for later parsing.
 - The lower roster/output shell remains template-owned declared structure after generation.
 - When operators prefill lower-shell cells, those populated cells become an allowed input surface for later partial-completion parsing contracts.
+- Parser-side handling of those populated cells (including `prefilledAssignmentRecords`, parser-stage `NON_CONSUMABLE` boundaries, and fixed-assignment override admission boundaries) is defined in `docs/parser_normalizer_contract.md`.
 - Parser robustness relies on section/segment structure, not fixed hardcoded row counts.
 - This contract does not define parser semantics for those populated lower-shell cells.
 
