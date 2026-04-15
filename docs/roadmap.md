@@ -37,10 +37,10 @@
 - Add external execution path for reliability/scale.
 - Harden run lifecycle, retries, and failure handling.
 
-## Phase 9: sheet integration
+## Phase 9: sheet integration + generation
 - Integrate operational sheet flow with v2 pipeline.
-- Validate end-to-end behavior for first department rollout.
-- Include template-driven generation support for structured operator-facing request-form input sheets declared by template layout contracts.
+- Include first-release template-driven generation of empty operator-facing request-form sheet shells aligned to `docs/sheet_generation_contract.md`.
+- Validate end-to-end behavior for first department rollout, including operator post-generation edits within allowed structural boundaries.
 
 ## Phase 10: observability / benchmarking hardening
 - Strengthen diagnostics, explainability, and performance benchmarks.
