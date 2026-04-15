@@ -126,9 +126,11 @@ Normalized metadata for each `SlotType`, referenced by solver/scorer/reporting.
 Minimum useful fields:
 - `slotType` (identity)
 - `displayLabel`
-- `workloadWeight` (or equivalent burden weight)
 - optional fairness grouping/classification
 - optional reporting semantics (for example, `countsAsCall`, `countsAsStandby`)
+
+Deferred/optional enrichment:
+- `workloadWeight` (or equivalent burden weight) is optional and deferred unless introduced by a future contract checkpoint.
 
 Note: solver fill order is strategy/policy; it should not be encoded as core slot metadata beyond brief policy references.
 
