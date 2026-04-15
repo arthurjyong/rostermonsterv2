@@ -27,7 +27,7 @@ This artifact must not redefine or embed:
 - parser-result/output model shape
 - request semantics contract details
 - solver logic, scorer formulas, or allocator mechanics
-- writer procedures or sheet-generation procedures
+- writer procedures or detailed sheet-generation procedures
 - whole-sheet presentation details (styling, colors, borders, legends, FAQ text, narrative notes)
 
 ## 3. Artifact posture (settled)
@@ -150,7 +150,7 @@ Section-based doctor-group derivation (first-release ICU/HD):
 
 Parser-facing intent:
 - clean parsing of operator-entered requests
-- support future generation of fresh empty request forms from the same declared layout contract
+- support first-release generation of fresh empty operator-facing request-form shells from the same declared layout contract (see `docs/sheet_generation_contract.md`)
 - allow operator adjustments to date range and section manpower without contract breakage
 
 ## 10. `outputMapping` contract (settled)
