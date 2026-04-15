@@ -92,8 +92,9 @@ Parser input boundary is:
 - trace/provenance metadata emitted by adapter/snapshot contract.
 
 First-release ICU/HD template interpretation inputs used at this boundary include:
-- section-based doctor-group derivation declarations on `inputSheetLayout.sections[]` (`sectionKey` + canonical `groupId`),
-- slot declarations with `requiredCountPerDay` for fixed per-day demand instantiation.
+- section-based doctor-group derivation declarations on `inputSheetLayout.sections[]` (`sectionKey` + canonical `groupId`), interpreted from snapshot doctor `sourceLocator.path.sectionKey`,
+- slot declarations with `requiredCountPerDay` for fixed per-day demand instantiation across the normalized day set,
+- explicit baseline eligibility declarations (`slotId` + `eligibleGroups`).
 
 ### Proposed in this checkpoint
 This contract defines no separate pre-parser rejection channel. Malformed or incomplete snapshot-shaped input is handled within parser result production.
@@ -177,15 +178,19 @@ Implementation note (still compatible with this contract): internal code may mer
 `NON_CONSUMABLE` is required when parser has records but cannot safely determine normalized downstream-governing meaning. Typical examples:
 - request parsing ambiguity affecting hard-block or derived machine effects,
 - parser cannot deterministically apply required template-declared semantics needed for this snapshot,
-- unresolved ambiguity in normalized doctor/group identity,
-- unresolved ambiguity in downstream-governing slot/demand/eligibility facts,
+- unresolved, invalid, or missing upstream doctor-group declaration linkage (snapshot `sourceLocator.path.sectionKey` → `inputSheetLayout.sections[]` → canonical `groupId`),
+- unresolved, invalid, or missing upstream slot-demand declarations needed for deterministic instantiation (`slots[]`, `requiredCountPerDay`, normalized day set),
+- unresolved, invalid, or missing upstream eligibility declarations needed for deterministic instantiation (`eligibility[]` as `slotId` + `eligibleGroups`),
 - normalized model assembly cannot produce complete internally consistent downstream input,
 - parser cannot deterministically derive downstream-governing request facts under the declared request grammar.
 
 First-release ICU/HD parser obligations within this semantic stage:
-- resolve canonical doctor group by reading snapshot doctor `sourceLocator.path.sectionKey`, locating the declared template section, then reading that section’s canonical `groupId`,
+- resolve canonical doctor group by reading snapshot doctor `sourceLocator.path.sectionKey`, locating the declared template section in `inputSheetLayout.sections[]`, then reading that section’s canonical `groupId`,
 - instantiate normalized slot demand by combining normalized day set + template slot declarations + each slot’s `requiredCountPerDay`,
-- treat unresolved/ambiguous doctor-group derivation or unresolved/ambiguous demand instantiation as `NON_CONSUMABLE`.
+- instantiate baseline eligibility from template artifact `eligibility[]` declarations (`slotId` + `eligibleGroups`),
+- treat unresolved/invalid/ambiguous doctor-group derivation, demand instantiation, or eligibility instantiation as `NON_CONSUMABLE`.
+
+Parser must not recover these downstream-governing facts through hidden defaults, guesswork, or silent inference when upstream declaration surfaces are unresolved or invalid.
 
 **Parser uncertainty about downstream-governing facts is not a warning-only condition; it is a non-consumability condition.**
 
@@ -233,7 +238,7 @@ Rule engine must never reconstruct from raw snapshot state:
 - date identity from raw day records,
 - request semantics from raw request text,
 - same-day hard-block or derived effect semantics from unparsed codes,
-- template-owned group/slot/eligibility/demand meaning from raw sheet structure,
+- template-owned group/slot/eligibility/demand meaning from raw sheet structure or parser-internal fallback defaults,
 - parser-stage structural validity from raw snapshot linkage/provenance defects.
 
 **The rule engine evaluates normalized legality; it does not recover lost parser meaning.**

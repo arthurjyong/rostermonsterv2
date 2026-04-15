@@ -28,6 +28,7 @@ This document does **not** cover:
 - **First-class search transparency**: non-winning search information must remain representable.
 - **Retention flexibility**: support normal best-only retention plus optional top-K/full retention for debugging and benchmarking.
 - **Generic core + template instantiation**: core concepts stay template-agnostic; ICU/HD values below are the current template instance, not a globally fixed v2 universe.
+- **Traceability where snapshot-derived**: normalized entities/facts derived from snapshot records must remain traceable to source locators; universal provenance field-shape standard remains deferred.
 
 ## 4. v1 compatibility and intentional v2 differences
 
@@ -98,7 +99,7 @@ Represents one assignable doctor.
 - Runtime identity: `doctorId`.
 - Human-facing identity: `displayName`.
 - Optional external/source identity may exist, but assignment internals remain `doctorId`-based.
-- Group membership can be direct field(s) or normalized mapping; semantics must remain explicit.
+- Group membership semantics are parser-resolved canonical membership (from snapshot doctor `sourceLocator.path.sectionKey` through `inputSheetLayout.sections[]` to section-level canonical `groupId`); storage shape may be direct field(s) or normalized mapping.
 
 ### 7.4 DoctorGroup
 `DoctorGroup` is a normalized concept whose values are template-defined.
@@ -135,6 +136,7 @@ Note: solver fill order is strategy/policy; it should not be encoded as core slo
 Demand is explicit per `(dateKey, slotType)`:
 - `requiredCount` is mandatory and first-class.
 - In current ICU/HD first release, parser instantiates this from template slot declarations (`requiredCountPerDay`) across normalized days.
+- Demand instantiation is template-declared and day-normalized; it is not sourced from snapshot point rows or hidden parser defaults.
 - v1 core representation effectively assumed one demand unit per `(dateKey, slotType)`.
 - v2 intentionally generalizes this via `requiredCount`, which may be `0`, `1`, or greater than `1`.
 - This is an intentional v2 divergence from v1 core representation assumptions.
