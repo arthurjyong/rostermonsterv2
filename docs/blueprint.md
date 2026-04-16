@@ -1,5 +1,14 @@
 # Roster Monster v2 Blueprint
 
+## Planning vocabulary
+
+- **Product**: the full end-to-end capability Roster Monster v2 is building.
+- **Milestone**: a major delivery state that advances the product.
+- **Checkpoint**: a bounded, reviewable step within a milestone.
+- **Task**: a concrete work item used to close a checkpoint.
+
+This blueprint is the stable architecture truth; active execution status belongs in `docs/delivery_plan.md`.
+
 ## 1. Project definition
 
 ### What Roster Monster v2 is
