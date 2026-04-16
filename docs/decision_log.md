@@ -82,3 +82,33 @@
 - **Date:** 2026-04-13
 - **Status:** Accepted
 - **Decision:** `docs/parser_normalizer_contract.md` is adopted as the explicit parser/normalizer boundary contract, with `ParserResult` as the parser-stage wrapper, binary consumability (`CONSUMABLE` / `NON_CONSUMABLE`), and no partial downstream handoff for `NON_CONSUMABLE` results.
+
+### D-0013: Planning hierarchy is Product → Milestone → Checkpoint → Task
+- **Date:** 2026-04-16
+- **Status:** Accepted
+- **Context:** Planning docs were drifting between phase language and mixed granularities, making it hard to keep product-level direction and active execution aligned.
+- **Decision:** Adopt and standardize the planning hierarchy `Product → Milestone → Checkpoint → Task` across repo-level guidance docs.
+- **Rationale:** A shared vocabulary reduces planning ambiguity and keeps roadmap, active execution, and architecture references consistent.
+- **Consequences:** Existing and new planning docs should use the hierarchy consistently, and ad hoc planning terms should be minimized.
+- **Follow-up actions:** Reflect this hierarchy in README orientation, roadmap framing, blueprint vocabulary, and delivery-plan maintenance rules.
+- **Related docs:** `README.md`, `docs/blueprint.md`, `docs/roadmap.md`, `docs/delivery_plan.md`
+
+### D-0014: Maintain one active milestone and one active checkpoint
+- **Date:** 2026-04-16
+- **Status:** Accepted
+- **Context:** Parallel planning threads were creating fragmentation and making it unclear what work should be prioritized in the current period.
+- **Decision:** Repository execution guidance should normally declare exactly one active milestone and one active checkpoint at a time.
+- **Rationale:** Single-threaded active focus improves sequencing discipline and prevents near-term effort from scattering across unrelated work.
+- **Consequences:** New tasks should be evaluated against the active checkpoint, and work outside it should be explicitly deferred or queued under later checkpoints.
+- **Follow-up actions:** Encode this rule in `docs/delivery_plan.md` and keep README current-focus summary synchronized.
+- **Related docs:** `README.md`, `docs/delivery_plan.md`, `docs/roadmap.md`
+
+### D-0015: Near-term priority is operator-ready request sheet generation
+- **Date:** 2026-04-16
+- **Status:** Accepted
+- **Context:** The project needs a concrete operationally relevant boundary before broad downstream implementation and orchestration work.
+- **Decision:** Set `Operator-ready request sheet generation` as the current active milestone, with `Close sheet-generation MVP boundary` as the current active checkpoint.
+- **Rationale:** Closing generation boundary clarity unblocks immediate operator workflow needs and creates a stable handoff point for subsequent pipeline milestones.
+- **Consequences:** Near-term planning and task selection should prioritize generation-input, structural-surface, operator-edit, non-goal, and acceptance-criteria closure.
+- **Follow-up actions:** Seed and maintain the active checkpoint tasks in `docs/delivery_plan.md`; keep roadmap and README alignment.
+- **Related docs:** `README.md`, `docs/roadmap.md`, `docs/delivery_plan.md`
