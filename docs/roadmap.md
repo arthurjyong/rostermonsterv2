@@ -1,47 +1,81 @@
-# Roadmap (Phased Skeleton)
+# Roadmap (Milestone Delivery Order)
 
-## Phase 0: docs / architecture
-- Close architecture-level boundary wording across template artifact, snapshot, parser boundary, and domain model contracts.
-- Record only remaining narrow open items after contract-surface alignment.
+This document defines **milestone-level delivery order** for Roster Monster v2. It is intentionally not a day-to-day execution tracker; active checkpoint/task truth lives in `docs/delivery_plan.md`.
 
-## Phase 1: contracts
-- Stabilize contract surfaces and ownership boundaries for template artifact, snapshot, and parser/normalizer handoff.
-- Lock validation expectations needed for deterministic downstream-governing interpretation.
+## Milestone sequence
 
-## Phase 2: parser + normalization
-- Implement parser/normalizer against closed contract surfaces (not before boundary closure).
-- Parse sheet-oriented inputs into normalized model.
-- Produce deterministic input bundles for downstream stages.
+### 1) Operator-ready request sheet generation
+- **Goal:** Close the MVP boundary for generating an operator-usable request sheet shell for ICU/HD.
+- **Why it matters:** This is the immediate operational unblocker and anchors upstream/downstream contract usage.
+- **Likely checkpoints:**
+  - Close sheet-generation MVP boundary.
+  - Align template artifact surfaces with generation needs.
+  - Finalize generation acceptance criteria and handoff readiness.
+- **Main dependencies:**
+  - `docs/template_contract.md`
+  - `docs/template_artifact_contract.md`
+  - `docs/request_semantics_contract.md`
+  - `docs/sheet_generation_contract.md`
+- **Exit criteria:**
+  - Generation inputs, structural output surfaces, allowed operator edits, explicit non-goals, and acceptance criteria are all closed and reviewable.
 
-## Phase 3: rule engine
-- Implement hard-constraint evaluation framework.
-- Support department template rule interpretation.
+### 2) Minimal local compute pipeline
+- **Goal:** Establish a deterministic local parse → normalize → rule/scoring/solve execution path using closed contracts.
+- **Why it matters:** Enables end-to-end technical verification before external orchestration complexity.
+- **Likely checkpoints:**
+  - Parser/normalizer implementation against locked boundaries.
+  - Minimal rule/scorer/solver integration with deterministic run envelope.
+  - Local run artifact packaging for basic reviewability.
+- **Main dependencies:**
+  - Milestone 1 completion.
+  - `docs/snapshot_contract.md`
+  - `docs/parser_normalizer_contract.md`
+  - `docs/domain_model.md`
+- **Exit criteria:**
+  - Repeatable local runs can produce explainable outputs/artifacts for ICU/HD scenarios.
 
-## Phase 4: scorer
-- Implement soft-constraint scoring framework.
-- Expose score components for diagnostics.
+### 3) Safe result/output and writeback
+- **Goal:** Define and implement safe result surfaces and sheet writeback behavior for operator consumption.
+- **Why it matters:** Output safety and clarity are required before routine operational use.
+- **Likely checkpoints:**
+  - Output/result surface definition for first release.
+  - Writeback mapping validation against sheet structure.
+  - Failure/unsatisfied-state handling in result delivery.
+- **Main dependencies:**
+  - Milestone 2 completion.
+  - Stable output/writeback contracts and sheet mappings.
+- **Exit criteria:**
+  - Outputs and writeback behavior are consistent, reviewable, and safe for controlled operator use.
 
-## Phase 5: solver
-- Build allocation solver using rules + scoring.
-- Support repeatable run behavior and result selection.
+### 4) Parallel operational search and orchestration
+- **Goal:** Introduce reliable external worker/orchestration flow without changing compute semantics.
+- **Why it matters:** Supports operational reliability, throughput, and controlled scaling.
+- **Likely checkpoints:**
+  - Execution envelope and transport boundaries.
+  - Retry/failure behavior and idempotence expectations.
+  - Parallel run orchestration guardrails.
+- **Main dependencies:**
+  - Milestone 3 completion.
+  - Stable local pipeline semantics to preserve in external execution.
+- **Exit criteria:**
+  - External/parallel execution can run safely with traceable lifecycle behavior.
 
-## Phase 6: local execution
-- Provide local run workflow for development/validation.
-- Emit artifacts useful for debugging and review.
+### 5) Observability and benchmark hardening
+- **Goal:** Strengthen diagnostics, benchmarking confidence, and operational hardening.
+- **Why it matters:** Long-term reliability requires measurable behavior and regression discipline.
+- **Likely checkpoints:**
+  - Structured observability/event coverage.
+  - Benchmark campaign baselines and comparison workflow.
+  - Reliability hardening against expected failure classes.
+- **Main dependencies:**
+  - Milestone 4 completion.
+  - Stable execution and output surfaces.
+- **Exit criteria:**
+  - Benchmark and observability workflows are sufficient for ongoing operational confidence.
 
-## Phase 7: artifacts / writeback
-- Formalize output artifacts and sheet writeback mapping.
-- Ensure output structure aligns with operations needs.
-
-## Phase 8: external worker / cloud hardening
-- Add external execution path for reliability/scale.
-- Harden run lifecycle, retries, and failure handling.
-
-## Phase 9: sheet integration + generation
-- Integrate operational sheet flow with v2 pipeline.
-- Include first-release template-driven generation of full operator-facing sheet shells aligned to `docs/sheet_generation_contract.md`, including template-declared lower roster/output shell surfaces that may later be operator-prefilled before completion.
-- Validate end-to-end behavior for first department rollout, including operator post-generation edits within allowed structural boundaries.
-
-## Phase 10: observability / benchmarking hardening
-- Strengthen diagnostics, explainability, and performance benchmarks.
-- Set baseline operational SLO-oriented checks.
+## Intentional later work (not near-term)
+The roadmap intentionally defers some work until core milestones are closed:
+- Advanced optimization sophistication beyond first-release operational needs.
+- Deep cloud hardening beyond initial external orchestration reliability.
+- Broader benchmark hardening until core execution surfaces stabilize.
+- Broad generalization to additional departments before ICU/HD-first learning is closed.
