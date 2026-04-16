@@ -160,7 +160,7 @@ Minimum useful fields:
 Contract meaning:
 - `FixedAssignment` is first-class normalized input, not an allocation result object.
 - `FixedAssignment` is not movable by solver.
-- `FixedAssignment` may exist even when that specific assignment would violate ordinary admissibility rules; this is a fixed-assignment-only exception.
+- `FixedAssignment` may exist even when that specific assignment would otherwise violate request-derived hard block, baseline eligibility, or ordinary back-to-back prohibition; this is a fixed-assignment-only exception.
 - That exception does **not** widen general downstream eligibility or admissibility for later generated assignments.
 
 ## 8. Requests and normalized daily effects
@@ -227,6 +227,7 @@ Occupancy and downstream-state relationship:
 
 Admissibility-override boundary:
 - The override applies only to the fixed assignment itself.
+- The only allowed fixed-assignment exception scope is request-derived hard block, baseline eligibility, and ordinary back-to-back prohibition (matching parser-boundary admission contract).
 - It does not relax general legality checks for non-fixed generated assignments.
 
 Relationship to allocation atoms/results:
