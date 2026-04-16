@@ -69,6 +69,7 @@ This document does **not** cover:
 - **`SlotType`**: template-defined duty category identity (includes standby categories when present).
 - **`SlotTypeDefinition`**: normalized slot metadata for each slot type identity.
 - **`SlotDemand`**: explicit demand units for `(date, slotType)` with `requiredCount`.
+- **`FixedAssignment`**: explicit normalized input-side locked assignment fact admitted by parser/normalizer.
 - **`Request`**: raw/parsed per-doctor per-day request facts.
 - **`DailyEffectState`**: normalized day-level machine effects derived from requests.
 - **`EligibilityRule`**: baseline eligibility mapping (for example, slot type to allowed groups).
@@ -146,6 +147,22 @@ Demand is explicit per `(dateKey, slotType)`:
 - This is an intentional v2 divergence from v1 core representation assumptions.
 - Downstream adapters/writers may flatten to one-slot-per-row outputs if a target template requires that shape.
 
+### 7.8 FixedAssignment
+`FixedAssignment` is a normalized input-side fact representing an operator-prefilled assignment that parser/normalizer admitted as locked.
+
+Minimum useful fields:
+- `dateKey`
+- `slotType`
+- `doctorId`
+- optional run-local stable identity (for example, `fixedAssignmentId`)
+- recoverable source trace to snapshot-origin prefilled record/cell
+
+Contract meaning:
+- `FixedAssignment` is first-class normalized input, not an allocation result object.
+- `FixedAssignment` is not movable by solver.
+- `FixedAssignment` may exist even when that specific assignment would violate ordinary admissibility rules; this is a fixed-assignment-only exception.
+- That exception does **not** widen general downstream eligibility or admissibility for later generated assignments.
+
 ## 8. Requests and normalized daily effects
 
 ### 8.1 Request
@@ -196,7 +213,28 @@ Hard invalidity must remain distinct from soft-objective terms.
 
 ## 10. Assignment and allocation result model
 
-### 10.1 AssignmentUnit atom
+### 10.1 FixedAssignment semantics in solve state
+`FixedAssignment` is part of normalized downstream-governing input semantics for solving.
+
+Demand relationship:
+- Fixed assignments count directly toward slot demand.
+- Solver fills only residual unfilled demand after accounting for fixed assignments.
+
+Occupancy and downstream-state relationship:
+- Fixed assignments count as real assignments in schedule state.
+- A doctor fixed on `(dateKey, slotType)` is occupied on that date.
+- Fixed assignments must be considered when evaluating later generated assignments, including adjacent-day consequences.
+
+Admissibility-override boundary:
+- The override applies only to the fixed assignment itself.
+- It does not relax general legality checks for non-fixed generated assignments.
+
+Relationship to allocation atoms/results:
+- `FixedAssignment` is an input-side normalized fact.
+- `AssignmentUnit` remains the allocation/retained assignment atom in v2 core output modeling.
+- Downstream adapters/results may still represent final allocations via `AssignmentUnit`, but domain semantics must keep fixed preassigned facts distinct from solver-produced fill decisions.
+
+### 10.2 AssignmentUnit atom
 Smallest retained assignment unit:
 - `(dateKey, slotType, unitIndex, doctorId | null)`
 
@@ -206,7 +244,7 @@ Notes:
 - `doctorId = null` supports explicit unfilled demand representation.
 - This is the normalized v2 core; a v1-style fixed per-day slot map is a compatibility/view/writeback projection for current ICU/HD, not the core representation.
 
-### 10.2 AllocationResult
+### 10.3 AllocationResult
 Minimum useful contents:
 - multiplicity-safe collection (typically array/list) of `AssignmentUnit`
 - unfilled-demand summary (by date/slot type)
