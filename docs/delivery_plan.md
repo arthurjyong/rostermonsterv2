@@ -87,7 +87,7 @@ This is active now because:
 ### C1 — Close sheet-generation MVP boundary
 - **Goal:** close the MVP planning/contract boundary for first operationally usable generation behavior.
 - **Why it exists:** prevents scope creep and clarifies what “ready” means for milestone completion.
-- **In scope:** generation inputs, generated structural surfaces, allowed operator edits, explicit non-goals, acceptance criteria.
+- **In scope:** generation inputs, generated structural surfaces, allowed operator edits, editable/protected surface and validation boundary, explicit non-goals, acceptance criteria.
 - **Out of scope:** implementation mechanics, solver/scorer behavior, orchestration/runtime concerns.
 - **Dependencies:** existing template/request/generation contract docs.
 - **Done criteria:** boundary items are explicit, internally consistent, and reviewable across relevant docs.
@@ -119,6 +119,7 @@ What it must close:
 - locked generation inputs
 - locked generated structural surfaces
 - locked allowed operator edits
+- locked editable/protected surface and validation boundary (contract-level only)
 - locked explicit non-goals
 - locked acceptance criteria
 
@@ -161,6 +162,12 @@ What must remain untouched for now:
 - **Status:** Planned
 - **Relevant files/docs:** `docs/delivery_plan.md`, `docs/roadmap.md`, `docs/decision_log.md`
 - **Done condition:** acceptance criteria are reviewable and sufficient for checkpoint sign-off.
+
+### T6 — Lock editable/protected surface and validation boundary
+- **Purpose:** define which generated surfaces are editable, which are protected, and what constrained request-entry validation is expected for ICU/HD MVP.
+- **Status:** Planned
+- **Relevant files/docs:** `docs/sheet_generation_contract.md`, `docs/delivery_plan.md`
+- **Done condition:** editable/protected surfaces and validation expectations are documented at contract level without specifying implementation mechanics.
 
 ## 10. Explicitly deferred for now
 - Solver implementation details.
