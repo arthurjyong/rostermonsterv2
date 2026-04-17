@@ -28,16 +28,15 @@ For first release:
 
 ## 3. Generation inputs (operator-supplied)
 Generation accepts:
-- `templateId`
-- `templateVersion`
+- `department` (operator-facing selector; first-release label: `CGH ICU/HD Call`)
 - `periodStartDate`
 - `periodEndDate`
 - `doctorCountByGroup`
 
 Input ownership notes:
-- Template identity/version selects the department-owned structure.
+- Department selection resolves to the department-owned template identity/provenance behind the scenes.
 - Period dates define generated day-axis span.
-- `doctorCountByGroup` determines initial placeholder row counts per template-declared group section.
+- `doctorCountByGroup` determines initial placeholder row counts per template-declared ICU/HD group section using familiar operator-facing group labels.
 
 ## 4. Template-owned generation facts
 Generation must treat the following as template-owned declarations:
@@ -52,10 +51,13 @@ Generation must not invent alternative logical section orders outside template d
 Generated shell must include at least:
 1. date axis,
 2. weekday row,
-3. grouped doctor-entry sections,
-4. placeholder doctor rows,
-5. call-point rows,
-6. lower roster/output shell rows and cells.
+3. explicit section headers for grouped doctor-entry sections,
+4. placeholder doctor rows with blank doctor-name cells,
+5. request-entry cells,
+6. call-point rows (including MICU and MHD point rows with defaults),
+7. lower roster/output shell rows and cells (in template-declared slot order),
+8. weekend/public holiday highlighting,
+9. legend/Descriptions block (non-structural adjunct content).
 
 These are required structural regions for first release.
 The lower roster/output shell is part of the generated first-release sheet shell, not a downstream-only writeback target.
@@ -104,18 +106,43 @@ Notes:
 - These defaults are generation-time behavior, not parser semantics.
 - Manual operator override of generated call points is allowed after generation.
 
-## 9. Structural vs cosmetic scope
+## 9. Editable surfaces, protected surfaces, and validation expectations
+MVP generation must distinguish between editable operator-input surfaces and protected template-owned structural surfaces, where platform support exists.
+
+Editable surfaces for first release include:
+- blank doctor-name cells in generated placeholder rows,
+- doctor request-entry cells,
+- call-point cells,
+- lower-shell cells where operator prefill is allowed.
+
+Protected/non-editable template-owned surfaces for first release include:
+- date axis,
+- weekday row,
+- section headers,
+- fixed structural layout regions,
+- lower-shell assignment-row structure.
+
+Validation expectations:
+- generation should apply constrained request-entry validation where practical,
+- parser re-validation remains authoritative for all downstream interpretation and acceptance,
+- implementation mechanics (for example exact Google Sheets protection/validation setup) remain outside this contract.
+
+## 10. Structural vs cosmetic scope
 Required in first release:
 - structural surfaces listed in Section 5,
 - unambiguous generated raw date text in date headers sufficient for downstream parser/date normalization work.
 
 Not required in first release (optional/cosmetic):
-- legend blocks,
-- description blocks,
+- exact cosmetic styling for weekend/public holiday highlighting,
+- cosmetic styling details for legend/Descriptions content,
 - FAQ/help narrative blocks,
 - pixel-perfect visual replication.
 
-## 10. Relationship to adjacent docs
+Legend/Descriptions note:
+- legend/Descriptions content is included in first-release generation for operator familiarity, but remains non-structural adjunct content.
+- parser/generation structural assumptions must not depend on legend/Descriptions presence or exact cosmetic form.
+
+## 11. Relationship to adjacent docs
 - `docs/template_artifact_contract.md`: source of template-owned structural declarations used by generation.
 - `docs/blueprint.md`: architecture-level positioning that generation is part of first-release operator-facing workflow direction.
 - `docs/roadmap.md`: sequencing intent that sheet generation is a planned first-release integration capability, not an unbounded distant optional add-on.
