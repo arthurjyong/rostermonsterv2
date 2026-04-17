@@ -109,23 +109,22 @@ This is active now because:
 - **Done criteria:** implementation-facing teams can proceed without reopening milestone-level scope.
 
 ## 8. Current active checkpoint
-- **Active checkpoint:** `Close sheet-generation MVP boundary`
+- **Active checkpoint:** `Align template artifact vs generation needs`
 
 Why this checkpoint is next:
-- it closes the immediate ambiguity that can derail both planning and implementation sequencing
-- it defines what must be true before generation work is considered operationally ready
+- C1 is formally closed and the MVP generation boundary is now contractually explicit and reviewable
+- the next risk is cross-doc mismatch between template artifact surfaces and generation usage expectations
 
 What it must close:
-- locked generation inputs
-- locked generated structural surfaces
-- locked allowed operator edits
-- locked editable/protected surface and validation boundary (contract-level only)
-- locked explicit non-goals
-- locked acceptance criteria
+- verify template artifact fields required for generation are sufficient
+- resolve any remaining ambiguity between template artifact and generation contracts
+- keep any edits narrowly scoped to consistency/clarity only
+- confirm no material cross-doc mismatch remains for generation usage
 
 Docs expected to be touched during this checkpoint:
-- planning/guidance docs (`README.md`, `docs/roadmap.md`, `docs/delivery_plan.md`, `docs/decision_log.md`)
-- only tightly bounded cross-reference consistency edits in contract docs if truly required
+- `docs/template_artifact_contract.md`
+- `docs/sheet_generation_contract.md`
+- `docs/delivery_plan.md` (status/coordination updates only)
 
 What must remain untouched for now:
 - broad contract redesign
@@ -133,41 +132,23 @@ What must remain untouched for now:
 
 ## 9. Task list for the current checkpoint
 
-### T1 — Lock generation inputs
-- **Purpose:** finalize what inputs generation consumes for MVP scope.
+### T1 — Verify template artifact fields needed for generation
+- **Purpose:** confirm template artifact declarations fully cover generation requirements for ICU/HD MVP.
 - **Status:** Planned
-- **Relevant files/docs:** `docs/sheet_generation_contract.md`, `docs/template_contract.md`, `docs/request_semantics_contract.md`
-- **Done condition:** input surface is explicit, bounded, and consistent across referenced docs.
+- **Relevant files/docs:** `docs/template_artifact_contract.md`, `docs/sheet_generation_contract.md`
+- **Done condition:** required generation-facing template fields are explicit and sufficient.
 
-### T2 — Lock generated structural surfaces
-- **Purpose:** define the exact generated structural shell expected for operator usage.
+### T2 — Resolve remaining cross-doc ambiguity
+- **Purpose:** identify and close any residual ambiguity between template artifact and generation contracts.
 - **Status:** Planned
-- **Relevant files/docs:** `docs/sheet_generation_contract.md`, `docs/template_contract.md`
-- **Done condition:** generated structure boundaries are explicit and free from conflicting interpretations.
+- **Relevant files/docs:** `docs/template_artifact_contract.md`, `docs/sheet_generation_contract.md`, `docs/delivery_plan.md`
+- **Done condition:** no material ambiguity remains for generation usage.
 
-### T3 — Lock allowed operator edits
-- **Purpose:** clarify which post-generation edits operators may perform within MVP boundaries.
+### T3 — Propose only narrowly scoped clarification edits if required
+- **Purpose:** keep C2 strictly alignment-focused without reopening settled MVP boundary scope.
 - **Status:** Planned
-- **Relevant files/docs:** `docs/sheet_generation_contract.md`, `docs/template_contract.md`
-- **Done condition:** allowed vs disallowed edit classes are clearly documented.
-
-### T4 — Lock explicit non-goals
-- **Purpose:** prevent near-term scope expansion into non-MVP behavior.
-- **Status:** Planned
-- **Relevant files/docs:** `docs/delivery_plan.md`, `docs/roadmap.md`
-- **Done condition:** non-goals are explicit and referenced in checkpoint acceptance framing.
-
-### T5 — Define acceptance criteria
-- **Purpose:** set objective closure conditions for the active checkpoint.
-- **Status:** Planned
-- **Relevant files/docs:** `docs/delivery_plan.md`, `docs/roadmap.md`, `docs/decision_log.md`
-- **Done condition:** acceptance criteria are reviewable and sufficient for checkpoint sign-off.
-
-### T6 — Lock editable/protected surface and validation boundary
-- **Purpose:** define which generated surfaces are editable, which are protected, and what constrained request-entry validation is expected for ICU/HD MVP.
-- **Status:** Planned
-- **Relevant files/docs:** `docs/sheet_generation_contract.md`, `docs/delivery_plan.md`
-- **Done condition:** editable/protected surfaces and validation expectations are documented at contract level without specifying implementation mechanics.
+- **Relevant files/docs:** `docs/template_artifact_contract.md`, `docs/sheet_generation_contract.md`
+- **Done condition:** any edits remain minimal, consistency-focused, and non-redesign.
 
 ## 10. Explicitly deferred for now
 - Solver implementation details.
@@ -179,12 +160,20 @@ What must remain untouched for now:
 - Broad multi-department generalization beyond ICU/HD-first sequencing.
 
 ## 11. Recently completed checkpoints
-No prior delivery-plan checkpoints have yet been formally recorded in this document.
+- **C1 — Close sheet-generation MVP boundary** *(closed 2026-04-17)*
+  - Closed generation inputs, generated structural surfaces, allowed operator edits, editable/protected + validation boundary, explicit non-goals, and acceptance framing at contract/planning level.
+  - Task closure status: T1 Done, T2 Done, T3 Done, T4 Done, T5 Done, T6 Done.
+  - Main affected docs: `docs/sheet_generation_contract.md`, `docs/delivery_plan.md`.
+
+### C1 sign-off note
+C1 is complete. The sheet-generation MVP boundary is now closed for execution: generation inputs, structural surfaces, allowed operator edits, editable/protected + validation expectations, explicit non-goals, and checkpoint acceptance framing are sufficiently fixed to proceed to C2 without reopening milestone-level scope.
 
 ## 12. Change log for this delivery plan
 - **2026-04-16:** Document created as the living execution guide.
 - **2026-04-16:** Activated Milestone 1 (`Operator-ready request sheet generation`).
 - **2026-04-16:** Activated Checkpoint 1 (`Close sheet-generation MVP boundary`).
+- **2026-04-17:** Closed Checkpoint 1 (`Close sheet-generation MVP boundary`) and recorded formal sign-off in this plan.
+- **2026-04-17:** Activated Checkpoint 2 (`Align template artifact vs generation needs`) as current execution focus.
 
 ## 13. Relationship to other repo docs
 - `README.md` = front door orientation.
@@ -205,6 +194,6 @@ No prior delivery-plan checkpoints have yet been formally recorded in this docum
 ## 15. Initial seed content
 This initial version is seeded with:
 - active milestone `Operator-ready request sheet generation`
-- active checkpoint `Close sheet-generation MVP boundary`
-- checkpoint tasks for inputs, structural surfaces, operator edits, non-goals, and acceptance criteria
+- active checkpoint `Align template artifact vs generation needs`
+- compact C2 starter tasks focused on template-vs-generation consistency checks
 - explicit deferrals to prevent near-term drift
