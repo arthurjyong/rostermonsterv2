@@ -5,27 +5,45 @@ Roster Monster v2 is building a reusable roster-allocation core with department-
 
 This repo is **not** a greenfield toy rewrite. It is an evolution/replacement path from the existing ICU/HD Google Sheets + Apps Script allocator.
 
-Current implementation reality:
+Current repo reality:
 - GitHub repo content is the source of truth.
 - **ICU/HD** is the first concrete implementation target and first parity reference.
 - The repo is still in an **architecture-first, contract-first** posture.
 - Near-term work should follow the active milestone/checkpoint in `docs/delivery_plan.md`, not invent parallel tracks.
+- Prefer refining existing repo documentation, contracts, and conventions over inventing new architecture, abstractions, or process.
 
-Start here before making changes:
+## Read this first before making changes
+Start with these files before proposing or making non-trivial changes:
 1. `README.md`
 2. `docs/blueprint.md`
 3. `docs/delivery_plan.md`
 4. `docs/roadmap.md`
-5. relevant contract docs for the boundary you are touching
+5. `docs/decision_log.md`
+6. the narrowest contract docs relevant to the boundary you are touching
+
+If a proposed change is direction-changing, check `docs/decision_log.md` first.
+
+## Active execution discipline
+Unless the repo explicitly says otherwise, assume:
+- there should normally be exactly **one active milestone**
+- there should normally be exactly **one active checkpoint**
+
+Read `docs/delivery_plan.md` before proposing non-trivial work.
+
+Current active focus at time of writing:
+- **Active milestone:** `Operator-ready request sheet generation`
+- **Active checkpoint:** `Close sheet-generation MVP boundary`
+
+If a task does not clearly support the active checkpoint, do not expand scope casually.
 
 ## Planning vocabulary
-Use the repo's planning vocabulary consistently:
+Use the repo’s planning vocabulary consistently:
 - **Product**
 - **Milestone**
 - **Checkpoint**
 - **Task**
 
-Do not introduce replacement planning language when updating repo docs unless there is a strong repo-grounded reason.
+Do not introduce replacement planning language in repo docs unless there is a strong repo-grounded reason.
 
 ## Default working style
 Assume the following by default:
@@ -34,8 +52,16 @@ Assume the following by default:
 - minimum file/doc set first
 - refine existing repo conventions before inventing new structure
 - preserve boundary clarity even when it feels slower
+- keep changes implementation-facing and practical, not vague philosophy
 
 Before major edits, identify the **minimum file/doc set** needed for the change.
+
+## ICU/HD parity discipline
+ICU/HD is the first concrete implementation target and first parity reference.
+
+Do not casually introduce behavior divergence from ICU/HD assumptions or parity expectations. If behavior is meant to change, the authoritative repo docs and contracts should justify that change explicitly.
+
+Do not smuggle behavior changes under the label of cleanup, simplification, or generalization.
 
 ## Architecture boundaries that must be preserved
 Keep these boundaries explicit and do not blur them casually:
@@ -54,7 +80,7 @@ Specific rules:
 - Do not hide department semantics in arbitrary parser/adapter/writer code when the repo expects them to be declared in contracts/templates.
 - Hard constraints must stay explicit and must not be weakened into scoring/preferences.
 - Rule validity must remain distinct from ranking/scoring.
-- Do not silently collapse template-owned, snapshot-owned, and parser-owned responsibilities.
+- Do not silently collapse template-owned, snapshot-owned, parser-owned, and downstream runtime responsibilities.
 
 ## Documentation rules
 Prefer updating the **narrowest authoritative doc** instead of restating the same meaning in multiple places.
@@ -72,6 +98,7 @@ When writing docs:
 - do not present a first-pass or deferred item as if it is fully closed
 - do not fork contract meaning into side comments or random docs
 - do not reopen settled contracts without a concrete inconsistency, active-checkpoint need, or explicit decision change
+- do not silently restate contract meaning in multiple places when one authoritative source already exists
 
 ## Coding and patch expectations
 When changing the repo:
@@ -88,14 +115,15 @@ If code is added later:
 - do not move operational sheet behavior into reusable core casually
 - do not introduce hidden architecture changes without updating the authoritative docs that justify them
 
-## Mandatory workflow for checkpointed work
+## Mandatory workflow for non-trivial changes
 For non-trivial changes:
 1. inspect the relevant repo files first
-2. state which files should change
-3. state which files should not change
-4. state why
-5. keep the expected patch surface small
-6. validate with the smallest real checks available in the repo
+2. identify the minimum file/doc set needed
+3. state which files should change
+4. state which files should not change
+5. state why
+6. keep the expected patch surface small
+7. validate with the smallest real checks available in the repo
 
 If a task does not clearly support the active milestone/checkpoint, treat it as suspect and say so.
 
@@ -108,20 +136,21 @@ For docs-only patches:
 - confirm no unintended files changed
 
 For code patches:
-- run only real repo commands/tests/scripts that actually exist
+- run only real repo commands, tests, scripts, or checks that actually exist
 - if no automated test/build command exists, say that explicitly
-- do not invent toolchains, packages, or CI steps that are not in the repo
+- do not invent toolchains, packages, CI steps, or validation commands that are not in the repo
 
 ## What not to do
 Do **not**:
 - broad-rewrite the repo
-- invent missing modules, files, tools, or build systems
+- invent missing modules, files, tools, build systems, or repo structure
 - restart from scratch when the repo is clearly iterative
 - weaken hard constraints into soft preferences
 - mix sheet-specific integration logic into reusable core without reason
 - silently redefine architecture in code without matching authoritative docs
 - touch many docs for wording alignment when one narrow doc change would do
 - claim a file was inspected when it was not actually inspected
+- present speculative ideas as settled repo truth
 
 ## File-scope discipline
 Default to changing as few files as possible.
