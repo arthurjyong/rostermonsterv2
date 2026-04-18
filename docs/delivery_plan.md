@@ -34,7 +34,7 @@ Roster Monster v2 builds a reusable roster-allocation core with department-speci
 ### M1 — Operator-ready request sheet generation
 - **Goal:** Close a clear, reviewable MVP boundary for operator-ready request sheet generation.
 - **Why it matters:** Immediate operational need; unblocks next request sheet cycle and anchors downstream work.
-- **Status:** **Active**
+- **Status:** Completed *(closed 2026-04-18)*
 - **Dependencies:** template/request/generation contract surfaces.
 - **Exit criteria:** generation inputs, structural surfaces, operator edit boundaries, non-goals, and acceptance criteria are closed.
 - **Likely checkpoints:**
@@ -45,7 +45,7 @@ Roster Monster v2 builds a reusable roster-allocation core with department-speci
 ### M2 — Minimal local compute pipeline
 - **Goal:** Stand up deterministic local parse/normalize/solve flow against closed contracts.
 - **Why it matters:** Establishes executable core path before scale/orchestration.
-- **Status:** Planned
+- **Status:** **Active**
 - **Dependencies:** M1 complete; snapshot/parser/domain boundaries stable.
 - **Exit criteria:** repeatable local run path with interpretable outputs for ICU/HD scenarios.
 - **Likely checkpoints:** parser-normalizer implementation closure; minimal rule/scorer/solver integration; local run artifact basics.
@@ -75,12 +75,12 @@ Roster Monster v2 builds a reusable roster-allocation core with department-speci
 - **Likely checkpoints:** event/log surface hardening; benchmark campaign baselines; reliability hardening passes.
 
 ## 6. Current active milestone
-- **Active milestone:** `Operator-ready request sheet generation`
+- **Active milestone:** `Minimal local compute pipeline`
 
 This is active now because:
-- operator workflow urgency requires a near-term request sheet path
-- the next request sheet cycle needs a clear boundary quickly
-- downstream implementation is safer once generation boundaries are closed
+- M1 sheet-generation contract boundary and handoff readiness are complete
+- parser/normalize/solve local execution is the next dependency-gated milestone
+- local deterministic execution now becomes the safest narrow implementation focus
 
 ## 7. Checkpoint plan for the active milestone
 
@@ -108,46 +108,89 @@ This is active now because:
 - **Dependencies:** C1 and C2 closure.
 - **Done criteria:** implementation-facing teams can proceed without reopening milestone-level scope.
 
+#### C3 implementation-ready checklist (M1 handoff)
+M1 generation scope is implementation-ready when implementation teams can assume all of the following without reopening C1/C2:
+- one combined ICU/HD operator-facing sheet
+- visible in-sheet title/header block
+- visible department label from template
+- explicit section headers from template
+- placeholder doctor rows with blank editable name cells
+- request-entry cells
+- MICU and MHD point rows with template-owned default point rule
+- lower roster/output shell
+- legend/Descriptions block present but non-structural
+- weekend/public holiday highlighting exists as generation behavior
+- fixed manpower structure per generated roster
+- no add/delete rows within sections
+- support for both output modes (new spreadsheet file, or new tab in an existing spreadsheet)
+- maximally locked sheet except intended editable surfaces
+- validation where practical, with parser later remaining authoritative
+
+#### C3 first implementation slice that may start now
+Under closed M1 boundary, implementation may now start a narrow generation slice that:
+- reads the template artifact
+- accepts operator inputs (`department`, `period start/end`, `doctor count by group`)
+- generates the ICU/HD sheet shell in Google Sheets
+- supports both output modes (new file or new tab in existing spreadsheet)
+- allows operator name entry directly in the generated sheet
+- applies locking/protection and request-entry validation where practical
+- does not drift into parser/compute/writeback/orchestration implementation
+
+#### C3 explicit out-of-scope for this implementation slice
+- parser implementation
+- solver/scorer work
+- local compute pipeline work
+- writeback/output application work
+- orchestration/worker behavior
+- benchmark hardening
+
+#### C3 contract-to-implementation handoff notes
+- Visible labels, title/header, section headers, point rows, point default rule, and legend content remain template-owned.
+- Legend/Descriptions remains non-structural adjunct content.
+- Highlighting and validation remain generation behavior, not artifact styling/procedure.
+- Parser remains authoritative for downstream interpretation.
+- Manpower is fixed per generated roster; if counts are wrong, regenerate instead of mutating section structure.
+- Implementation mechanics stay outside contract docs.
+
 ## 8. Current active checkpoint
-- **Active checkpoint:** `Define generation acceptance/handoff readiness`
+- **Active checkpoint:** `Parser/normalizer implementation closure`
 
 Why this checkpoint is next:
-- C1 and C2 are formally closed with generation/template surfaces now aligned for ICU/HD first release
-- remaining near-term risk is unclear handoff expectations for implementation start without reopening milestone scope
+- M1 is now closed with C1/C2/C3 complete and handoff-ready
+- M2 needs a narrow first implementation checkpoint anchored to existing parser/normalizer contracts
 
 What it must close:
-- define compact, implementation-facing acceptance conditions for generation handoff
-- state what implementation can begin immediately under closed M1 scope
-- capture final handoff notes from generation/template contracts without introducing implementation mechanics
+- produce parser/normalizer implementation behavior consistent with settled contracts
+- keep local compute scope narrow and deterministic for first executable M2 slice
+- avoid reopening M1 generation boundary work
 
 Docs expected to be touched during this checkpoint:
-- `docs/sheet_generation_contract.md`
-- `docs/template_artifact_contract.md`
-- `docs/delivery_plan.md` (status/coordination updates only)
+- `docs/parser_normalizer_contract.md`
+- `docs/delivery_plan.md`
 
 What must remain untouched for now:
-- broad contract redesign
-- implementation-level mechanics and code paths
+- broad architecture redesign
+- M1 generation contract boundary reopening
 
 ## 9. Task list for the current checkpoint
 
-### T1 — Define generation handoff acceptance conditions
-- **Purpose:** lock concise acceptance conditions that indicate generation-contract handoff readiness for implementation.
+### T1 — Implement parser/normalizer against settled contract boundary
+- **Purpose:** start M2 with a narrow implementation path that adheres to existing parser/normalizer contract expectations.
 - **Status:** Planned
-- **Relevant files/docs:** `docs/delivery_plan.md`, `docs/sheet_generation_contract.md`, `docs/template_artifact_contract.md`
-- **Done condition:** acceptance conditions are explicit enough to start implementation without milestone-boundary reinterpretation.
+- **Relevant files/docs:** `docs/parser_normalizer_contract.md`, `docs/domain_model.md`, `docs/snapshot_contract.md`
+- **Done condition:** parser/normalizer implementation can produce contract-consistent outputs for baseline ICU/HD fixtures.
 
-### T2 — State implementation-start scope under closed M1 boundary
-- **Purpose:** clarify what implementation work may begin now without reopening C1/C2 contract scope.
+### T2 — Establish minimal deterministic local run envelope (parser-first)
+- **Purpose:** run parser/normalizer locally in a repeatable way before integrating broader rule/scorer/solver behavior.
 - **Status:** Planned
 - **Relevant files/docs:** `docs/delivery_plan.md`
-- **Done condition:** immediate implementation-start scope is explicit and milestone-consistent.
+- **Done condition:** local parser/normalizer runs are repeatable with interpretable success/failure outcomes.
 
-### T3 — Capture final contract-to-implementation handoff notes
-- **Purpose:** summarize any final contract notes that implementation teams must observe while mechanics remain out of scope.
+### T3 — Preserve M2 scope discipline for first executable slice
+- **Purpose:** keep initial M2 work bounded to parser/normalizer + deterministic local path without drifting into later milestones.
 - **Status:** Planned
-- **Relevant files/docs:** `docs/delivery_plan.md`, `docs/sheet_generation_contract.md`, `docs/template_artifact_contract.md`
-- **Done condition:** handoff notes are compact, practical, and avoid introducing implementation procedures.
+- **Relevant files/docs:** `docs/delivery_plan.md`
+- **Done condition:** M2 implementation starts remain milestone-consistent and explicitly defer output/writeback/orchestration hardening work.
 
 ## 10. Explicitly deferred for now
 - Solver implementation details.
@@ -159,6 +202,23 @@ What must remain untouched for now:
 - Broad multi-department generalization beyond ICU/HD-first sequencing.
 
 ## 11. Recently completed checkpoints
+- **C3 — Define generation acceptance/handoff readiness** *(closed 2026-04-18)*
+  - Locked M1 implementation-ready checklist for ICU/HD first-release generation handoff without reopening C1/C2.
+  - Declared the first allowed implementation slice (template read + operator inputs + shell generation + output-mode support + practical locking/validation).
+  - Declared explicit out-of-scope items to prevent parser/compute/writeback/orchestration/benchmark scope drift during generation-slice start.
+  - Task closure status: T1 Done, T2 Done, T3 Done.
+  - Main affected docs: `docs/delivery_plan.md`.
+
+### C3 sign-off note
+C3 is complete. M1 generation boundary is now implementation-handoff ready: acceptance assumptions, immediate generation-slice start scope, out-of-scope guardrails, and final contract-to-implementation notes are explicit and sufficient for execution without reopening milestone-level scope.
+
+- **M1 — Operator-ready request sheet generation** *(closed 2026-04-18)*
+  - Closed C1/C2/C3 with contract-aligned generation boundary, template/generation alignment, and implementation-handoff readiness.
+  - Milestone closure confirms M1 exit criteria are met.
+
+### M1 sign-off note
+M1 is complete. Operator-ready request sheet generation is now contract-closed and handoff-ready; execution focus moves to M2 minimal local compute pipeline with a narrow parser/normalizer-first checkpoint.
+
 - **C2 — Align template artifact vs generation needs** *(closed 2026-04-18)*
   - Closed remaining cross-doc alignment between `docs/template_artifact_contract.md` and `docs/sheet_generation_contract.md`, including first-release visible title/header generated-surface alignment.
   - Confirmed ICU/HD first-release combined-shell generation declarations remain consistency-aligned and non-redesign.
@@ -184,6 +244,9 @@ C1 is complete. The sheet-generation MVP boundary is now closed for execution: g
 - **2026-04-17:** Activated Checkpoint 2 (`Align template artifact vs generation needs`) as current execution focus.
 - **2026-04-18:** Closed Checkpoint 2 (`Align template artifact vs generation needs`) and recorded formal sign-off in this plan.
 - **2026-04-18:** Activated Checkpoint 3 (`Define generation acceptance/handoff readiness`) as current execution focus.
+- **2026-04-18:** Closed Checkpoint 3 (`Define generation acceptance/handoff readiness`) with explicit M1 implementation-ready checklist, allowed first implementation slice, out-of-scope guardrails, and contract-to-implementation handoff notes.
+- **2026-04-18:** Closed Milestone 1 (`Operator-ready request sheet generation`) and activated Milestone 2 (`Minimal local compute pipeline`).
+- **2026-04-18:** Seeded M2 active checkpoint (`Parser/normalizer implementation closure`) with narrow parser-first task framing.
 
 ## 13. Relationship to other repo docs
 - `README.md` = front door orientation.
@@ -203,7 +266,7 @@ C1 is complete. The sheet-generation MVP boundary is now closed for execution: g
 
 ## 15. Initial seed content
 This initial version is seeded with:
-- active milestone `Operator-ready request sheet generation`
-- active checkpoint `Define generation acceptance/handoff readiness`
-- compact C3 starter tasks focused on generation handoff acceptance/readiness framing
+- active milestone `Minimal local compute pipeline`
+- active checkpoint `Parser/normalizer implementation closure`
+- compact M2 parser-first starter tasks
 - explicit deferrals to prevent near-term drift
