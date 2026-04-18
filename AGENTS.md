@@ -77,6 +77,9 @@ Keep these boundaries explicit and do not blur them casually:
 
 Specific rules:
 - Keep SpreadsheetApp and sheet-specific logic out of reusable core where practical.
+- Apps Script may own Google Sheets-facing surface work (for example generation/interface integration).
+- Keep compute-heavy core logic (parser/normalizer, rule engine, solver/search, scorer) out of Apps Script.
+- Preferred first implementation direction for compute-heavy core work is local-first Python; do not force cloud/server/orchestration decisions early.
 - Do not hide department semantics in arbitrary parser/adapter/writer code when the repo expects them to be declared in contracts/templates.
 - Hard constraints must stay explicit and must not be weakened into scoring/preferences.
 - Rule validity must remain distinct from ranking/scoring.
