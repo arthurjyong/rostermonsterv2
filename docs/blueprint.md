@@ -84,6 +84,7 @@ v2 follows a multi-layer model:
 - **Writer / Execution / Observability support layers**: package outputs, run compute in local/cloud modes, and emit diagnostics.
 
 This model separates reusable allocation logic from department-specific behavior.
+Implementation ownership note: sheet-native surface work may be implemented in Google Apps Script where that is the narrowest Sheets-facing integration path; compute-heavy core logic remains outside Apps Script and is intended to start local-first in Python. This blueprint note does not force a cloud/server/orchestration runtime decision.
 
 ## 7. Boundary definitions
 
@@ -108,10 +109,12 @@ This model separates reusable allocation logic from department-specific behavior
 **Responsibilities**
 - Read from and write to Google Sheets.
 - Convert sheet structure into raw input payloads expected by parser.
+- Implement Google Sheets-facing surface mechanics (including Apps Script-based integration when used).
 
 **Must not do**
 - Decide hard rule validity or scoring.
 - Embed department logic outside declared template mappings.
+- Own compute-heavy parser/normalizer, rule, solver, or scorer behavior.
 
 **Inputs / outputs**
 - Input: sheet identifiers/ranges + template mapping hints.
