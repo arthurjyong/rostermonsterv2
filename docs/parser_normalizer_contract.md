@@ -3,7 +3,7 @@
 ## 1) Contract status and scope
 This document defines the parser–normalizer boundary that connects snapshot input (`docs/snapshot_contract.md`) to normalized domain output (`docs/domain_model.md`).
 
-It is intended to be concrete enough for implementation planning in Phase 2 parser/normalization work.
+It is intended to be concrete enough for implementation planning for parser/normalizer work.
 
 It explicitly separates:
 - repo-settled anchors,

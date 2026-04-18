@@ -112,3 +112,23 @@
 - **Consequences:** Near-term planning and task selection should prioritize generation-input, structural-surface, operator-edit, non-goal, and acceptance-criteria closure.
 - **Follow-up actions:** Seed and maintain the active checkpoint tasks in `docs/delivery_plan.md`; keep roadmap and README alignment.
 - **Related docs:** `README.md`, `docs/roadmap.md`, `docs/delivery_plan.md`
+
+### D-0016: Reopen Milestone 1 in place for operator implementation delivery
+- **Date:** 2026-04-18
+- **Status:** Accepted
+- **Context:** On 2026-04-18, Milestone 1 (`Operator-ready request sheet generation`) was marked closed once C1/C2/C3 had fixed the generation contract boundary, template/generation alignment, and acceptance/handoff readiness. However, no operator-usable sheet shell had actually been generated — closure reflected contract closure only, not operator delivery.
+- **Decision:** Reopen Milestone 1 in place rather than redefining its meaning silently. C1/C2/C3 remain completed contract-closure checkpoints. A new implementation checkpoint (C4 — `Implement operator-ready sheet generation`) is added under M1 and becomes the active checkpoint. Milestone 2 (`Minimal local compute pipeline`) returns to Planned.
+- **Rationale:** The intent of M1 is an operational unblocker for ICU/HD. Declaring M1 closed on contract closure alone would misrepresent real delivery state and mask the remaining implementation slice. Reopening in place preserves history instead of rewriting it.
+- **Consequences:** M1 exit criteria now explicitly require operator-ready ICU/HD sheet-shell generation, not just contract closure. One active milestone and one active checkpoint are maintained. M2 sequencing is unchanged in order but deferred in time until M1 implementation lands.
+- **Follow-up actions:** Keep `README.md`, `AGENTS.md`, `docs/roadmap.md`, and `docs/delivery_plan.md` consistent with M1 reopen and C4 activation; avoid smuggling M2 scope into C4.
+- **Related docs:** `README.md`, `AGENTS.md`, `docs/roadmap.md`, `docs/delivery_plan.md`
+
+### D-0017: Narrow implementation stack for M1 sheet generation is Google Apps Script on Google Sheets
+- **Date:** 2026-04-18
+- **Status:** Accepted
+- **Context:** M1 C4 requires an actual implementation of the ICU/HD request sheet shell. The repo has not yet chosen a long-term compute-core implementation stack, and should not pre-commit to one just to unblock the M1 generation slice.
+- **Decision:** For the M1 generation slice only, operator-facing sheet generation is implemented in Google Apps Script targeting Google Sheets.
+- **Rationale:** Google Sheets is already the repo-declared operational front end (see D-0004, D-0010). Apps Script is the narrowest path to generate and control a Google Sheets artifact (creation, tab insertion, protection ranges, data validation) without introducing new runtime infrastructure. This keeps M1 delivery bounded and operator-relevant.
+- **Consequences:** This decision applies only to the M1 generation slice (C4). It does not decide the long-term compute-core implementation stack (parser/normalizer, rule engine, solver/scorer, writeback, orchestration), which remains deferred. Apps Script code introduced under this decision must stay within generation-shell scope and must not absorb downstream compute responsibilities.
+- **Follow-up actions:** Record this narrow scope in `docs/delivery_plan.md` C4; explicitly defer the broader compute-core stack decision to a later milestone.
+- **Related docs:** `docs/delivery_plan.md`, `docs/sheet_generation_contract.md`, `docs/template_artifact_contract.md`
