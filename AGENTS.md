@@ -32,7 +32,7 @@ Read `docs/delivery_plan.md` before proposing non-trivial work.
 
 Current active focus at time of writing:
 - **Active milestone:** `Operator-ready request sheet generation`
-- **Active checkpoint:** `Close sheet-generation MVP boundary`
+- **Active checkpoint:** `Implement operator-ready sheet generation`
 
 If a task does not clearly support the active checkpoint, do not expand scope casually.
 
