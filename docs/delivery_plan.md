@@ -98,7 +98,7 @@ This is active now because:
 - **Goal:** deliver an operator-usable ICU/HD request sheet shell consistent with the settled M1 generation contracts.
 - **Why it exists:** C1/C2/C3 closed the contract boundary; an implementation slice is still required before M1 can be considered operator-delivered.
 - **In scope:** template-driven ICU/HD shell generation for the empty-form use, both output modes (new spreadsheet file / new tab in an existing spreadsheet), locking/editable-surface/validation setup at a practical level, and reviewable operator-ready acceptance.
-- **Out of scope:** parser/compute/solver/scorer work, writeback of computed rosters, orchestration/worker mechanics, benchmark hardening, broader multi-department generalization, and any long-term compute-core stack choice.
+- **Out of scope:** parser/compute/solver/scorer work, writeback of computed rosters, orchestration/worker mechanics, benchmark hardening, broader multi-department generalization, and any cloud/server runtime decision for compute-core execution.
 - **Dependencies:** C1/C2/C3 closure; `docs/sheet_generation_contract.md`, `docs/template_artifact_contract.md`, `docs/request_semantics_contract.md`.
 - **Done criteria:** operators can generate the empty ICU/HD request sheet shell into either a new spreadsheet file or a new tab in an existing spreadsheet, with the intended editable/protected surfaces and practical validation behavior in place, reviewable against the C3 acceptance checklist.
 
@@ -122,13 +122,13 @@ Docs expected to be touched during this checkpoint:
 
 What must remain untouched for now:
 - parser/normalizer, compute-core, solver/scorer, writeback, and orchestration design
-- long-term compute-core implementation stack decision
+- cloud/server/orchestration runtime decision for compute-core execution
 - broader roadmap/milestone redesign
 
 ## 9. Task list for the current checkpoint
 
 ### T1 — Record narrow implementation-stack decision for generation slice
-- **Purpose:** capture the narrow decision that M1 generation is implemented in Google Apps Script targeting Google Sheets, without deciding the long-term compute-core stack.
+- **Purpose:** capture the narrow M1 Apps Script generation-slice decision plus explicit ownership split: Apps Script for Sheets-facing surface work; compute-heavy core work outside Apps Script with local-first Python direction, without deciding cloud/server runtime.
 - **Status:** Planned
 - **Relevant files/docs:** `docs/decision_log.md`
 - **Done condition:** decision log entry is recorded as Accepted with explicit narrow scope.
