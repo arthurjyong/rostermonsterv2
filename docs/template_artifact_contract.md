@@ -239,12 +239,14 @@ A template artifact is invalid if any of the following are true:
 - any `inputSheetLayout.sections[].groupId` references an unknown `doctorGroups[].groupId`
 - any `inputSheetLayout.sections[]` record is missing `headerLabel`
 - ICU/HD first-release artifact omits `inputSheetLayout.headerBlock.title` or `inputSheetLayout.visibleLabels.departmentLabel`
+- ICU/HD first-release artifact uses split-sheet naming for combined-shell surfaces (that is, `inputSheetLayout.sheetName` differs from any required first-release `outputMapping.surfaces[].sheetName`)
 - ICU/HD first-release artifact omits required point-row declarations (`MICU_CALL_POINT`, `MHD_CALL_POINT`) with declared `label` + `defaultRule`
 - any `inputSheetLayout.pointRows[].defaultRule` is missing one of the required fields (`weekdayToWeekday`, `weekdayToWeekendOrPublicHoliday`, `weekendOrPublicHolidayToWeekendOrPublicHoliday`, `weekendOrPublicHolidayToWeekday`)
 - any required `inputSheetLayout.pointRows[].defaultRule` field is non-numeric
 - any `inputSheetLayout.pointRows[].defaultRule` includes fields outside the required four-field shape
 - any ICU/HD first-release point-row default rule differs from the settled default matrix (`weekday->weekday=1`, `weekday->weekend/publicHoliday=1.75`, `weekend/publicHoliday->weekend/publicHoliday=2`, `weekend/publicHoliday->weekday=1.5`)
-- `inputSheetLayout.legendBlock.present` is true but `legendBlock.contentLines` is missing
+- ICU/HD first-release artifact omits `inputSheetLayout.legendBlock.present` or sets it to `false`
+- ICU/HD first-release artifact omits `legendBlock.contentLines` or declares an empty list
 - `inputSheetLayout.surfaceOwnership` omits either operator-input or template-owned structural declarations
 - any first-release lower roster/output shell surface in `outputMapping.surfaces[]` omits required structural fields (`surfaceRole`, `operatorPrefill`, `assignmentRows`)
 - any `outputMapping.surfaces[].assignmentRows[]` record references an unknown `slotId`
@@ -261,6 +263,7 @@ If the artifact is valid, parser-facing consumers may assume:
 - eligibility is explicit and deterministic as `slotId` + `eligibleGroups`
 - request-layout parsing surface is structurally declared via `inputSheetLayout`
 - visible title/department labels, section-header labels, point-row declarations, and legend adjunct presence/content are template-owned declarations in `inputSheetLayout`
+- ICU/HD first-release template declarations for input/output shell surfaces resolve to one combined operator-facing sheet name
 - doctor→group normalization is explicit and deterministic through `inputSheetLayout.sections[]` declarations (`sectionKey` lookup + section-level canonical `groupId`)
 - request semantics binding points to the settled request semantics contract via `contractId` + `contractVersion`
 - output mapping semantics are declared separately from input layout, and lower roster/output shell structure is template-owned rather than writer-only
