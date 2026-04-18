@@ -5,19 +5,21 @@ This document defines **milestone-level delivery order** for Roster Monster v2. 
 ## Milestone sequence
 
 ### 1) Operator-ready request sheet generation
-- **Goal:** Close the MVP boundary for generating an operator-usable request sheet shell for ICU/HD.
+- **Goal:** Deliver an operator-usable ICU/HD request sheet shell, backed by closed generation contract boundaries.
 - **Why it matters:** This is the immediate operational unblocker and anchors upstream/downstream contract usage.
 - **Likely checkpoints:**
   - Close sheet-generation MVP boundary.
   - Align template artifact surfaces with generation needs.
   - Finalize generation acceptance criteria and handoff readiness.
+  - Implement operator-ready sheet generation.
 - **Main dependencies:**
   - `docs/template_contract.md`
   - `docs/template_artifact_contract.md`
   - `docs/request_semantics_contract.md`
   - `docs/sheet_generation_contract.md`
 - **Exit criteria:**
-  - Generation inputs, structural output surfaces, allowed operator edits, explicit non-goals, and acceptance criteria are all closed and reviewable.
+  - Generation inputs, structural output surfaces, allowed operator edits, explicit non-goals, and acceptance criteria are closed and reviewable, and
+  - operator-ready ICU/HD sheet-shell generation is implemented for the empty-form use (new spreadsheet file or new tab in an existing spreadsheet), with intended editable/protected surfaces and practical validation in place.
 
 ### 2) Minimal local compute pipeline
 - **Goal:** Establish a deterministic local parse → normalize → rule/scoring/solve execution path using closed contracts.
