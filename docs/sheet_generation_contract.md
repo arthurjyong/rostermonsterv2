@@ -50,6 +50,7 @@ This is a workflow-level contract requirement, not an implementation-mechanics s
 Generation must treat the following as template-owned declarations:
 - which groups/sections exist,
 - section and structural ordering,
+- visible in-sheet title/header block content (including department-facing label),
 - call-point row presence/default behavior,
 - output-shell structural surfaces.
 
@@ -57,15 +58,16 @@ Generation must not invent alternative logical section orders outside template d
 
 ## 5. Required generated structural surfaces
 Generated shell must include at least:
-1. date axis,
-2. weekday row,
-3. explicit section headers for grouped doctor-entry sections,
-4. placeholder doctor rows with blank doctor-name cells,
-5. request-entry cells,
-6. call-point rows (including MICU and MHD point rows with defaults),
-7. lower roster/output shell rows and cells (in template-declared slot order),
-8. weekend/public holiday highlighting,
-9. legend/Descriptions block (non-structural adjunct content).
+1. visible in-sheet title/header block (including department-facing label),
+2. date axis,
+3. weekday row,
+4. explicit section headers for grouped doctor-entry sections,
+5. placeholder doctor rows with blank doctor-name cells,
+6. request-entry cells,
+7. call-point rows (including MICU and MHD point rows with defaults),
+8. lower roster/output shell rows and cells (in template-declared slot order),
+9. weekend/public holiday highlighting,
+10. legend/Descriptions block (non-structural adjunct content).
 
 These are required structural regions for first release.
 The lower roster/output shell is part of the generated first-release sheet shell, not a downstream-only writeback target.
