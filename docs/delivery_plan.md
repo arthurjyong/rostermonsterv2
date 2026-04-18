@@ -168,13 +168,6 @@ What must remain untouched for now:
 ### C3 sign-off note
 C3 is complete. M1 generation boundary is now implementation-handoff ready: acceptance assumptions, immediate generation-slice start scope, out-of-scope guardrails, and final contract-to-implementation notes are explicit and sufficient for execution without reopening milestone-level scope.
 
-- **M1 — Operator-ready request sheet generation** *(closed 2026-04-18)*
-  - Closed C1/C2/C3 with contract-aligned generation boundary, template/generation alignment, and implementation-handoff readiness.
-  - Milestone closure confirms M1 exit criteria are met.
-
-### M1 sign-off note
-M1 is complete. Operator-ready request sheet generation is now contract-closed and handoff-ready; execution focus moves to M2 minimal local compute pipeline with a narrow parser/normalizer-first checkpoint.
-
 - **C2 — Align template artifact vs generation needs** *(closed 2026-04-18)*
   - Closed remaining cross-doc alignment between `docs/template_artifact_contract.md` and `docs/sheet_generation_contract.md`, including first-release visible title/header generated-surface alignment.
   - Confirmed ICU/HD first-release combined-shell generation declarations remain consistency-aligned and non-redesign.
@@ -191,6 +184,14 @@ C2 is complete. Template artifact and generation contract surfaces are now suffi
 
 ### C1 sign-off note
 C1 is complete. The sheet-generation MVP boundary is now closed for execution: generation inputs, structural surfaces, allowed operator edits, editable/protected + validation expectations, explicit non-goals, and checkpoint acceptance framing are sufficiently fixed to proceed to C2 without reopening milestone-level scope.
+
+### Recently completed milestones
+- **M1 — Operator-ready request sheet generation** *(closed 2026-04-18)*
+  - Closed C1/C2/C3 with contract-aligned generation boundary, template/generation alignment, and implementation-handoff readiness.
+  - Milestone closure confirms M1 exit criteria are met.
+
+### M1 sign-off note
+M1 is complete. Operator-ready request sheet generation is now contract-closed and handoff-ready; execution focus moves to M2 minimal local compute pipeline with a narrow parser/normalizer-first checkpoint.
 
 ## 12. Change log for this delivery plan
 - **2026-04-16:** Document created as the living execution guide.
