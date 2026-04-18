@@ -17,7 +17,7 @@ The artifact covers department structural declarations needed for parser interpr
 - doctor-group definitions
 - group-to-slot eligibility declarations
 - request semantics binding surface (narrow)
-- input request-form layout contract (`inputSheetLayout`)
+- input request-form layout contract (`inputSheetLayout`), including template-owned visible labels and section headers used by generation
 - output mapping contract (`outputMapping`) for operator-facing lower roster/output shell surfaces
 - explicit minimal scoring stub
 
@@ -28,13 +28,16 @@ This artifact must not redefine or embed:
 - request semantics contract details
 - solver logic, scorer formulas, or allocator mechanics
 - writer procedures or detailed sheet-generation procedures
-- whole-sheet presentation details (styling, colors, borders, legends, FAQ text, narrative notes)
+- whole-sheet presentation/styling details (colors, borders, highlighting cosmetics)
+- request-entry validation procedure/mechanics
+- protection/locking implementation mechanics
 
 ## 3. Artifact posture (settled)
 Settled for first release:
 - One artifact describes one department structural template.
 - Monthly doctor membership and monthly period data are not stored in this artifact.
 - The artifact remains declarative.
+- ICU/HD first-release structure targets one combined operator-facing sheet shell (not a split request-vs-roster specimen).
 - Output mapping is included in the same artifact but remains a separate section from input layout.
 - `outputMapping` is the declarative owner of lower roster/output shell structure used by generation, later operator-prefill parsing, and later writeback.
 - Shape-level contract is primary; serialization format is secondary.
@@ -115,7 +118,7 @@ Field shape:
 - `contractVersion`
 
 ## 9. `inputSheetLayout` contract (settled)
-`inputSheetLayout` defines the request-entry surface only.
+`inputSheetLayout` declares template-owned generation/parsing surfaces for the operator-facing input shell, while remaining separate from lower-shell mapping in `outputMapping`.
 
 Settled constraints:
 - No backward-compatibility requirement for old v1 request form shape.
@@ -125,10 +128,14 @@ Settled constraints:
 - Do not include generator procedure.
 - Use one named request-form sheet in first release.
 - Day axis is rule-based, not hardcoded month-span coordinates.
+- Visible in-sheet title/header block and department label are template-owned declarations.
 - Section model is repeatable section definitions.
+- Section header text is explicitly declared per section.
 - Section height is variable by doctor count.
 - Doctor-row shape is minimal: display name + request cells.
-- `MICU Call Point` / `MHD Call Point` rows are not part of `inputSheetLayout`; they are template-owned defaults outside input layout blocks.
+- Point-row presence/labels/default-rule ownership are explicitly template-owned declarations.
+- Legend/Descriptions block is template-owned adjunct content and remains non-structural.
+- Surface ownership must minimally distinguish operator-input surfaces vs template-owned structural surfaces.
 - Tolerate presentation drift, not structural drift.
 
 Field vocabulary:
@@ -138,10 +145,37 @@ Field vocabulary:
 - `sections`
 - `sectionKey`
 - `groupId`
+- `headerLabel`
 - `placement.anchorMode`
 - `placement.blockRef`
 - `doctorRows.nameColumn`
 - `doctorRows.requestStartColumn`
+- `headerBlock.title`
+- `visibleLabels.departmentLabel`
+- `pointRows`
+- `pointRows[].rowKey`
+- `pointRows[].label`
+- `pointRows[].defaultRule`
+- `pointRows[].defaultRule.weekdayToWeekday`
+- `pointRows[].defaultRule.weekdayToWeekendOrPublicHoliday`
+- `pointRows[].defaultRule.weekendOrPublicHolidayToWeekendOrPublicHoliday`
+- `pointRows[].defaultRule.weekendOrPublicHolidayToWeekday`
+- `legendBlock.present`
+- `legendBlock.contentLines`
+- `surfaceOwnership.operatorInput`
+- `surfaceOwnership.templateOwnedStructural`
+
+Point-row default-rule shape (first-release ICU/HD):
+- `pointRows[].defaultRule` must include exactly these four numeric fields:
+  - `weekdayToWeekday`
+  - `weekdayToWeekendOrPublicHoliday`
+  - `weekendOrPublicHolidayToWeekendOrPublicHoliday`
+  - `weekendOrPublicHolidayToWeekday`
+- Required ICU/HD first-release values:
+  - `weekdayToWeekday = 1`
+  - `weekdayToWeekendOrPublicHoliday = 1.75`
+  - `weekendOrPublicHolidayToWeekendOrPublicHoliday = 2`
+  - `weekendOrPublicHolidayToWeekday = 1.5`
 
 Section-based doctor-group derivation (first-release ICU/HD):
 - each `inputSheetLayout.sections[]` record must declare canonical `groupId`
@@ -153,6 +187,7 @@ Parser-facing intent:
 - clean parsing of operator-entered requests
 - support first-release generation of the full operator-facing sheet shell, where `inputSheetLayout` declares request-entry regions and `outputMapping` declares lower roster/output shell structure (see `docs/sheet_generation_contract.md`)
 - allow operator adjustments to date range and section manpower without contract breakage
+- keep legend/Descriptions content outside structural parser dependency
 
 ## 10. `outputMapping` contract (settled)
 `outputMapping` defines the template-owned operator-facing output shell surfaces, especially the lower roster/output shell that may be generated empty, later partially operator-prefilled, and later targeted for writeback.
@@ -184,7 +219,7 @@ Settled constraints:
 - Keep an explicit minimal scoring stub.
 - Do not mirror all v1 `SCORER_CONFIG` inside template artifact.
 - Do not allow artifact to become runtime scorer-config dump.
-- Day-level point rows are not part of `inputSheetLayout`.
+- Day-level point rows are template-owned declarations under `inputSheetLayout.pointRows`, not scoring configuration content.
 
 First-release shape:
 - `scoring.templateKnobs` (empty list allowed)
@@ -202,6 +237,17 @@ A template artifact is invalid if any of the following are true:
 - any `inputSheetLayout.sections[]` record is missing canonical `groupId`
 - any `inputSheetLayout.sections[].groupId` is empty or otherwise invalid
 - any `inputSheetLayout.sections[].groupId` references an unknown `doctorGroups[].groupId`
+- any `inputSheetLayout.sections[]` record is missing `headerLabel`
+- ICU/HD first-release artifact omits `inputSheetLayout.headerBlock.title` or `inputSheetLayout.visibleLabels.departmentLabel`
+- ICU/HD first-release artifact uses split-sheet naming for combined-shell surfaces (that is, `inputSheetLayout.sheetName` differs from any required first-release `outputMapping.surfaces[].sheetName`)
+- ICU/HD first-release artifact omits required point-row declarations (`MICU_CALL_POINT`, `MHD_CALL_POINT`) with declared `label` + `defaultRule`
+- any `inputSheetLayout.pointRows[].defaultRule` is missing one of the required fields (`weekdayToWeekday`, `weekdayToWeekendOrPublicHoliday`, `weekendOrPublicHolidayToWeekendOrPublicHoliday`, `weekendOrPublicHolidayToWeekday`)
+- any required `inputSheetLayout.pointRows[].defaultRule` field is non-numeric
+- any `inputSheetLayout.pointRows[].defaultRule` includes fields outside the required four-field shape
+- any ICU/HD first-release point-row default rule differs from the settled default matrix (`weekday->weekday=1`, `weekday->weekend/publicHoliday=1.75`, `weekend/publicHoliday->weekend/publicHoliday=2`, `weekend/publicHoliday->weekday=1.5`)
+- ICU/HD first-release artifact omits `inputSheetLayout.legendBlock.present` or sets it to `false`
+- ICU/HD first-release artifact omits `legendBlock.contentLines` or declares an empty list
+- `inputSheetLayout.surfaceOwnership` omits either operator-input or template-owned structural declarations
 - any first-release lower roster/output shell surface in `outputMapping.surfaces[]` omits required structural fields (`surfaceRole`, `operatorPrefill`, `assignmentRows`)
 - any `outputMapping.surfaces[].assignmentRows[]` record references an unknown `slotId`
 - any `outputMapping.surfaces[].assignmentRows[].rowOffset` is duplicated within the same surface
@@ -216,6 +262,8 @@ If the artifact is valid, parser-facing consumers may assume:
 - each doctor-group record includes `groupId` and `label`
 - eligibility is explicit and deterministic as `slotId` + `eligibleGroups`
 - request-layout parsing surface is structurally declared via `inputSheetLayout`
+- visible title/department labels, section-header labels, point-row declarations, and legend adjunct presence/content are template-owned declarations in `inputSheetLayout`
+- ICU/HD first-release template declarations for input/output shell surfaces resolve to one combined operator-facing sheet name
 - doctor→group normalization is explicit and deterministic through `inputSheetLayout.sections[]` declarations (`sectionKey` lookup + section-level canonical `groupId`)
 - request semantics binding points to the settled request semantics contract via `contractId` + `contractVersion`
 - output mapping semantics are declared separately from input layout, and lower roster/output shell structure is template-owned rather than writer-only
@@ -238,7 +286,7 @@ The following is a non-normative shape illustration aligned to the settled first
 identity:
   templateId: cgh_icu_hd
   templateVersion: 1
-  label: CGH ICU/HD
+  label: CGH ICU/HD Call
 
 slots:
   - slotId: MICU_CALL
@@ -285,13 +333,18 @@ requestSemanticsBinding:
   contractVersion: 1
 
 inputSheetLayout:
-  sheetName: Requests
+  sheetName: CGH ICU/HD Call
+  headerBlock:
+    title: CGH ICU/HD Call
+  visibleLabels:
+    departmentLabel: CGH ICU/HD Call
   dayAxis:
     anchorCell: B3
     direction: horizontal
   sections:
     - sectionKey: MICU
       groupId: ICU_ONLY
+      headerLabel: MICU
       placement:
         anchorMode: belowBlock
         blockRef: dayAxis
@@ -300,6 +353,7 @@ inputSheetLayout:
         requestStartColumn: B
     - sectionKey: MICU_HD
       groupId: ICU_HD
+      headerLabel: ICU + HD
       placement:
         anchorMode: belowBlock
         blockRef: dayAxis
@@ -308,18 +362,49 @@ inputSheetLayout:
         requestStartColumn: B
     - sectionKey: MHD
       groupId: HD_ONLY
+      headerLabel: MHD
       placement:
         anchorMode: belowBlock
         blockRef: dayAxis
       doctorRows:
         nameColumn: A
         requestStartColumn: B
+  pointRows:
+    - rowKey: MICU_CALL_POINT
+      label: MICU Call Point
+      defaultRule:
+        weekdayToWeekday: 1
+        weekdayToWeekendOrPublicHoliday: 1.75
+        weekendOrPublicHolidayToWeekendOrPublicHoliday: 2
+        weekendOrPublicHolidayToWeekday: 1.5
+    - rowKey: MHD_CALL_POINT
+      label: MHD Call Point
+      defaultRule:
+        weekdayToWeekday: 1
+        weekdayToWeekendOrPublicHoliday: 1.75
+        weekendOrPublicHolidayToWeekendOrPublicHoliday: 2
+        weekendOrPublicHolidayToWeekday: 1.5
+  legendBlock:
+    present: true
+    contentLines:
+      - "WKD = weekday"
+      - "WEPH = weekend/public holiday"
+  surfaceOwnership:
+    operatorInput:
+      - doctorNameCells
+      - requestEntryCells
+      - callPointCells
+    templateOwnedStructural:
+      - titleAndDepartmentHeader
+      - dayAxis
+      - sectionHeaders
+      - sectionRowStructure
 
 outputMapping:
   surfaces:
     - surfaceId: lowerRosterAssignments
       surfaceRole: LOWER_ROSTER_ASSIGNMENTS
-      sheetName: Roster
+      sheetName: CGH ICU/HD Call
       anchorCell: B4
       orientation: dateByColumn
       operatorPrefill: allowed
