@@ -84,73 +84,29 @@ This is active now because:
 
 ## 7. Checkpoint plan for the active milestone
 
-### C1 — Close sheet-generation MVP boundary
-- **Goal:** close the MVP planning/contract boundary for first operationally usable generation behavior.
-- **Why it exists:** prevents scope creep and clarifies what “ready” means for milestone completion.
-- **In scope:** generation inputs, generated structural surfaces, allowed operator edits, editable/protected surface and validation boundary, explicit non-goals, acceptance criteria.
-- **Out of scope:** implementation mechanics, solver/scorer behavior, orchestration/runtime concerns.
-- **Dependencies:** existing template/request/generation contract docs.
-- **Done criteria:** boundary items are explicit, internally consistent, and reviewable across relevant docs.
+### C1 — Parser/normalizer implementation closure
+- **Goal:** implement parser/normalizer behavior against the already-settled ICU/HD contracts.
+- **Why it exists:** establishes the first executable M2 slice with deterministic contract adherence.
+- **In scope:** parser/normalizer implementation, baseline fixtures, and contract-consistent outputs/issues.
+- **Out of scope:** scoring/search optimization, writeback behavior, orchestration/runtime envelopes.
+- **Dependencies:** M1 completion; `docs/parser_normalizer_contract.md`, `docs/snapshot_contract.md`, `docs/domain_model.md`.
+- **Done criteria:** parser/normalizer path is executable and contract-consistent for baseline ICU/HD cases.
 
-### C2 — Align template artifact vs generation needs
-- **Goal:** verify template artifact surfaces are sufficient and aligned for generation usage.
-- **Why it exists:** avoid downstream mismatch between template declarations and generation expectations.
-- **In scope:** cross-doc consistency checks and narrowly scoped clarification edits.
-- **Out of scope:** broad redesign of template or request semantics contracts.
+### C2 — Minimal rule/scorer/solver integration
+- **Goal:** integrate minimal rule/scorer/solver flow on top of parser/normalizer outputs.
+- **Why it exists:** converts parser-only execution into a constrained end-to-end local compute path.
+- **In scope:** narrow integration needed for a deterministic first local compute pass.
+- **Out of scope:** orchestration/worker behavior, writeback/output application hardening, benchmark expansion.
 - **Dependencies:** C1 closure.
-- **Done criteria:** no material ambiguity remains about template artifact fields required for generation.
+- **Done criteria:** local runs can produce valid candidate outcomes (or explicit unsatisfied states) with interpretable scoring direction.
 
-### C3 — Define generation acceptance/handoff readiness
-- **Goal:** establish handoff-ready acceptance framing for implementation work.
-- **Why it exists:** implementation should begin from a closed, testable planning boundary.
-- **In scope:** acceptance framing, handoff notes, readiness criteria.
-- **Out of scope:** writing implementation tickets or introducing new process systems.
-- **Dependencies:** C1 and C2 closure.
-- **Done criteria:** implementation-facing teams can proceed without reopening milestone-level scope.
-
-#### C3 implementation-ready checklist (M1 handoff)
-M1 generation scope is implementation-ready when implementation teams can assume all of the following without reopening C1/C2:
-- one combined ICU/HD operator-facing sheet
-- visible in-sheet title/header block
-- visible department label from template
-- explicit section headers from template
-- placeholder doctor rows with blank editable name cells
-- request-entry cells
-- MICU and MHD point rows with template-owned default point rule
-- lower roster/output shell
-- legend/Descriptions block present but non-structural
-- weekend/public holiday highlighting exists as generation behavior
-- fixed manpower structure per generated roster
-- no add/delete rows within sections
-- support for both output modes (new spreadsheet file, or new tab in an existing spreadsheet)
-- maximally locked sheet except intended editable surfaces
-- validation where practical, with parser later remaining authoritative
-
-#### C3 first implementation slice that may start now
-Under closed M1 boundary, implementation may now start a narrow generation slice that:
-- reads the template artifact
-- accepts operator inputs (`department`, `period start/end`, `doctor count by group`)
-- generates the ICU/HD sheet shell in Google Sheets
-- supports both output modes (new file or new tab in existing spreadsheet)
-- allows operator name entry directly in the generated sheet
-- applies locking/protection and request-entry validation where practical
-- does not drift into parser/compute/writeback/orchestration implementation
-
-#### C3 explicit out-of-scope for this implementation slice
-- parser implementation
-- solver/scorer work
-- local compute pipeline work
-- writeback/output application work
-- orchestration/worker behavior
-- benchmark hardening
-
-#### C3 contract-to-implementation handoff notes
-- Visible labels, title/header, section headers, point rows, point default rule, and legend content remain template-owned.
-- Legend/Descriptions remains non-structural adjunct content.
-- Highlighting and validation remain generation behavior, not artifact styling/procedure.
-- Parser remains authoritative for downstream interpretation.
-- Manpower is fixed per generated roster; if counts are wrong, regenerate instead of mutating section structure.
-- Implementation mechanics stay outside contract docs.
+### C3 — Local run artifact basics
+- **Goal:** establish minimal local run artifact/output basics for reviewability.
+- **Why it exists:** keeps M2 outputs inspectable before later safety/writeback/orchestration milestones.
+- **In scope:** minimal local run outputs and diagnostics sufficient for implementation review.
+- **Out of scope:** production-grade observability hardening and benchmark campaigns.
+- **Dependencies:** C2 closure.
+- **Done criteria:** local runs emit basic, reviewable artifacts that support repeatable ICU/HD-first validation.
 
 ## 8. Current active checkpoint
 - **Active checkpoint:** `Parser/normalizer implementation closure`
