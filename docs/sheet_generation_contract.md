@@ -36,7 +36,15 @@ Generation accepts:
 Input ownership notes:
 - Department selection resolves to the department-owned template identity/provenance behind the scenes.
 - Period dates define generated day-axis span.
-- `doctorCountByGroup` determines initial placeholder row counts per template-declared ICU/HD group section using familiar operator-facing group labels.
+- `doctorCountByGroup` fixes placeholder row counts/manpower structure per template-declared ICU/HD group section for that generated roster using familiar operator-facing group labels.
+- If manpower counts are wrong after generation, operators should generate a new empty roster (new file or new tab) rather than insert/delete rows inside generated sections.
+
+## 3A. Generation output target
+For first release, generation should support either operator-facing output mode:
+- create a new spreadsheet file, or
+- create a new tab/worksheet in a selected existing spreadsheet.
+
+This is a workflow-level contract requirement, not an implementation-mechanics specification.
 
 ## 4. Template-owned generation facts
 Generation must treat the following as template-owned declarations:
@@ -65,8 +73,7 @@ The lower roster/output shell is part of the generated first-release sheet shell
 ## 6. Operator-allowed edits after generation
 After generation, operators may:
 - fill doctor names in column A,
-- add rows within a section,
-- delete rows within a section,
+- enter request codes in editable request cells,
 - edit call-point values,
 - prefill lower roster/output shell cells before any later completion pass.
 
@@ -75,12 +82,15 @@ Parser-facing expectation:
 - The lower roster/output shell remains template-owned declared structure after generation.
 - When operators prefill lower-shell cells, those populated cells become an allowed input surface for later partial-completion parsing contracts.
 - Parser-side handling of those populated cells (including `prefilledAssignmentRecords`, parser-stage `NON_CONSUMABLE` boundaries, and fixed-assignment override admission boundaries) is defined in `docs/parser_normalizer_contract.md`.
-- Parser robustness relies on section/segment structure, not fixed hardcoded row counts.
+- Parser robustness relies on template-declared section/segment structure.
 - This contract does not define parser semantics for those populated lower-shell cells.
+- If generated manpower sizing is wrong, operators should regenerate a new empty roster instead of mutating section row counts.
 
 ## 7. Disallowed structural drift
 End users must not perform major structural rearrangement of template-owned logical regions, including:
 - arbitrary reordering/moving of declared sections,
+- adding rows within a declared section,
+- deleting rows within a declared section,
 - changes that break declared structural region boundaries,
 - changes that invalidate template-declared logical ordering assumptions.
 
@@ -107,7 +117,7 @@ Notes:
 - Manual operator override of generated call points is allowed after generation.
 
 ## 9. Editable surfaces, protected surfaces, and validation expectations
-MVP generation must distinguish between editable operator-input surfaces and protected template-owned structural surfaces, where platform support exists.
+MVP generation must distinguish between editable operator-input surfaces and protected template-owned structural surfaces, where platform support exists. Generated sheets should be maximally locked except for explicit operator-input surfaces.
 
 Editable surfaces for first release include:
 - blank doctor-name cells in generated placeholder rows,
@@ -120,11 +130,13 @@ Protected/non-editable template-owned surfaces for first release include:
 - weekday row,
 - section headers,
 - fixed structural layout regions,
+- generated section row structure sized from `doctorCountByGroup`,
 - lower-shell assignment-row structure.
 
 Validation expectations:
 - generation should apply constrained request-entry validation where practical,
 - parser re-validation remains authoritative for all downstream interpretation and acceptance,
+- protection posture should prevent section-level structural drift (including row insertion/deletion within sections) so manpower sizing remains fixed for that generated roster,
 - implementation mechanics (for example exact Google Sheets protection/validation setup) remain outside this contract.
 
 ## 10. Structural vs cosmetic scope
