@@ -14,8 +14,8 @@ This repo uses a single planning vocabulary:
 - **Task**: a concrete work item used to close a checkpoint.
 
 ## Current focus
-- **Active milestone:** `Minimal local compute pipeline`
-- **Active checkpoint:** `Parser/normalizer implementation closure`
+- **Active milestone:** `Operator-ready request sheet generation`
+- **Active checkpoint:** `Implement operator-ready sheet generation`
 
 ## Repo navigation
 - `docs/blueprint.md` — Stable architecture truth (what the system is and how boundaries are defined).
