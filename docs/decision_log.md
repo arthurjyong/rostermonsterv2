@@ -132,3 +132,13 @@
 - **Consequences:** This decision applies only to the M1 generation slice (C4). It does not decide the long-term compute-core implementation stack (parser/normalizer, rule engine, solver/scorer, writeback, orchestration), which remains deferred. Apps Script code introduced under this decision must stay within generation-shell scope and must not absorb downstream compute responsibilities.
 - **Follow-up actions:** Record this narrow scope in `docs/delivery_plan.md` C4; explicitly defer the broader compute-core stack decision to a later milestone.
 - **Related docs:** `docs/delivery_plan.md`, `docs/sheet_generation_contract.md`, `docs/template_artifact_contract.md`
+
+### D-0018: Stack ownership split — Apps Script for sheet-facing surface, local-first Python direction for compute-heavy core
+- **Date:** 2026-04-18
+- **Status:** Accepted
+- **Context:** D-0017 intentionally narrowed the M1 C4 implementation slice to Google Apps Script on Google Sheets so operator-ready sheet generation could proceed without forcing broader stack decisions. As C4 execution starts, the repo also needs an explicit cross-milestone ownership split so sheet-surface implementation does not drift into compute-core implementation inside Apps Script.
+- **Decision:** Keep D-0017 fully valid for the M1 generation slice. Treat Google Apps Script as an acceptable implementation layer for Google Sheets-facing surface work (sheet generation/interface integration). Keep compute-heavy core-engine logic outside Apps Script. For compute-heavy core work, the first implementation direction is local-first Python. This decision does not yet choose cloud/server/orchestration runtime for compute-core execution.
+- **Rationale:** This preserves operator-facing delivery speed for M1 while protecting architecture boundaries between sheet integration and reusable compute core. Local-first Python gives a practical path for deterministic development and iteration on parser/normalizer, rule engine, solver, and scorer without prematurely binding remote runtime topology.
+- **Consequences:** Apps Script work in C4 remains bounded to sheet-facing generation/interface concerns. This decision does not authorize moving parser/normalizer, rule engine, scorer, solver, or other compute-brain responsibilities into Apps Script. Remote/cloud execution choices remain deferred to later orchestration-focused milestones/checkpoints.
+- **Follow-up actions:** Reflect this ownership split in `docs/blueprint.md`, `docs/delivery_plan.md`, and `AGENTS.md`; keep M1/C4 scope narrow and avoid reopening milestone sequencing.
+- **Related docs:** `docs/blueprint.md`, `docs/delivery_plan.md`, `AGENTS.md`
