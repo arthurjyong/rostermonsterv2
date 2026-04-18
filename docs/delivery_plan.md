@@ -109,21 +109,20 @@ This is active now because:
 - **Done criteria:** implementation-facing teams can proceed without reopening milestone-level scope.
 
 ## 8. Current active checkpoint
-- **Active checkpoint:** `Align template artifact vs generation needs`
+- **Active checkpoint:** `Define generation acceptance/handoff readiness`
 
 Why this checkpoint is next:
-- C1 is formally closed and the MVP generation boundary is now contractually explicit and reviewable
-- the next risk is cross-doc mismatch between template artifact surfaces and generation usage expectations
+- C1 and C2 are formally closed with generation/template surfaces now aligned for ICU/HD first release
+- remaining near-term risk is unclear handoff expectations for implementation start without reopening milestone scope
 
 What it must close:
-- verify template artifact fields required for generation are sufficient
-- resolve any remaining ambiguity between template artifact and generation contracts
-- keep any edits narrowly scoped to consistency/clarity only
-- confirm no material cross-doc mismatch remains for generation usage
+- define compact, implementation-facing acceptance conditions for generation handoff
+- state what implementation can begin immediately under closed M1 scope
+- capture final handoff notes from generation/template contracts without introducing implementation mechanics
 
 Docs expected to be touched during this checkpoint:
-- `docs/template_artifact_contract.md`
 - `docs/sheet_generation_contract.md`
+- `docs/template_artifact_contract.md`
 - `docs/delivery_plan.md` (status/coordination updates only)
 
 What must remain untouched for now:
@@ -132,23 +131,23 @@ What must remain untouched for now:
 
 ## 9. Task list for the current checkpoint
 
-### T1 — Verify template artifact fields needed for generation
-- **Purpose:** confirm template artifact declarations fully cover generation requirements for ICU/HD MVP.
+### T1 — Define generation handoff acceptance conditions
+- **Purpose:** lock concise acceptance conditions that indicate generation-contract handoff readiness for implementation.
 - **Status:** Planned
-- **Relevant files/docs:** `docs/template_artifact_contract.md`, `docs/sheet_generation_contract.md`
-- **Done condition:** required generation-facing template fields are explicit and sufficient.
+- **Relevant files/docs:** `docs/delivery_plan.md`, `docs/sheet_generation_contract.md`, `docs/template_artifact_contract.md`
+- **Done condition:** acceptance conditions are explicit enough to start implementation without milestone-boundary reinterpretation.
 
-### T2 — Resolve remaining cross-doc ambiguity
-- **Purpose:** identify and close any residual ambiguity between template artifact and generation contracts.
+### T2 — State implementation-start scope under closed M1 boundary
+- **Purpose:** clarify what implementation work may begin now without reopening C1/C2 contract scope.
 - **Status:** Planned
-- **Relevant files/docs:** `docs/template_artifact_contract.md`, `docs/sheet_generation_contract.md`, `docs/delivery_plan.md`
-- **Done condition:** no material ambiguity remains for generation usage.
+- **Relevant files/docs:** `docs/delivery_plan.md`
+- **Done condition:** immediate implementation-start scope is explicit and milestone-consistent.
 
-### T3 — Propose only narrowly scoped clarification edits if required
-- **Purpose:** keep C2 strictly alignment-focused without reopening settled MVP boundary scope.
+### T3 — Capture final contract-to-implementation handoff notes
+- **Purpose:** summarize any final contract notes that implementation teams must observe while mechanics remain out of scope.
 - **Status:** Planned
-- **Relevant files/docs:** `docs/template_artifact_contract.md`, `docs/sheet_generation_contract.md`
-- **Done condition:** any edits remain minimal, consistency-focused, and non-redesign.
+- **Relevant files/docs:** `docs/delivery_plan.md`, `docs/sheet_generation_contract.md`, `docs/template_artifact_contract.md`
+- **Done condition:** handoff notes are compact, practical, and avoid introducing implementation procedures.
 
 ## 10. Explicitly deferred for now
 - Solver implementation details.
@@ -160,6 +159,15 @@ What must remain untouched for now:
 - Broad multi-department generalization beyond ICU/HD-first sequencing.
 
 ## 11. Recently completed checkpoints
+- **C2 — Align template artifact vs generation needs** *(closed 2026-04-18)*
+  - Closed remaining cross-doc alignment between `docs/template_artifact_contract.md` and `docs/sheet_generation_contract.md`, including first-release visible title/header generated-surface alignment.
+  - Confirmed ICU/HD first-release combined-shell generation declarations remain consistency-aligned and non-redesign.
+  - Task closure status: T1 Done, T2 Done, T3 Done.
+  - Main affected docs: `docs/template_artifact_contract.md`, `docs/sheet_generation_contract.md`, `docs/delivery_plan.md`.
+
+### C2 sign-off note
+C2 is complete. Template artifact and generation contract surfaces are now sufficiently aligned for ICU/HD first-release sheet-shell generation usage, with no material remaining ambiguity requiring checkpoint-level redesign before C3 handoff-readiness framing.
+
 - **C1 — Close sheet-generation MVP boundary** *(closed 2026-04-17)*
   - Closed generation inputs, generated structural surfaces, allowed operator edits, editable/protected + validation boundary, explicit non-goals, and acceptance framing at contract/planning level.
   - Task closure status: T1 Done, T2 Done, T3 Done, T4 Done, T5 Done, T6 Done.
@@ -174,6 +182,8 @@ C1 is complete. The sheet-generation MVP boundary is now closed for execution: g
 - **2026-04-16:** Activated Checkpoint 1 (`Close sheet-generation MVP boundary`).
 - **2026-04-17:** Closed Checkpoint 1 (`Close sheet-generation MVP boundary`) and recorded formal sign-off in this plan.
 - **2026-04-17:** Activated Checkpoint 2 (`Align template artifact vs generation needs`) as current execution focus.
+- **2026-04-18:** Closed Checkpoint 2 (`Align template artifact vs generation needs`) and recorded formal sign-off in this plan.
+- **2026-04-18:** Activated Checkpoint 3 (`Define generation acceptance/handoff readiness`) as current execution focus.
 
 ## 13. Relationship to other repo docs
 - `README.md` = front door orientation.
@@ -194,6 +204,6 @@ C1 is complete. The sheet-generation MVP boundary is now closed for execution: g
 ## 15. Initial seed content
 This initial version is seeded with:
 - active milestone `Operator-ready request sheet generation`
-- active checkpoint `Align template artifact vs generation needs`
-- compact C2 starter tasks focused on template-vs-generation consistency checks
+- active checkpoint `Define generation acceptance/handoff readiness`
+- compact C3 starter tasks focused on generation handoff acceptance/readiness framing
 - explicit deferrals to prevent near-term drift
