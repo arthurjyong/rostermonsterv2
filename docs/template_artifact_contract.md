@@ -156,10 +156,26 @@ Field vocabulary:
 - `pointRows[].rowKey`
 - `pointRows[].label`
 - `pointRows[].defaultRule`
+- `pointRows[].defaultRule.weekdayToWeekday`
+- `pointRows[].defaultRule.weekdayToWeekendOrPublicHoliday`
+- `pointRows[].defaultRule.weekendOrPublicHolidayToWeekendOrPublicHoliday`
+- `pointRows[].defaultRule.weekendOrPublicHolidayToWeekday`
 - `legendBlock.present`
 - `legendBlock.contentLines`
 - `surfaceOwnership.operatorInput`
 - `surfaceOwnership.templateOwnedStructural`
+
+Point-row default-rule shape (first-release ICU/HD):
+- `pointRows[].defaultRule` must include exactly these four numeric fields:
+  - `weekdayToWeekday`
+  - `weekdayToWeekendOrPublicHoliday`
+  - `weekendOrPublicHolidayToWeekendOrPublicHoliday`
+  - `weekendOrPublicHolidayToWeekday`
+- Required ICU/HD first-release values:
+  - `weekdayToWeekday = 1`
+  - `weekdayToWeekendOrPublicHoliday = 1.75`
+  - `weekendOrPublicHolidayToWeekendOrPublicHoliday = 2`
+  - `weekendOrPublicHolidayToWeekday = 1.5`
 
 Section-based doctor-group derivation (first-release ICU/HD):
 - each `inputSheetLayout.sections[]` record must declare canonical `groupId`
@@ -203,7 +219,7 @@ Settled constraints:
 - Keep an explicit minimal scoring stub.
 - Do not mirror all v1 `SCORER_CONFIG` inside template artifact.
 - Do not allow artifact to become runtime scorer-config dump.
-- Day-level point rows are not part of `inputSheetLayout`.
+- Day-level point rows are template-owned declarations under `inputSheetLayout.pointRows`, not scoring configuration content.
 
 First-release shape:
 - `scoring.templateKnobs` (empty list allowed)
@@ -224,6 +240,9 @@ A template artifact is invalid if any of the following are true:
 - any `inputSheetLayout.sections[]` record is missing `headerLabel`
 - ICU/HD first-release artifact omits `inputSheetLayout.headerBlock.title` or `inputSheetLayout.visibleLabels.departmentLabel`
 - ICU/HD first-release artifact omits required point-row declarations (`MICU_CALL_POINT`, `MHD_CALL_POINT`) with declared `label` + `defaultRule`
+- any `inputSheetLayout.pointRows[].defaultRule` is missing one of the required fields (`weekdayToWeekday`, `weekdayToWeekendOrPublicHoliday`, `weekendOrPublicHolidayToWeekendOrPublicHoliday`, `weekendOrPublicHolidayToWeekday`)
+- any required `inputSheetLayout.pointRows[].defaultRule` field is non-numeric
+- any `inputSheetLayout.pointRows[].defaultRule` includes fields outside the required four-field shape
 - any ICU/HD first-release point-row default rule differs from the settled default matrix (`weekday->weekday=1`, `weekday->weekend/publicHoliday=1.75`, `weekend/publicHoliday->weekend/publicHoliday=2`, `weekend/publicHoliday->weekday=1.5`)
 - `inputSheetLayout.legendBlock.present` is true but `legendBlock.contentLines` is missing
 - `inputSheetLayout.surfaceOwnership` omits either operator-input or template-owned structural declarations
