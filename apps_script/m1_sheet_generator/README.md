@@ -112,6 +112,55 @@ clasp open
 `clasp open` opens the project in the Apps Script web editor, where you can
 run either public entrypoint against a test `config` object.
 
+## API executable / `clasp run`
+
+The helpers in this project (including those in `src/DebugSmokeTest.gs`) can
+be invoked remotely with `clasp run` instead of from the Apps Script editor.
+`clasp run` is not a single-switch feature — several independent prerequisites
+all have to be satisfied in the operator's local environment, and missing any
+one of them typically surfaces as the same opaque API error:
+`Script function not found. Please make sure script is deployed as API executable.`
+
+Full prerequisite list:
+
+1. Link the Apps Script project to a **user-managed Google Cloud Platform
+   project**. By default Apps Script uses a hidden Google-managed project
+   that does not expose API access.
+2. Enable the **Apps Script API** for your account:
+   https://script.google.com/home/usersettings
+3. Add an `executionApi` block to the Apps Script manifest
+   (`src/appsscript.json`), for example:
+
+        "executionApi": {
+          "access": "MYSELF"
+        }
+
+   Without this block the Apps Script API refuses to invoke any function,
+   even after deployment. The manifest in this repo does **not** ship with
+   this block; each operator adds it locally with the access level that
+   matches their setup.
+4. Create an **API Executable** deployment in the Apps Script editor
+   (*Deploy → New deployment → API Executable*), or `clasp deploy`.
+   Re-deploy whenever the manifest or public surface changes.
+5. In the GCP project from step 1, create an **OAuth 2.0 Client ID** of
+   type *Desktop app* and download the JSON credentials file.
+6. Re-authenticate clasp against that GCP project with
+   `clasp login --creds <path-to-credentials.json>`. Without this, clasp
+   keeps using its built-in default OAuth client, which is not authorized
+   to call scripts owned by a user-managed GCP project — even when steps
+   1–4 are complete.
+
+Once all of the above are in place, public functions become callable from
+this folder:
+
+    clasp run smokeTestGenerateNewSpreadsheet_20260504_20260608
+    clasp run smokeTestGenerateIntoExistingSpreadsheet_20260504_20260608
+
+Live deployment IDs, execution URLs, and operator OAuth client credentials
+are **environment-specific operational metadata** and are intentionally
+**not** committed to this repo as stable configuration. They belong in each
+operator's local environment only.
+
 ## Holiday data
 
 `DatesAndHolidays.gs` carries a local Singapore public-holiday map covering
