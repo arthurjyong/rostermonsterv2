@@ -166,3 +166,8 @@ For each non-trivial patch, explicitly identify:
 - validation plan
 
 If the change cannot be explained that way, it is probably too broad.
+
+## Holiday data rules
+- Singapore public holiday dates must match official MOM gazetted dates.
+- Holiday logic must never silently assume unsupported years are non-holidays.
+- If a generation or adjacent-day lookup crosses outside supported holiday years, throw an explicit error.
