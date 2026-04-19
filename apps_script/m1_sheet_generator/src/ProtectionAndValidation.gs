@@ -1,5 +1,5 @@
 // ProtectionAndValidation.gs
-// Explicit whole-sheet protection + warning-only request validation.
+// Explicit whole-sheet protection + hard-reject request/call-point validation.
 //
 // Protection model (docs/sheet_generation_contract.md section 9):
 //   1. Protect the entire sheet, restrict to the script owner.
@@ -7,12 +7,14 @@
 //        - doctor-name cells, request-entry cells, call-point value cells,
 //          lower-shell assignment cells.
 //   3. Everything else (title, date axis, weekday row, section headers, point-row
-//      labels, lower-shell labels, legend) stays non-editable.
+//      labels, lower-shell labels, legend, and column A on non-doctor rows)
+//      stays non-editable.
 //
-// Validation model (docs/request_semantics_contract.md section 7):
-//   Request-entry cells use warning-only custom-formula validation. Recognized
-//   tokens are accepted alone or as comma-separated combinations. Blank is allowed.
-//   Parser remains authoritative for downstream interpretation.
+// Validation model:
+//   Request-entry cells use hard-reject custom-formula validation. Recognized
+//   tokens are accepted alone or as comma-separated combinations. Blank is
+//   allowed. Invalid entries are rejected (setAllowInvalid(false)).
+//   Call-point cells accept numbers only, also hard-reject.
 
 var REQUEST_TOKEN_VOCAB_ = Object.freeze([
   'CR', 'NC', 'AL', 'TL', 'SL', 'MC', 'HL', 'NSL', 'OPL', 'EXAM', 'EMCC', 'PM_OFF',
@@ -55,8 +57,6 @@ function applyProtections_(sheet, layoutInfo) {
 }
 
 function applyValidations_(sheet, layoutInfo) {
-  if (!layoutInfo.requestEntryRanges.length) return;
-
   var altToken = REQUEST_TOKEN_VOCAB_.join('|');
   var tokensList = REQUEST_TOKEN_VOCAB_.join(', ');
 
@@ -73,13 +73,26 @@ function applyValidations_(sheet, layoutInfo) {
 
     var rule = SpreadsheetApp.newDataValidation()
       .requireFormulaSatisfied(formula)
-      .setAllowInvalid(true) // warning-only, not rejection
+      .setAllowInvalid(false) // hard reject: invalid entries refused on commit
       .setHelpText(
-        'Recognized request codes: ' + tokensList + '. ' +
-        'Combinations allowed (e.g. "CR, NC" or "EMCC, NC"). Blank is OK. ' +
-        'Validation is warning-only; parser remains authoritative.')
+        'Allowed request codes: ' + tokensList + '. ' +
+        'Single code or comma-separated combinations (e.g. "CR, NC"). ' +
+        'Blank is OK. Invalid entries are rejected.')
       .build();
 
     range.setDataValidation(rule);
+  }
+
+  // Call-point cells: numbers only (hard reject). Defaults emitted by Layout
+  // (1, 1.5, 1.75, 2 per the 4-case rule) are all valid.
+  for (var j = 0; j < layoutInfo.pointRowRanges.length; j++) {
+    var pr = layoutInfo.pointRowRanges[j];
+    var prange = sheet.getRange(pr.row, pr.col, pr.numRows, pr.numCols);
+    var prule = SpreadsheetApp.newDataValidation()
+      .requireNumberGreaterThanOrEqualTo(0)
+      .setAllowInvalid(false)
+      .setHelpText('Call Point cells accept numbers only (non-negative).')
+      .build();
+    prange.setDataValidation(prule);
   }
 }

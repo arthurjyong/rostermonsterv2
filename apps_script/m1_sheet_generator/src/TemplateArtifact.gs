@@ -87,11 +87,25 @@ var ICU_HD_TEMPLATE_ARTIFACT = Object.freeze({
     ]),
     legendBlock: Object.freeze({
       present: true,
-      contentLines: Object.freeze([
-        'WKD = weekday; WEPH = weekend or Singapore public holiday.',
-        'Request codes: CR, NC, AL, TL, SL, MC, HL, NSL, OPL, EXAM, EMCC, PM_OFF.',
-        'Combinations like "CR, NC" and "EMCC, NC" are allowed; separate with commas.',
-        'Request validation is warning-only; parser remains authoritative.',
+      descriptionsHeading: 'Descriptions',
+      descriptions: Object.freeze([
+        'CR — Call Request',
+        'NC — No Call / Call Block',
+        'AL — Annual Leave',
+        'TL — Training Leave',
+        'SL or MC — Sick Leave / Medical Leave',
+        'HL — Hospitalisation Leave',
+        'NSL — National Service Leave',
+        'OPL — Other Planned Leave',
+        'EMCC — ED PM Training',
+        'PM_OFF — PM Off',
+        'EXAM — Exam day',
+      ]),
+      notesHeading: 'Roster Notes / FAQ',
+      notes: Object.freeze([
+        '1. Call points are currently experimental and remain subject to approval by the consultants / bosses. The current call weightage is not final.',
+        '2. Please combine multiple requests using ", " (comma + space). Example: CR, EMCC',
+        '3. By default, calls will be blocked on leave days, on the day before leave, and on any PM off (e.g. EMCC, PM_OFF), unless a call request has been made.',
       ]),
     }),
     surfaceOwnership: Object.freeze({

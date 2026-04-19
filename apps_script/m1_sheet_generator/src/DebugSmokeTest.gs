@@ -48,3 +48,20 @@ function smokeTestRunAll_20260504_20260608() {
   Logger.log(JSON.stringify(combined, null, 2));
   return combined;
 }
+
+// Zero-formatting smoke test. Creates a fresh empty spreadsheet and returns
+// its identity only — no Layout, no ProtectionAndValidation, no
+// TemplateArtifact. Isolates "can this caller create a sheet at all?" from
+// any downstream formatting failures.
+function smokeTestCreateEmptyOnly() {
+  var name = 'smoke-empty-' + new Date().toISOString().replace(/[:.]/g, '-');
+  var ss = SpreadsheetApp.create(name);
+  var result = {
+    spreadsheetId: ss.getId(),
+    spreadsheetUrl: ss.getUrl(),
+    spreadsheetName: ss.getName(),
+  };
+  Logger.log('smokeTestCreateEmptyOnly result:');
+  Logger.log(JSON.stringify(result, null, 2));
+  return result;
+}
