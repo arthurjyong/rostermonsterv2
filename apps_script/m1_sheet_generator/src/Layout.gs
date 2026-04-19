@@ -41,29 +41,25 @@ function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
   sheet.clear();
   sheet.clearNotes();
 
-  // ---- Row 1: title ----
-  var titleRange = sheet.getRange(1, 1, 1, totalCols);
-  titleRange.merge();
+  // Decorative rows use no merges. Text in column A overflows into empty cells
+  // to the right, producing the same visual banner without a merged range. This
+  // keeps column A clear of merges so setFrozenColumns(nameCol) below does not
+  // hit the "can't freeze columns which contain only part of a merged cell"
+  // restriction. The department label is carried in the title prefix (per the
+  // template's headerBlock.title), so no dedicated dept row is needed.
+
+  // ---- Row 1: title (department name is the prefix of this title) ----
   var titleText =
     template.inputSheetLayout.headerBlock.title +
     '   (' + dateRange[0].isoDate + ' – ' + dateRange[numDays - 1].isoDate + ')';
-  titleRange.setValue(titleText)
+  sheet.getRange(1, nameCol).setValue(titleText)
     .setFontWeight('bold')
     .setFontSize(14)
-    .setHorizontalAlignment('center')
-    .setBackground(LAYOUT_COLORS_.titleBg)
     .setFontColor(LAYOUT_COLORS_.titleFg);
+  sheet.getRange(1, nameCol, 1, totalCols).setBackground(LAYOUT_COLORS_.titleBg);
 
-  // ---- Row 2: department label ----
-  var deptRange = sheet.getRange(2, 1, 1, totalCols);
-  deptRange.merge();
-  deptRange.setValue(template.inputSheetLayout.visibleLabels.departmentLabel)
-    .setFontStyle('italic')
-    .setHorizontalAlignment('center')
-    .setBackground(LAYOUT_COLORS_.headerRowBg);
-
-  // ---- Row 3: date axis ----
-  var dateRow = 3;
+  // ---- Row 2: date axis ----
+  var dateRow = 2;
   sheet.getRange(dateRow, nameCol).setValue('Date')
     .setFontWeight('bold')
     .setBackground(LAYOUT_COLORS_.headerRowBg);
@@ -74,8 +70,8 @@ function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
     .setHorizontalAlignment('center')
     .setBackground(LAYOUT_COLORS_.headerRowBg);
 
-  // ---- Row 4: weekday row ----
-  var weekdayRow = 4;
+  // ---- Row 3: weekday row ----
+  var weekdayRow = 3;
   sheet.getRange(weekdayRow, nameCol).setValue('Day')
     .setFontWeight('bold')
     .setBackground(LAYOUT_COLORS_.headerRowBg);
@@ -93,19 +89,22 @@ function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
   var doctorNameRanges = [];
   var requestEntryRanges = [];
   var doctorRowNumbers = [];
+  // Rows with a deliberate full-width banner color. Re-applied after weekend/PH
+  // shading so the structural row color wins over the column-wise weekend paint.
+  var bandedRows = [];
 
   for (var s = 0; s < sections.length; s++) {
     var sec = sections[s];
     var rawCount = doctorCountByGroup[sec.groupId];
     var count = rawCount | 0;
 
-    var headerRange = sheet.getRange(currentRow, 1, 1, totalCols);
-    headerRange.merge();
-    headerRange.setValue(sec.headerLabel + '  (' + sec.groupId + ')')
-      .setFontWeight('bold')
-      .setBackground(LAYOUT_COLORS_.sectionBg)
-      .setHorizontalAlignment('left');
+    sheet.getRange(currentRow, nameCol)
+      .setValue(sec.headerLabel + '  (' + sec.groupId + ')')
+      .setFontWeight('bold');
+    sheet.getRange(currentRow, nameCol, 1, totalCols)
+      .setBackground(LAYOUT_COLORS_.sectionBg);
     var sectionHeaderRow = currentRow;
+    bandedRows.push({ row: sectionHeaderRow, bg: LAYOUT_COLORS_.sectionBg });
     currentRow++;
 
     var firstDoctorRow = currentRow;
@@ -127,6 +126,10 @@ function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
       doctorNameRanges.push({ row: firstDoctorRow, col: nameCol,       numRows: count, numCols: 1 });
       requestEntryRanges.push({ row: firstDoctorRow, col: firstDateCol, numRows: count, numCols: numDays });
     }
+
+    // Blank separator row after each doctor group (requested: one blank line
+    // after ICU only, ICU/HD, and HD only, before call-point rows).
+    currentRow++;
   }
 
   // ---- Point rows (MICU / MHD call point) ----
@@ -151,6 +154,7 @@ function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
       numRows: 1,
       numCols: numDays,
     });
+    bandedRows.push({ row: currentRow, bg: LAYOUT_COLORS_.pointBg });
     currentRow++;
   }
 
@@ -158,12 +162,12 @@ function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
   currentRow++;
 
   // ---- Lower roster / output shell header ----
-  var lowerHeaderRange = sheet.getRange(currentRow, 1, 1, totalCols);
-  lowerHeaderRange.merge();
-  lowerHeaderRange.setValue('Roster / Assignments')
-    .setFontWeight('bold')
-    .setBackground(LAYOUT_COLORS_.lowerBg)
-    .setHorizontalAlignment('left');
+  sheet.getRange(currentRow, nameCol)
+    .setValue('Roster / Assignments')
+    .setFontWeight('bold');
+  sheet.getRange(currentRow, nameCol, 1, totalCols)
+    .setBackground(LAYOUT_COLORS_.lowerBg);
+  bandedRows.push({ row: currentRow, bg: LAYOUT_COLORS_.lowerBg });
   currentRow++;
 
   // ---- Lower roster / output shell assignment rows ----
@@ -192,23 +196,36 @@ function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
   // spacer row
   currentRow++;
 
-  // ---- Legend / Descriptions ----
+  // ---- Legend / Descriptions + Roster Notes ----
+  // No merges anywhere in the legend block. Section headings sit in column A
+  // with a row-wide background; content lines sit in column A with text
+  // overflow into empty cells to the right.
   var legendStartRow = null;
   var legendEndRow = null;
   if (template.inputSheetLayout.legendBlock && template.inputSheetLayout.legendBlock.present) {
+    var lb = template.inputSheetLayout.legendBlock;
     legendStartRow = currentRow;
-    var legendHeader = sheet.getRange(currentRow, 1, 1, totalCols);
-    legendHeader.merge();
-    legendHeader.setValue('Descriptions')
-      .setFontWeight('bold')
-      .setBackground(LAYOUT_COLORS_.headerRowBg);
+
+    sheet.getRange(currentRow, nameCol).setValue(lb.descriptionsHeading).setFontWeight('bold');
+    sheet.getRange(currentRow, nameCol, 1, totalCols).setBackground(LAYOUT_COLORS_.headerRowBg);
+    bandedRows.push({ row: currentRow, bg: LAYOUT_COLORS_.headerRowBg });
     currentRow++;
 
-    var lines = template.inputSheetLayout.legendBlock.contentLines;
-    for (var l = 0; l < lines.length; l++) {
-      var lineRange = sheet.getRange(currentRow, 1, 1, totalCols);
-      lineRange.merge();
-      lineRange.setValue(lines[l]);
+    for (var l = 0; l < lb.descriptions.length; l++) {
+      sheet.getRange(currentRow, nameCol).setValue(lb.descriptions[l]);
+      currentRow++;
+    }
+
+    // blank separator between Descriptions and Roster Notes
+    currentRow++;
+
+    sheet.getRange(currentRow, nameCol).setValue(lb.notesHeading).setFontWeight('bold');
+    sheet.getRange(currentRow, nameCol, 1, totalCols).setBackground(LAYOUT_COLORS_.headerRowBg);
+    bandedRows.push({ row: currentRow, bg: LAYOUT_COLORS_.headerRowBg });
+    currentRow++;
+
+    for (var n = 0; n < lb.notes.length; n++) {
+      sheet.getRange(currentRow, nameCol).setValue(lb.notes[n]);
       currentRow++;
     }
     legendEndRow = currentRow - 1;
@@ -229,10 +246,17 @@ function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
       .setBackground(LAYOUT_COLORS_.wephBg);
   }
 
+  // Re-apply banner backgrounds so intentional row colors win over weekend/PH shading.
+  for (var b = 0; b < bandedRows.length; b++) {
+    sheet.getRange(bandedRows[b].row, nameCol, 1, totalCols)
+      .setBackground(bandedRows[b].bg);
+  }
+
   // ---- Column widths / frozen panes ----
   sheet.setColumnWidth(nameCol, 200);
+  // Date columns: wide enough to fit the ISO date "YYYY-MM-DD" by default.
   for (var i = 0; i < numDays; i++) {
-    sheet.setColumnWidth(firstDateCol + i, 58);
+    sheet.setColumnWidth(firstDateCol + i, 100);
   }
   sheet.setFrozenRows(weekdayRow);
   sheet.setFrozenColumns(nameCol);
@@ -254,7 +278,6 @@ function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
     totalCols: totalCols,
     lastContentRow: lastContentRow,
     titleRow: 1,
-    deptRow: 2,
     dateRow: dateRow,
     weekdayRow: weekdayRow,
     sectionInfos: sectionInfos,
@@ -281,13 +304,21 @@ function estimateTotalRows_(template, doctorCountByGroup) {
   var pointRowCount = template.inputSheetLayout.pointRows.length;
   var lowerRowCount = template.outputMapping.surfaces[0].assignmentRows.length;
   var legend = template.inputSheetLayout.legendBlock;
-  var legendRowCount = (legend && legend.present && legend.contentLines)
-    ? 1 + legend.contentLines.length
-    : 0;
+  var legendRowCount = 0;
+  if (legend && legend.present) {
+    legendRowCount =
+      1 /* descriptions heading */ +
+      (legend.descriptions ? legend.descriptions.length : 0) +
+      1 /* blank separator */ +
+      1 /* notes heading */ +
+      (legend.notes ? legend.notes.length : 0);
+  }
   return (
-    2 /* title + dept */ +
+    1 /* title */ +
     2 /* date + weekday */ +
-    sections.length + doctorRowsTotal +
+    sections.length /* section headers */ +
+    doctorRowsTotal +
+    sections.length /* blank row after each doctor group */ +
     pointRowCount +
     1 /* spacer */ + 1 /* lower header */ + lowerRowCount +
     1 /* spacer */ + legendRowCount
