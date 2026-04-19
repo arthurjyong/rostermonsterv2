@@ -149,7 +149,7 @@ function validateDoctorCountsAgainstTemplate_(counts, template) {
 }
 
 function buildSpreadsheetName_(normalized) {
-  return 'CGH ICU/HD Roster ' + normalized.periodStartDate + ' - ' + normalized.periodEndDate;
+  return 'CGH ICU/HD Roster ' + normalized.periodStartDate + ' to ' + normalized.periodEndDate;
 }
 
 function buildVersionedTabName_(now) {

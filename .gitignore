@@ -140,3 +140,6 @@ vite.config.ts.timestamp-*
 
 # Apps Script local clasp config (contains real scriptId)
 apps_script/m1_sheet_generator/.clasp.json
+
+# Apps Script local operator metadata (deployment IDs, execution URLs)
+apps_script/m1_sheet_generator/.ops.local.json
