@@ -1,26 +1,83 @@
 # M1 Sheet Generator (Apps Script)
 
-This folder owns the M1 Apps Script scaffold for sheet-facing generation. It is the
-only Apps Script project in the repo and is scoped to building the roster Google
-Sheet (layout, headers, validations, protections). Compute-heavy core logic —
+This folder owns the M1 Apps Script generator core for the ICU/HD empty
+request-sheet shell. It is the only Apps Script project in the repo and is
+scoped to the sheet-facing generation slice. Compute-heavy core logic —
 parsing, normalization, solving — does **not** live here; it belongs outside
 Apps Script.
+
+## What this project does today
+
+- Generates a first-release **ICU/HD empty request-sheet shell** driven by
+  the committed runtime template artifact (`src/TemplateArtifact.gs`).
+- Supports both output modes from
+  `docs/sheet_generation_contract.md`:
+  - create into a **new spreadsheet file**, or
+  - create as a **new tab in an existing spreadsheet** (by ID).
+- Emits the required structural surfaces: title/header block, date axis,
+  weekday row, grouped doctor sections sized from `doctorCountByGroup`,
+  MICU/MHD call-point rows with default values from the 4-case rule,
+  lower roster/output shell assignment rows, and a legend/Descriptions block.
+- Highlights weekends and Singapore public holidays across date-keyed columns.
+- Applies **whole-sheet protection** restricted to the script owner, with
+  unprotected exceptions only for operator-editable ranges: doctor-name
+  cells, request-entry cells, call-point cells, and lower-shell assignment
+  cells.
+- Applies **warning-only** regex data validation to request-entry cells. The
+  parser remains authoritative for request interpretation.
+
+## What this project does not do yet
+
+- No Google Form intake and no final launcher UX (menu, sidebar, add-on).
+  `Menu.gs` is intentionally a no-op. Public entrypoints are invoked directly
+  during development.
+- No parser, normalizer, solver, scorer, writeback, or orchestration code.
+  Those remain outside Apps Script.
+
+## Public entrypoints (in `src/GenerateSheet.gs`)
+
+Both entrypoints take a single `config` object:
+
+```js
+{
+  department: 'CGH ICU/HD Call',          // optional; defaults to ICU/HD
+  periodStartDate: '2026-04-06',          // YYYY-MM-DD, required
+  periodEndDate:   '2026-04-30',          // YYYY-MM-DD, required
+  doctorCountByGroup: {                   // required, non-negative integers
+    ICU_ONLY: 4,
+    ICU_HD:   5,
+    HD_ONLY:  3,
+  },
+  spreadsheetId: '…'                      // required only for existing-mode
+}
+```
+
+- `generateIntoNewSpreadsheet(config)` creates a fresh spreadsheet named
+  `CGH ICU/HD Roster <start> - <end>` (ISO dates) and a tab named
+  `vMMDDHHMMSS` (script-timezone timestamp).
+- `generateIntoExistingSpreadsheet(config)` opens the spreadsheet by ID and
+  adds a tab named `vMMDDHHMMSS`. If that exact tab name already exists the
+  call throws loudly and does not modify the target.
+
+Both entrypoints return `{ spreadsheetId, spreadsheetUrl, spreadsheetName,
+sheetName, periodStartDate, periodEndDate, doctorCountByGroup, mode }`.
 
 ## Layout
 
 ```
 apps_script/m1_sheet_generator/
-├── .clasp.json            # local-only, gitignored; points at the real Apps Script project
-├── .clasp.json.example    # committed template
+├── .clasp.json                 # local-only, gitignored; points at the real Apps Script project
+├── .clasp.json.example         # committed template
 ├── README.md
 └── src/
     ├── appsscript.json
-    ├── Menu.gs
-    ├── GenerateSheet.gs
-    ├── Layout.gs
-    ├── DatesAndHolidays.gs
-    ├── ProtectionAndValidation.gs
-    └── TemplateData.gs
+    ├── Menu.gs                 # no-op; launcher UX deferred
+    ├── GenerateSheet.gs        # public entrypoints + config validation
+    ├── Layout.gs               # structural sheet builder
+    ├── DatesAndHolidays.gs     # date-range expansion, SG holiday map, call-point rule
+    ├── ProtectionAndValidation.gs  # whole-sheet protection + warning-only validation
+    ├── TemplateData.gs         # department → artifact resolver
+    └── TemplateArtifact.gs     # committed first-release ICU/HD runtime artifact
 ```
 
 ## Apps Script project link
@@ -52,9 +109,17 @@ clasp open
 ```
 
 `clasp push` uploads everything under `src/` to the Apps Script project.
-`clasp open` opens the project in the Apps Script web editor.
+`clasp open` opens the project in the Apps Script web editor, where you can
+run either public entrypoint against a test `config` object.
+
+## Holiday data
+
+`DatesAndHolidays.gs` carries a local Singapore public-holiday map covering
+2025 (gazetted) and 2026 (best-known at the time of writing). The 2026 entries
+should be verified against the official MOM gazette before being relied on for
+production rosters.
 
 ## Scope reminder
 
-Keep this project thin. Anything that isn't "build or update the Sheet" should
-live outside Apps Script.
+Keep this project thin. Anything that isn't "build or update the Sheet"
+should live outside Apps Script.
