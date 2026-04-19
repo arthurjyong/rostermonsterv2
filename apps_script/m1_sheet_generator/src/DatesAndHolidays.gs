@@ -5,12 +5,17 @@
 // All date arithmetic is done against UTC midnight to avoid DST and local-timezone drift.
 // A YYYY-MM-DD string is treated as a pure calendar date.
 
-// Local Singapore public-holiday map. Covers 2025 (gazetted) and 2026 (best-known at
-// time of writing; includes Monday-in-lieu entries for Sunday holidays). Review 2026
-// entries against the gazetted list before relying on them for a production roster.
+// Local Singapore public-holiday map. Sourced from MOM's gazetted public-holiday list
+// for 2025 and 2026. Dates must match the gazetted list; any silent drift will produce
+// wrong weekend/PH classification and wrong default call-point values for transition
+// days. Holiday lookups outside the supported years throw rather than silently return
+// "not a holiday" (see assertSupportedHolidayYear_).
+var SUPPORTED_HOLIDAY_YEAR_MIN_ = 2025;
+var SUPPORTED_HOLIDAY_YEAR_MAX_ = 2026;
+
 var SG_PUBLIC_HOLIDAYS_SET_ = (function () {
   var list = [
-    // 2025 (gazetted)
+    // 2025 (MOM gazetted)
     '2025-01-01', // New Year's Day
     '2025-01-29', // Chinese New Year Day 1
     '2025-01-30', // Chinese New Year Day 2
@@ -23,11 +28,11 @@ var SG_PUBLIC_HOLIDAYS_SET_ = (function () {
     '2025-10-20', // Deepavali
     '2025-12-25', // Christmas Day
 
-    // 2026 (best-known; verify against MOM gazette before production use)
+    // 2026 (MOM gazetted)
     '2026-01-01', // New Year's Day
     '2026-02-17', // Chinese New Year Day 1
     '2026-02-18', // Chinese New Year Day 2
-    '2026-03-20', // Hari Raya Puasa
+    '2026-03-21', // Hari Raya Puasa
     '2026-04-03', // Good Friday
     '2026-05-01', // Labour Day
     '2026-05-27', // Hari Raya Haji
@@ -43,6 +48,20 @@ var SG_PUBLIC_HOLIDAYS_SET_ = (function () {
   for (var i = 0; i < list.length; i++) set[list[i]] = true;
   return set;
 })();
+
+// Guard: any caller passing a date outside the supported holiday-data window gets an
+// explicit error. This prevents the silent "unknown years are non-holidays" bug mode
+// and catches next-day boundary lookups (e.g. 2026-12-31 → 2027-01-01) up front.
+function assertSupportedHolidayYear_(date, contextLabel) {
+  var y = date.getUTCFullYear();
+  if (y < SUPPORTED_HOLIDAY_YEAR_MIN_ || y > SUPPORTED_HOLIDAY_YEAR_MAX_) {
+    throw new Error(
+      'Singapore holiday data is only available for ' + SUPPORTED_HOLIDAY_YEAR_MIN_ +
+      '-' + SUPPORTED_HOLIDAY_YEAR_MAX_ + '; ' + (contextLabel || 'date') + ' ' +
+      formatUtcAsIso_(date) + ' is outside that range. Extend SG_PUBLIC_HOLIDAYS_SET_ ' +
+      'with MOM-gazetted dates and widen SUPPORTED_HOLIDAY_YEAR_MIN_/MAX_ before using.');
+  }
+}
 
 function parseYyyyMmDdToUtc_(isoString) {
   var m = String(isoString).match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -80,6 +99,7 @@ function isWeekend_(date) {
 }
 
 function isPublicHoliday_(date) {
+  assertSupportedHolidayYear_(date, 'holiday lookup for');
   return SG_PUBLIC_HOLIDAYS_SET_[formatUtcAsIso_(date)] === true;
 }
 
@@ -94,6 +114,15 @@ function buildDateRange_(startIso, endIso) {
   if (start.getTime() > end.getTime()) {
     throw new Error('periodStartDate (' + startIso + ') must be on or before periodEndDate (' + endIso + ').');
   }
+  // Fail fast when any day in [start, end+1] falls outside the supported holiday-data
+  // window. end+1 is required because computeDefaultCallPoint_ reads the next day for
+  // transition classification, so a roster ending on the last supported day would
+  // otherwise cross the boundary silently.
+  assertSupportedHolidayYear_(start, 'periodStartDate');
+  assertSupportedHolidayYear_(end, 'periodEndDate');
+  assertSupportedHolidayYear_(addUtcDays_(end, 1),
+    'day after periodEndDate (required for call-point lookup)');
+
   var days = [];
   for (var d = new Date(start.getTime()); d.getTime() <= end.getTime(); d = addUtcDays_(d, 1)) {
     days.push({
