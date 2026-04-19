@@ -112,6 +112,29 @@ clasp open
 `clasp open` opens the project in the Apps Script web editor, where you can
 run either public entrypoint against a test `config` object.
 
+## API executable / `clasp run`
+
+The helpers in this project (including those in `src/DebugSmokeTest.gs`) can
+be invoked remotely with `clasp run` instead of from the Apps Script editor,
+but that requires one-time operational setup:
+
+1. Link the Apps Script project to a **user-managed Google Cloud Platform
+   project**. By default Apps Script uses a hidden Google-managed project
+   that does not expose API access.
+2. Enable the **Apps Script API** for your account:
+   https://script.google.com/home/usersettings
+3. Create an **API executable** deployment in the Apps Script editor
+   (*Deploy → New deployment → API Executable*), or `clasp deploy`.
+
+Once that is in place, public functions become callable from this folder:
+
+    clasp run smokeTestGenerateNewSpreadsheet_20260504_20260608
+    clasp run smokeTestGenerateIntoExistingSpreadsheet_20260504_20260608
+
+Live deployment IDs and execution URLs are **environment-specific operational
+metadata** and are intentionally **not** committed to this repo as stable
+configuration. They belong in each operator's local environment only.
+
 ## Holiday data
 
 `DatesAndHolidays.gs` carries a local Singapore public-holiday map covering
