@@ -9,8 +9,18 @@
     "access": "ANYONE",
     "executeAs": "USER_ACCESSING"
   },
+  "dependencies": {
+    "enabledAdvancedServices": [
+      {
+        "userSymbol": "Drive",
+        "serviceId": "drive",
+        "version": "v3"
+      }
+    ]
+  },
   "oauthScopes": [
     "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/userinfo.email"
   ]
 }
