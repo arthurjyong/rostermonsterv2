@@ -13,6 +13,11 @@ function runAllTests_() {
     testBuildDateRangeRejectsEndAtSupportedBoundary_,
     testBuildDateRangeAllowsEndOneBeforeBoundary_,
     testComputeDefaultCallPointThrowsAcrossYearBoundary_,
+    testExtractSpreadsheetIdAcceptsBareId_,
+    testExtractSpreadsheetIdAcceptsPlainEditUrl_,
+    testExtractSpreadsheetIdAcceptsAccountScopedUrl_,
+    testExtractSpreadsheetIdRejectsUnrecognizedValue_,
+    testExtractSpreadsheetIdRejectsPublishedLinkFalseMatch_,
   ];
   var failures = [];
   for (var i = 0; i < tests.length; i++) {
@@ -103,6 +108,38 @@ function testComputeDefaultCallPointThrowsAcrossYearBoundary_() {
   var lastDay = parseYyyyMmDdToUtc_('2026-12-31');
   assertThrows_(function () { computeDefaultCallPoint_(lastDay, rule); },
     'computeDefaultCallPoint_ must throw when the next-day lookup crosses years');
+}
+
+function testExtractSpreadsheetIdAcceptsBareId_() {
+  var bare = '1VKR2ctzK5xIcx0T6UpL7Tet6Ur7xiU-KOJTd2iMPdzs';
+  var out = extractSpreadsheetId_(bare);
+  assertTrue_(out === bare, 'bare ID should round-trip through extractor');
+}
+
+function testExtractSpreadsheetIdAcceptsPlainEditUrl_() {
+  var id = '1VKR2ctzK5xIcx0T6UpL7Tet6Ur7xiU-KOJTd2iMPdzs';
+  var out = extractSpreadsheetId_('https://docs.google.com/spreadsheets/d/' + id + '/edit');
+  assertTrue_(out === id, 'plain edit URL should extract to bare ID; got ' + JSON.stringify(out));
+}
+
+function testExtractSpreadsheetIdAcceptsAccountScopedUrl_() {
+  var id = '1VKR2ctzK5xIcx0T6UpL7Tet6Ur7xiU-KOJTd2iMPdzs';
+  var out = extractSpreadsheetId_('https://docs.google.com/spreadsheets/u/1/d/' + id + '/edit#gid=0');
+  assertTrue_(out === id, 'account-scoped URL should extract to bare ID; got ' + JSON.stringify(out));
+}
+
+function testExtractSpreadsheetIdRejectsUnrecognizedValue_() {
+  assertThrows_(function () { extractSpreadsheetId_('not a sheet'); },
+    'extractor must throw on unrecognized references');
+}
+
+function testExtractSpreadsheetIdRejectsPublishedLinkFalseMatch_() {
+  // Published-link shape uses /d/e/<published-id>/pubhtml. The §12.5 matcher must not
+  // capture "e" as the ID; the 20-char minimum and trailing character-class guard
+  // against that. Such a value is not a valid bare ID either, so the extractor throws.
+  assertThrows_(function () {
+    extractSpreadsheetId_('https://docs.google.com/spreadsheets/d/e/2PACX-1vShortPubId/pubhtml');
+  }, 'published-link URL with a single-char e/ segment must not be mis-extracted');
 }
 
 // ---------------------------------------------------------------------------

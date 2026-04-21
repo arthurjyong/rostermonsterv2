@@ -107,10 +107,11 @@ function normalizeAndValidateConfig_(config, needsSpreadsheetId) {
 
   var spreadsheetId = null;
   if (needsSpreadsheetId) {
-    spreadsheetId = (config.spreadsheetId == null ? '' : String(config.spreadsheetId)).trim();
-    if (!spreadsheetId) {
+    var rawReference = (config.spreadsheetId == null ? '' : String(config.spreadsheetId)).trim();
+    if (!rawReference) {
       throw new Error('Existing-spreadsheet mode requires a non-empty spreadsheetId.');
     }
+    spreadsheetId = extractSpreadsheetId_(rawReference);
   }
 
   return {
@@ -120,6 +121,23 @@ function normalizeAndValidateConfig_(config, needsSpreadsheetId) {
     doctorCountByGroup: counts,
     spreadsheetId: spreadsheetId,
   };
+}
+
+// Normalize an operator-supplied spreadsheet reference to a bare spreadsheet ID.
+// Accepts either a bare ID or a full Google Sheets URL, per
+// docs/sheet_generation_contract.md §12.5. The caller has already trimmed the
+// value and ruled out the empty-string case.
+function extractSpreadsheetId_(value) {
+  var urlMatch = value.match(/https?:\/\/docs\.google\.com\/spreadsheets\/(?:u\/\d+\/)?d\/([a-zA-Z0-9_-]{20,})/);
+  if (urlMatch) {
+    return urlMatch[1];
+  }
+  if (/^[a-zA-Z0-9_-]{20,}$/.test(value)) {
+    return value;
+  }
+  throw new Error(
+    'Could not recognize spreadsheet reference — paste the full link from the browser bar, or the spreadsheet ID.'
+  );
 }
 
 function coerceToIsoDate_(value, fieldName) {
