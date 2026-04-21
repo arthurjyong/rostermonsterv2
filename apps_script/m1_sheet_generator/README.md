@@ -24,10 +24,6 @@ Apps Script.
   unprotected exceptions only for operator-editable ranges: doctor-name
   cells, request-entry cells, call-point cells, and lower-shell assignment
   cells.
-- Opens newly-created spreadsheets (new-spreadsheet mode only) to
-  **anyone-with-the-link can edit**, so the operator can share the generated
-  URL with doctors directly. Existing-spreadsheet mode leaves parent-file
-  sharing untouched.
 - Applies **warning-only** regex data validation to request-entry cells. The
   parser remains authoritative for request interpretation.
 - Exposes a thin operator-facing **Web App launcher** (M1.1) that wraps the
@@ -190,12 +186,8 @@ unless they know what to expect. Walk them through it:
 3. Click **Go to CGH ICU/HD Roster Launcher (unsafe)**. The "unsafe" label
    is Google's default wording for unverified pilot-scope apps; it does not
    indicate a security problem with this script specifically.
-4. Review the requested scopes (spreadsheets, drive, userinfo.email,
-   matching the manifest's `oauthScopes`) and click **Allow**. The `drive`
-   scope is required so the launcher can flip the generated spreadsheet's
-   sharing to "anyone-with-the-link can edit" right after creation
-   (`DriveApp.setSharing` needs the full `drive` scope, not the narrower
-   `drive.file`).
+4. Review the requested scopes (spreadsheets, userinfo.email, matching the
+   manifest's `oauthScopes`) and click **Allow**.
 5. The launcher form renders. Consent is cached per Google account; step 2–4
    does not repeat on subsequent visits.
 
