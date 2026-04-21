@@ -30,7 +30,7 @@ function generateIntoNewSpreadsheet(config) {
   applyValidations_(sheet, layoutInfo);
   applyProtections_(sheet, layoutInfo);
 
-  var autoShared = tryAutoShareAnyoneWithLink_(ss.getId());
+  var shareResult = tryAutoShareAnyoneWithLink_(ss.getId());
 
   return {
     mode: 'NEW_SPREADSHEET',
@@ -41,7 +41,8 @@ function generateIntoNewSpreadsheet(config) {
     periodStartDate: normalized.periodStartDate,
     periodEndDate: normalized.periodEndDate,
     doctorCountByGroup: normalized.doctorCountByGroup,
-    autoShared: autoShared,
+    autoShared: shareResult.ok,
+    autoShareError: shareResult.ok ? null : shareResult.reason,
   };
 }
 
@@ -182,14 +183,16 @@ function buildVersionedTabName_(now) {
 // via the Drive Advanced Service (REST v3). Uses the narrower `drive.file`
 // scope, which covers files the app itself just created — unlike
 // `DriveApp.setSharing`, which forces the restricted full `drive` scope.
-// Returns true on success; swallows the error and returns false on failure
-// so the sheet still renders for the operator with a manual-share hint.
+// Returns { ok: true } on success; swallows the error and returns
+// { ok: false, reason: <message> } on failure so the sheet still renders
+// with a truthful hint on the success page.
 function tryAutoShareAnyoneWithLink_(fileId) {
   try {
     Drive.Permissions.create({ type: 'anyone', role: 'writer' }, fileId);
-    return true;
+    return { ok: true };
   } catch (e) {
-    Logger.log('Auto-share failed: ' + (e && e.message ? e.message : e));
-    return false;
+    var message = (e && e.message) ? e.message : String(e);
+    Logger.log('Auto-share failed: ' + message);
+    return { ok: false, reason: message };
   }
 }
