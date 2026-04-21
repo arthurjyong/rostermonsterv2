@@ -37,6 +37,26 @@ function smokeTestGenerateIntoExistingSpreadsheet_20260504_20260608() {
   return result;
 }
 
+// May 2026 operator pilot shell. Xin Peng and Yee Sean are the monthly
+// operators; HD_ONLY is bumped from 6 to 7 because a late email added one
+// more MO to the HD call pool. This targets an operator-owned spreadsheet
+// distinct from the generic disposable smoke-test target above — do not
+// reuse this function or its spreadsheet ID for generic testing.
+var MAY_2026_OPERATOR_SPREADSHEET_ID_ = '1VKR2ctzK5xIcx0T6UpL7Tet6Ur7xiU-KOJTd2iMPdzs';
+
+function smokeTestGenerateMay2026OperatorShell() {
+  var result = generateIntoExistingSpreadsheet({
+    department: 'CGH ICU/HD Call',
+    periodStartDate: '2026-05-04',
+    periodEndDate: '2026-06-01',
+    doctorCountByGroup: { ICU_ONLY: 9, ICU_HD: 6, HD_ONLY: 7 },
+    spreadsheetId: MAY_2026_OPERATOR_SPREADSHEET_ID_,
+  });
+  Logger.log('smokeTestGenerateMay2026OperatorShell result:');
+  Logger.log(JSON.stringify(result, null, 2));
+  return result;
+}
+
 function smokeTestRunAll_20260504_20260608() {
   var newResult = smokeTestGenerateNewSpreadsheet_20260504_20260608();
   var existingResult = smokeTestGenerateIntoExistingSpreadsheet_20260504_20260608();

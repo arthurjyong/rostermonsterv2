@@ -132,6 +132,15 @@ function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
     currentRow++;
   }
 
+  // Center-align request-entry cells. Operator feedback: left-aligned
+  // short codes (CR, AL, NC, EMCC, …) look ragged against the centered
+  // date/weekday/point headers above them.
+  for (var r = 0; r < requestEntryRanges.length; r++) {
+    var rr = requestEntryRanges[r];
+    sheet.getRange(rr.row, rr.col, rr.numRows, rr.numCols)
+      .setHorizontalAlignment('center');
+  }
+
   // ---- Point rows (MICU / MHD call point) ----
   var pointRows = template.inputSheetLayout.pointRows;
   var pointRowRanges = [];
