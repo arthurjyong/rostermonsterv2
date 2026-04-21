@@ -207,7 +207,7 @@ The launcher form collects only the fields already required by the existing gene
 ### 12.5 Spreadsheet reference extraction rule
 Normalization runs centrally in the generator config helper (not in the launcher). The shared rule, applied in order:
 1. Trim whitespace from the supplied value.
-2. If the value matches `/spreadsheets/(?:u/\d+/)?d/([a-zA-Z0-9_-]+)`, take capture group 1 as the bare spreadsheet ID. The optional `u/<n>/` segment covers account-scoped browser-bar URLs that Google emits when a user has multiple signed-in Google accounts (for example `https://docs.google.com/spreadsheets/u/1/d/<id>/edit`).
+2. If the value matches `https?://docs\.google\.com/spreadsheets/(?:u/\d+/)?d/([a-zA-Z0-9_-]{20,})`, take capture group 1 as the bare spreadsheet ID. The optional `u/<n>/` segment covers account-scoped browser-bar URLs that Google emits when a user has multiple signed-in Google accounts (for example `https://docs.google.com/spreadsheets/u/1/d/<id>/edit`). The `docs.google.com` host anchor and the `{20,}` minimum-length capture are both deliberate: they prevent false matches on non-Google hosts sharing the same path shape, and on published-link URLs of the form `/spreadsheets/d/e/<published-id>/pubhtml` where a naive regex would otherwise capture a single-character `e` segment and then fail opaquely at `openById`.
 3. Else, if the value itself matches the bare-ID shape `^[a-zA-Z0-9_-]{20,}$`, accept as-is.
 4. Else, throw an operator-facing error along the lines of: "Could not recognize spreadsheet reference — paste the full link from the browser bar, or the spreadsheet ID."
 
