@@ -14,8 +14,8 @@ This repo uses a single planning vocabulary:
 - **Task**: a concrete work item used to close a checkpoint.
 
 ## Current focus
-- **Active milestone:** `Operator-ready request sheet generation`
-- **Active checkpoint:** `Implement operator-ready sheet generation`
+- **Active milestone:** `Minimal local compute pipeline` (M2)
+- **Active checkpoint:** *(none — M1 closed 2026-04-21 on operator delivery; M2 first checkpoint teed up in `docs/delivery_plan.md` §7 but not yet activated)*
 
 ## Repo navigation
 - `docs/blueprint.md` — Stable architecture truth (what the system is and how boundaries are defined).
