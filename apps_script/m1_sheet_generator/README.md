@@ -142,19 +142,36 @@ Full prerequisite list:
 4. Create an **API Executable** deployment in the Apps Script editor
    (*Deploy → New deployment → API Executable*), or `clasp deploy`.
    Re-deploy whenever the manifest or public surface changes.
-5. In the GCP project from step 1, create an **OAuth 2.0 Client ID** of
-   type *Desktop app* and download the JSON credentials file.
-6. Re-authenticate clasp against that GCP project with
-   `clasp login --creds <path-to-credentials.json>`. Without this, clasp
-   keeps using its built-in default OAuth client, which is not authorized
-   to call scripts owned by a user-managed GCP project — even when steps
-   1–4 are complete.
+5. In the GCP project from step 1, configure the **OAuth consent screen**
+   so every scope listed in the manifest's `oauthScopes` is added to the
+   consent screen's Data Access allowlist. For this project that includes
+   at minimum `https://www.googleapis.com/auth/spreadsheets` and
+   `https://www.googleapis.com/auth/userinfo.email`. A scope that is
+   declared in the manifest but missing here will surface as
+   `You do not have permission to call SpreadsheetApp.openById` (or
+   similar) at runtime, not at login.
+6. In the same GCP project, create an **OAuth 2.0 Client ID** of type
+   *Desktop app* and download the JSON credentials file.
+7. Re-authenticate clasp against that GCP project with the
+   credentials file **and** the project-scope flags:
+
+        clasp login --creds <path-to-credentials.json> --use-project-scopes --include-clasp-scopes
+
+   Both flags matter. `--creds` swaps clasp off its built-in default OAuth
+   client onto the user-managed GCP client (required so clasp is allowed
+   to call scripts owned by that project). `--use-project-scopes` makes
+   the login request the manifest's declared `oauthScopes`, not just
+   clasp's baseline scopes — so the resulting token can actually satisfy
+   the runtime permission checks from step 5. `--include-clasp-scopes`
+   retains clasp's own management scopes so `clasp push`, `clasp pull`,
+   and `clasp deploy` continue to work from the same token.
 
 Once all of the above are in place, public functions become callable from
-this folder:
+this folder. Example helpers defined in `src/DebugSmokeTest.gs`:
 
     clasp run smokeTestGenerateNewSpreadsheet_20260504_20260608
     clasp run smokeTestGenerateIntoExistingSpreadsheet_20260504_20260608
+    clasp run smokeTestGenerateMay2026OperatorShell
 
 Live deployment IDs, execution URLs, and operator OAuth client credentials
 are **environment-specific operational metadata** and are intentionally
@@ -164,9 +181,9 @@ operator's local environment only.
 ## Holiday data
 
 `DatesAndHolidays.gs` carries a local Singapore public-holiday map covering
-2025 (gazetted) and 2026 (best-known at the time of writing). The 2026 entries
-should be verified against the official MOM gazette before being relied on for
-production rosters.
+2025 and 2026, both reconciled against the official MOM gazette. Future years
+must be added the same way — holiday logic throws explicitly rather than
+silently assume unsupported years are non-holidays.
 
 ## Scope reminder
 

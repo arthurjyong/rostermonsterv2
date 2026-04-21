@@ -31,8 +31,8 @@ Unless the repo explicitly says otherwise, assume:
 Read `docs/delivery_plan.md` before proposing non-trivial work.
 
 Current active focus at time of writing:
-- **Active milestone:** `Operator-ready request sheet generation`
-- **Active checkpoint:** `Implement operator-ready sheet generation`
+- **Active milestone:** `Minimal local compute pipeline` (M2)
+- **Active checkpoint:** *(none — M1 closed 2026-04-21; M2 first checkpoint is teed up in `docs/delivery_plan.md` §7 but not yet activated)*
 
 If a task does not clearly support the active checkpoint, do not expand scope casually.
 
