@@ -5,6 +5,10 @@
   "executionApi": {
     "access": "MYSELF"
   },
+  "webapp": {
+    "access": "ANYONE",
+    "executeAs": "USER_ACCESSING"
+  },
   "oauthScopes": [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/userinfo.email"

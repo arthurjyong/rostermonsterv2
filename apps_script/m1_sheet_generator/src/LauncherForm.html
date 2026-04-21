@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        max-width: 640px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+        color: #202124;
+        line-height: 1.45;
+      }
+      h1 { font-size: 1.4rem; margin: 0 0 0.25rem; }
+      p.description { color: #5f6368; margin-top: 0; }
+      fieldset {
+        border: 1px solid #dadce0;
+        border-radius: 6px;
+        margin: 1rem 0;
+        padding: 0.75rem 1.25rem 1rem;
+      }
+      legend { padding: 0 0.5rem; font-weight: 600; }
+      label.field-label { display: block; margin: 0.75rem 0 0.25rem; font-weight: 500; }
+      input[type="date"],
+      input[type="number"],
+      input[type="text"],
+      select {
+        width: 100%;
+        max-width: 28rem;
+        padding: 0.5rem 0.6rem;
+        font-size: 1rem;
+        border: 1px solid #bdc1c6;
+        border-radius: 4px;
+        box-sizing: border-box;
+      }
+      .radio-group label { display: block; margin: 0.5rem 0; font-weight: 400; }
+      .radio-group input[type="radio"] { margin-right: 0.5rem; }
+      .counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; }
+      .counts input { max-width: none; }
+      button#submit-btn {
+        background: #1a73e8;
+        color: white;
+        border: 0;
+        border-radius: 4px;
+        padding: 0.6rem 1.25rem;
+        font-size: 1rem;
+        cursor: pointer;
+        margin-top: 0.5rem;
+      }
+      button#submit-btn[disabled] { background: #9aa0a6; cursor: not-allowed; }
+      .status { margin-top: 1rem; min-height: 1.25rem; }
+      .status.pending { color: #5f6368; }
+      .status.error { color: #c5221f; white-space: pre-wrap; }
+      .hidden { display: none; }
+      dl.run-details { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; }
+      dl.run-details dt { font-weight: 600; color: #5f6368; }
+      dl.run-details dd { margin: 0; }
+      a { color: #1a73e8; word-break: break-all; }
+      button.secondary {
+        background: transparent;
+        border: 1px solid #1a73e8;
+        color: #1a73e8;
+        padding: 0.5rem 1rem;
+        border-radius: 4px;
+        font-size: 0.95rem;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>CGH ICU/HD Roster Launcher</h1>
+    <p class="description">
+      Generate an empty request-sheet shell for a new roster cycle. All fields are required.
+    </p>
+
+    <form id="launcher-form" novalidate>
+      <fieldset>
+        <legend>Department</legend>
+        <label class="field-label" for="department">Department</label>
+        <select id="department" name="department">
+          <option value="CGH ICU/HD Call" selected>CGH ICU/HD Call</option>
+        </select>
+      </fieldset>
+
+      <fieldset>
+        <legend>Period</legend>
+        <label class="field-label" for="periodStartDate">Start date</label>
+        <input id="periodStartDate" name="periodStartDate" type="date" required>
+        <label class="field-label" for="periodEndDate">End date</label>
+        <input id="periodEndDate" name="periodEndDate" type="date" required>
+      </fieldset>
+
+      <fieldset>
+        <legend>Doctor counts by group</legend>
+        <div class="counts">
+          <div>
+            <label class="field-label" for="icuOnly">ICU only</label>
+            <input id="icuOnly" name="icuOnly" type="number" min="0" step="1" required>
+          </div>
+          <div>
+            <label class="field-label" for="icuHd">ICU + HD</label>
+            <input id="icuHd" name="icuHd" type="number" min="0" step="1" required>
+          </div>
+          <div>
+            <label class="field-label" for="hdOnly">HD only</label>
+            <input id="hdOnly" name="hdOnly" type="number" min="0" step="1" required>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Output</legend>
+        <div class="radio-group">
+          <label>
+            <input type="radio" name="outputMode" value="new" checked>
+            New spreadsheet file
+          </label>
+          <label>
+            <input type="radio" name="outputMode" value="existing">
+            New tab in an existing spreadsheet
+          </label>
+        </div>
+        <div id="existing-fields" class="hidden">
+          <label class="field-label" for="spreadsheetId">Spreadsheet link or ID</label>
+          <input id="spreadsheetId" name="spreadsheetId" type="text"
+                 placeholder="Paste the full Google Sheets link or the spreadsheet ID">
+        </div>
+      </fieldset>
+
+      <button type="submit" id="submit-btn">Generate sheet</button>
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+    </form>
+
+    <div id="success-view" class="hidden"></div>
+
+    <!--
+      Server-side scriptlet below embeds LauncherSuccess.html as an inert
+      <template> whose content is cloned client-side after a successful run.
+      <template> contents are not parsed into the live DOM, so IDs inside do
+      not collide with the form view.
+    -->
+    <template id="success-template"><?!= include_('LauncherSuccess') ?></template>
+
+    <script>
+      (function () {
+        var form = document.getElementById('launcher-form');
+        var submitBtn = document.getElementById('submit-btn');
+        var statusEl = document.getElementById('status');
+        var successView = document.getElementById('success-view');
+        var successTemplate = document.getElementById('success-template');
+        var existingFields = document.getElementById('existing-fields');
+        var spreadsheetIdEl = document.getElementById('spreadsheetId');
+        var radios = form.elements.outputMode;
+
+        function getSelectedMode() {
+          for (var i = 0; i < radios.length; i++) {
+            if (radios[i].checked) return radios[i].value;
+          }
+          return 'new';
+        }
+
+        function syncOutputMode() {
+          if (getSelectedMode() === 'existing') {
+            existingFields.classList.remove('hidden');
+            spreadsheetIdEl.required = true;
+          } else {
+            existingFields.classList.add('hidden');
+            spreadsheetIdEl.required = false;
+          }
+        }
+
+        for (var i = 0; i < radios.length; i++) {
+          radios[i].addEventListener('change', syncOutputMode);
+        }
+        syncOutputMode();
+
+        form.addEventListener('submit', function (e) {
+          e.preventDefault();
+          setStatus('pending', 'Generating sheet — this usually takes a few seconds.');
+          submitBtn.disabled = true;
+
+          var payload = {
+            department: form.department.value,
+            periodStartDate: form.periodStartDate.value,
+            periodEndDate: form.periodEndDate.value,
+            icuOnly: form.icuOnly.value,
+            icuHd: form.icuHd.value,
+            hdOnly: form.hdOnly.value,
+            outputMode: getSelectedMode(),
+            spreadsheetId: spreadsheetIdEl.value
+          };
+
+          google.script.run
+            .withSuccessHandler(onSuccess)
+            .withFailureHandler(onFailure)
+            .submitLauncherForm(payload);
+        });
+
+        function onSuccess(response) {
+          submitBtn.disabled = false;
+          if (response && response.ok) {
+            renderSuccess(response.result);
+            return;
+          }
+          var msg = (response && response.error) ? response.error : 'Generation failed for an unknown reason.';
+          setStatus('error', msg);
+        }
+
+        function onFailure(err) {
+          submitBtn.disabled = false;
+          setStatus('error', (err && err.message) ? err.message : String(err));
+        }
+
+        function setStatus(cls, text) {
+          statusEl.className = 'status ' + cls;
+          statusEl.textContent = text;
+        }
+
+        function renderSuccess(result) {
+          var fragment = successTemplate.content.cloneNode(true);
+
+          setById(fragment, 'result-mode',
+            result.mode === 'NEW_SPREADSHEET' ? 'New spreadsheet file' : 'New tab in existing spreadsheet');
+          setById(fragment, 'result-spreadsheet-name', result.spreadsheetName);
+          setById(fragment, 'result-sheet-name', result.sheetName);
+          setById(fragment, 'result-period-start', result.periodStartDate);
+          setById(fragment, 'result-period-end', result.periodEndDate);
+          setById(fragment, 'result-icu-only', result.doctorCountByGroup.ICU_ONLY);
+          setById(fragment, 'result-icu-hd',   result.doctorCountByGroup.ICU_HD);
+          setById(fragment, 'result-hd-only',  result.doctorCountByGroup.HD_ONLY);
+
+          var link = fragment.getElementById('result-link');
+          if (link) {
+            link.href = result.spreadsheetUrl;
+            link.textContent = result.spreadsheetUrl;
+          }
+          var reloadBtn = fragment.getElementById('result-reload');
+          if (reloadBtn) {
+            reloadBtn.addEventListener('click', function () { window.location.reload(); });
+          }
+
+          form.classList.add('hidden');
+          successView.innerHTML = '';
+          successView.appendChild(fragment);
+          successView.classList.remove('hidden');
+          successView.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function setById(root, id, value) {
+          var el = root.getElementById(id);
+          if (el) el.textContent = value == null ? '' : String(value);
+        }
+      })();
+    </script>
+  </body>
+</html>
