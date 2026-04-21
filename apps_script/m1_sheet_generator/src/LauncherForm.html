@@ -235,6 +235,22 @@
             link.href = result.spreadsheetUrl;
             link.textContent = result.spreadsheetUrl;
           }
+          var hint = fragment.getElementById('share-hint');
+          if (hint) {
+            if (result.mode === 'NEW_SPREADSHEET' && result.autoShared) {
+              hint.textContent =
+                'Sharing set to "Anyone with the link (Editor)" automatically — ' +
+                'copy the link above and send it to your doctors.';
+            } else if (result.mode === 'NEW_SPREADSHEET') {
+              hint.innerHTML =
+                'Couldn\'t set sharing automatically. Open the sheet, click the green ' +
+                '<strong>Share</strong> button, set <em>General access</em> to ' +
+                '"Anyone with the link", and change the role to <em>Editor</em>.';
+            } else {
+              hint.textContent =
+                'Sharing inherits from the existing spreadsheet you targeted.';
+            }
+          }
           var reloadBtn = fragment.getElementById('result-reload');
           if (reloadBtn) {
             reloadBtn.addEventListener('click', function () { window.location.reload(); });
