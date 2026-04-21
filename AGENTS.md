@@ -31,8 +31,9 @@ Unless the repo explicitly says otherwise, assume:
 Read `docs/delivery_plan.md` before proposing non-trivial work.
 
 Current active focus at time of writing:
-- **Active milestone:** `Minimal local compute pipeline` (M2)
-- **Active checkpoint:** *(none — M1 closed 2026-04-21; M2 first checkpoint is teed up in `docs/delivery_plan.md` §7 but not yet activated)*
+- **Active milestone:** `Operator-facing launcher` (M1.1, addendum to closed Milestone 1)
+- **Active checkpoint:** `Implement operator launcher web app` (M1.1 C1)
+- **Note:** M2 (`Minimal local compute pipeline`) is returned to Planned while M1.1 is active. Addendum-milestone convention is recorded in `docs/decision_log.md` D-0021; launcher architecture (stack, access model, boundary placement) is recorded in D-0022.
 
 If a task does not clearly support the active checkpoint, do not expand scope casually.
 

@@ -21,6 +21,18 @@ This document defines **milestone-level delivery order** for Roster Monster v2. 
   - Generation inputs, structural output surfaces, allowed operator edits, explicit non-goals, and acceptance criteria are closed and reviewable, and
   - operator-ready ICU/HD sheet-shell generation is implemented for the empty-form use (new spreadsheet file or new tab in an existing spreadsheet), with intended editable/protected surfaces and practical validation in place.
 
+### 1.1) Operator-facing launcher *(addendum to Milestone 1)*
+- **Goal:** Provide a narrow operator-facing launcher so named monthly-rotation pilot operators can invoke empty ICU/HD request-sheet generation without running Apps Script by hand.
+- **Why it matters:** Closes M1's operator-facing story end-to-end without expanding M1's compute scope.
+- **Likely checkpoints:**
+  - Implement operator launcher web app.
+- **Main dependencies:**
+  - Milestone 1 completion.
+  - `docs/sheet_generation_contract.md` §3A (spreadsheet reference input) and §12 (launcher surface).
+- **Exit criteria:**
+  - A non-maintainer test operator can, after one-time Google consent, load the launcher URL, submit the form, and receive a working generated sheet or tab in either output mode.
+- **Addendum framing:** Milestone 1.1 is the first addendum milestone under the `M<parent>.<n>` numbering convention (integer `n` only, no nested decimals) recorded in `docs/decision_log.md` D-0021. Milestone 1 itself stays `Completed`; Milestone 2 returns to Planned while Milestone 1.1 is active.
+
 ### 2) Minimal local compute pipeline
 - **Goal:** Establish a deterministic local parse → normalize → rule/scoring/solve execution path using closed contracts.
 - **Why it matters:** Enables end-to-end technical verification before external orchestration complexity.

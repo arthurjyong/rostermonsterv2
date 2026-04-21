@@ -303,6 +303,7 @@ Planned implementation sequence:
 - Current ICU sheet is the initial reference point.
 - Near-term ICU/HD templates will likely remain highly similar, with changes mainly in dates and doctor names.
 - Department onboarding remains curated by our team, not self-serve.
+- First-release operator scope is a small, named monthly-rotation pilot per department: operators have generate-only access to the maintainer-owned template via an OAuth-gated launcher, and cannot author or modify template structure, mappings, or eligibility declarations.
 - Leave/request legends are expected to be largely reusable across departments, even when templates declare them explicitly.
 - Hard constraints are expected to be largely universal across departments; department-specific variation mainly sits in slot/group structure, group-based eligibility declarations, sheet mapping, request semantics binding choice, and minimal scoring stub presence.
 - This blueprint intentionally stays high-level where contracts are not yet finalized.
