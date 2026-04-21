@@ -13,7 +13,8 @@ Apps Script.
 - Supports both output modes from
   `docs/sheet_generation_contract.md`:
   - create into a **new spreadsheet file**, or
-  - create as a **new tab in an existing spreadsheet** (by ID).
+  - create as a **new tab in an existing spreadsheet** (identified by a
+    bare spreadsheet ID or a full Google Sheets URL, per §12.5).
 - Emits the required structural surfaces: title/header block, date axis,
   weekday row, grouped doctor sections sized from `doctorCountByGroup`,
   MICU/MHD call-point rows with default values from the 4-case rule,
@@ -25,12 +26,15 @@ Apps Script.
   cells.
 - Applies **warning-only** regex data validation to request-entry cells. The
   parser remains authoritative for request interpretation.
+- Exposes a thin operator-facing **Web App launcher** (M1.1) that wraps the
+  existing generation entrypoints behind a small HTML form. See
+  [Operator-facing Web App launcher (M1.1)](#operator-facing-web-app-launcher-m11).
 
 ## What this project does not do yet
 
-- No Google Form intake and no final launcher UX (menu, sidebar, add-on).
-  `Menu.gs` is intentionally a no-op. Public entrypoints are invoked directly
-  during development.
+- No Google Form intake and no in-spreadsheet menu/sidebar/add-on launcher
+  surface — `Menu.gs` is intentionally a no-op. Operator-facing submissions
+  flow through the Web App launcher described below.
 - No parser, normalizer, solver, scorer, writeback, or orchestration code.
   Those remain outside Apps Script.
 
@@ -48,7 +52,7 @@ Both entrypoints take a single `config` object:
     ICU_HD:   5,
     HD_ONLY:  3,
   },
-  spreadsheetId: '…'                      // required only for existing-mode
+  spreadsheetId: '…'                      // required only for existing-mode (URL or bare ID)
 }
 ```
 
@@ -71,13 +75,16 @@ apps_script/m1_sheet_generator/
 ├── README.md
 └── src/
     ├── appsscript.json
-    ├── Menu.gs                 # no-op; launcher UX deferred
+    ├── Menu.gs                 # no-op; in-spreadsheet launcher UX deferred
     ├── GenerateSheet.gs        # public entrypoints + config validation
     ├── Layout.gs               # structural sheet builder
     ├── DatesAndHolidays.gs     # date-range expansion, SG holiday map, call-point rule
     ├── ProtectionAndValidation.gs  # whole-sheet protection + warning-only validation
     ├── TemplateData.gs         # department → artifact resolver
-    └── TemplateArtifact.gs     # committed first-release ICU/HD runtime artifact
+    ├── TemplateArtifact.gs     # committed first-release ICU/HD runtime artifact
+    ├── Launcher.gs             # doGet + google.script.run handler for the Web App launcher
+    ├── LauncherForm.html       # operator-facing form UI
+    └── LauncherSuccess.html    # success view (rendered client-side after a successful run)
 ```
 
 ## Apps Script project link
@@ -111,6 +118,100 @@ clasp open
 `clasp push` uploads everything under `src/` to the Apps Script project.
 `clasp open` opens the project in the Apps Script web editor, where you can
 run either public entrypoint against a test `config` object.
+
+## Operator-facing Web App launcher (M1.1)
+
+The launcher is a thin HTML form, served as an Apps Script Web App, that wraps
+the existing `generateIntoNewSpreadsheet` / `generateIntoExistingSpreadsheet`
+entrypoints. It is a sheet-adapter front-end only — no parser, solver, or
+scoring logic runs inside it. Contract surface: `docs/sheet_generation_contract.md`
+§12.
+
+### Deployment model
+
+Deployment settings are declared in `src/appsscript.json`:
+
+```
+"webapp": {
+  "access": "ANYONE",
+  "executeAs": "USER_ACCESSING"
+}
+```
+
+- `executeAs: USER_ACCESSING` — every generation runs in the submitting
+  operator's own Drive under their own Google account. The script owner never
+  sees generated sheets in their Drive.
+- `access: ANYONE` — a signed-in Google account is required to reach the
+  launcher; anonymous access is refused. The GCP OAuth consent screen's
+  **Test Users** list is the real access gate (see next section).
+
+Deploy from the project folder:
+
+```
+clasp push
+clasp deploy --description "m1.1 launcher <date>"
+```
+
+The first deploy creates a new deployment; subsequent deploys bump the version.
+Share the deployment's web-app URL (the `…/exec` URL, not the `…/dev` URL)
+with the operator list — the `/dev` URL targets the HEAD revision and is for
+maintainer debugging only.
+
+Alternatively, in the Apps Script editor: **Deploy → New deployment → Web app**,
+set execute-as and access to match the manifest, then **Deploy**.
+
+### Adding an operator to Test Users
+
+Until the Apps Script is verified by Google (not in scope for pilot), only
+accounts on the GCP OAuth consent screen's **Test Users** list can complete
+the consent flow. Monthly operator rotation is handled by editing this list;
+it is not encoded in app logic.
+
+1. Open the GCP project linked to this Apps Script (see the clasp-run section
+   for the link flow).
+2. Navigate to **APIs & Services → OAuth consent screen → Test users**.
+3. Click **Add users** and paste the operator's Google account email.
+4. Save. The operator can then open the launcher URL and complete consent.
+
+Removing an operator is symmetric: remove them from the Test users list.
+
+### First-run consent walk-through for a new operator
+
+The first time an operator opens the launcher URL from their Google account,
+Google shows an unverified-app interstitial. Operators typically stall here
+unless they know what to expect. Walk them through it:
+
+1. Sign in with the Google account that was added to Test Users.
+2. Google shows **"Google hasn't verified this app"**. Click **Advanced**.
+3. Click **Go to CGH ICU/HD Roster Launcher (unsafe)**. The "unsafe" label
+   is Google's default wording for unverified pilot-scope apps; it does not
+   indicate a security problem with this script specifically.
+4. Review the requested scopes (spreadsheets + userinfo.email, matching the
+   manifest's `oauthScopes`) and click **Allow**.
+5. The launcher form renders. Consent is cached per Google account; step 2–4
+   does not repeat on subsequent visits.
+
+### Launcher form fields
+
+The form collects exactly what the generation entrypoints already require:
+
+- **Department** — single-option selector, fixed to `CGH ICU/HD Call`. Kept
+  visible so multi-department direction remains obvious.
+- **Period start / end date** — YYYY-MM-DD, within the template-declared year
+  window (2025–2026 today).
+- **Doctor counts by group** — three non-negative integers in template order:
+  ICU only, ICU + HD, HD only.
+- **Output mode** — radio: new spreadsheet file, or new tab in an existing
+  spreadsheet.
+- **Spreadsheet link or ID** — shown only when the existing-tab mode is
+  selected. Accepts either a bare spreadsheet ID or a full Google Sheets URL;
+  the server-side extraction rule lives in `extractSpreadsheetId_`
+  (sheet_generation_contract §12.5).
+
+On success, the page shows a clickable link to the generated spreadsheet plus
+an echo of the submitted parameters. On validation or generation failure, the
+human-readable error from the generation code path is shown in place. No
+partial state is committed that the operator would need to clean up.
 
 ## API executable / `clasp run`
 
