@@ -34,19 +34,19 @@ Roster Monster v2 builds a reusable roster-allocation core with department-speci
 ### M1 — Operator-ready request sheet generation
 - **Goal:** Deliver an operator-usable ICU/HD request sheet shell, backed by closed generation contract boundaries.
 - **Why it matters:** Immediate operational need; unblocks the next request sheet cycle and anchors downstream work.
-- **Status:** **Active** *(reopened 2026-04-18 for implementation delivery)*
+- **Status:** **Completed** *(closed 2026-04-21 on operator delivery; see §11 and D-0019)*
 - **Dependencies:** template/request/generation contract surfaces.
 - **Exit criteria:** generation inputs, structural surfaces, operator edit boundaries, non-goals, and acceptance criteria are closed, and operator-ready ICU/HD sheet-shell generation is implemented for the empty-form use (new spreadsheet file or new tab in existing spreadsheet) with intended editable/protected behavior and practical validation in place.
 - **Likely checkpoints:**
-  - Close sheet-generation MVP boundary.
-  - Align template artifact surfaces with generation needs.
-  - Generation acceptance/handoff readiness.
-  - Implement operator-ready sheet generation.
+  - Close sheet-generation MVP boundary. *(C1, closed 2026-04-17)*
+  - Align template artifact surfaces with generation needs. *(C2, closed 2026-04-18)*
+  - Generation acceptance/handoff readiness. *(C3, closed 2026-04-18)*
+  - Implement operator-ready sheet generation. *(C4, closed 2026-04-21)*
 
 ### M2 — Minimal local compute pipeline
 - **Goal:** Stand up deterministic local parse/normalize/solve flow against closed contracts.
 - **Why it matters:** Establishes executable core path before scale/orchestration.
-- **Status:** Planned
+- **Status:** **Active** *(milestone-level, pending checkpoint activation)*
 - **Dependencies:** M1 complete; snapshot/parser/domain boundaries stable.
 - **Exit criteria:** repeatable local run path with interpretable outputs for ICU/HD scenarios.
 - **Likely checkpoints:** parser-normalizer implementation closure; minimal rule/scorer/solver integration; local run artifact basics.
@@ -76,86 +76,40 @@ Roster Monster v2 builds a reusable roster-allocation core with department-speci
 - **Likely checkpoints:** event/log surface hardening; benchmark campaign baselines; reliability hardening passes.
 
 ## 6. Current active milestone
-- **Active milestone:** `Operator-ready request sheet generation`
+- **Active milestone:** `Minimal local compute pipeline` (M2)
 
 This is active now because:
-- M1 contract-closure checkpoints (C1/C2/C3) are complete, but no operator-usable sheet shell has actually been generated yet
-- M1 is reopened in place so milestone closure aligns with real operator delivery, not contract closure alone
-- implementation of the empty-form ICU/HD shell is the narrowest slice that unblocks immediate operator workflow
+- M1 (`Operator-ready request sheet generation`) closed on 2026-04-21 with operator-delivered ICU/HD sheet-shell generation in both output modes, against the C3 acceptance checklist
+- M2 is the next milestone per `docs/roadmap.md`: establish a deterministic local parse → normalize → rule/scoring/solve execution path using the closed M1 contracts as upstream
+- no M2 checkpoint has been activated yet; the first M2 checkpoint (`Parser/normalizer implementation closure`) will activate when parser work begins, at which point its task list will be seeded in §9
 
 ## 7. Checkpoint plan for the active milestone
 
-### C1 — Close sheet-generation MVP boundary *(completed 2026-04-17)*
-- Contract-closure checkpoint that fixed generation inputs, structural surfaces, allowed operator edits, editable/protected + validation boundary, explicit non-goals, and checkpoint acceptance framing.
+M2's checkpoints follow the roadmap sequence. None are active yet; they will be formalized in §8/§9 as each is kicked off.
 
-### C2 — Align template artifact vs generation needs *(completed 2026-04-18)*
-- Contract-closure checkpoint that aligned `docs/template_artifact_contract.md` and `docs/sheet_generation_contract.md` for first-release ICU/HD sheet-shell generation usage.
+### C1 — Parser/normalizer implementation closure *(planned)*
+- **Goal:** implement parser/normalizer against the settled `docs/parser_normalizer_contract.md` boundary so raw sheet snapshots lower into normalized domain model instances.
+- **Why it exists:** first narrow slice of M2; unblocks rule/scorer/solver work downstream.
+- **Dependencies:** M1 complete; `docs/snapshot_contract.md`, `docs/parser_normalizer_contract.md`, `docs/domain_model.md`.
 
-### C3 — Define generation acceptance/handoff readiness *(completed 2026-04-18)*
-- Contract-closure checkpoint that locked the M1 implementation-ready checklist, declared the first allowed implementation slice, and declared explicit out-of-scope items to prevent scope drift during generation-slice start.
+### C2 — Minimal rule/scorer/solver integration *(planned)*
+- **Goal:** wire a deterministic rule-engine + minimal solver + scorer pass over a normalized model produced by C1 output.
+- **Dependencies:** C1 closure.
 
-### C4 — Implement operator-ready sheet generation
-- **Goal:** deliver an operator-usable ICU/HD request sheet shell consistent with the settled M1 generation contracts.
-- **Why it exists:** C1/C2/C3 closed the contract boundary; an implementation slice is still required before M1 can be considered operator-delivered.
-- **In scope:** template-driven ICU/HD shell generation for the empty-form use, both output modes (new spreadsheet file / new tab in an existing spreadsheet), locking/editable-surface/validation setup at a practical level, and reviewable operator-ready acceptance.
-- **Out of scope:** parser/compute/solver/scorer work, writeback of computed rosters, orchestration/worker mechanics, benchmark hardening, broader multi-department generalization, and any cloud/server runtime decision for compute-core execution.
-- **Dependencies:** C1/C2/C3 closure; `docs/sheet_generation_contract.md`, `docs/template_artifact_contract.md`, `docs/request_semantics_contract.md`.
-- **Done criteria:** operators can generate the empty ICU/HD request sheet shell into either a new spreadsheet file or a new tab in an existing spreadsheet, with the intended editable/protected surfaces and practical validation behavior in place, reviewable against the C3 acceptance checklist.
+### C3 — Local run artifact packaging *(planned)*
+- **Goal:** package local run outputs for basic reviewability.
+- **Dependencies:** C2 closure.
 
 ## 8. Current active checkpoint
-- **Active checkpoint:** `Implement operator-ready sheet generation`
+- **Active checkpoint:** *(none — between milestones)*
 
-Why this checkpoint is next:
-- M1 contract surfaces are closed but no generated sheet has been produced for operator use
-- this is the narrowest implementation slice that converts contract closure into an actual operator deliverable
-- narrower than reopening M1 scope; broader than leaving M1 closed on paper only
+M1's final checkpoint (C4 — `Implement operator-ready sheet generation`) closed on 2026-04-21. M2's first checkpoint (`Parser/normalizer implementation closure`) is teed up in §7 but has not been activated. Activating it is a deliberate decision that seeds §8 and §9 together.
 
-What it must close:
-- produce a working generated ICU/HD sheet shell consistent with settled M1 contracts
-- support both output modes (new spreadsheet file, or new tab in an existing spreadsheet)
-- apply intended locking/editable-surface/validation behavior at a practical level
-- deliver a reviewable operator-ready acceptance against the existing C3 checklist
-
-Docs expected to be touched during this checkpoint:
-- `docs/delivery_plan.md`
-- `docs/decision_log.md` (narrow implementation-stack decision)
-
-What must remain untouched for now:
-- parser/normalizer, compute-core, solver/scorer, writeback, and orchestration design
-- cloud/server/orchestration runtime decision for compute-core execution
-- broader roadmap/milestone redesign
+The "one active checkpoint" working rule from §2 is intentionally relaxed during milestone handoff; it re-applies as soon as M2 C1 is formally activated.
 
 ## 9. Task list for the current checkpoint
 
-### T1 — Record narrow implementation-stack decision for generation slice
-- **Purpose:** capture the narrow M1 Apps Script generation-slice decision plus explicit ownership split: Apps Script for Sheets-facing surface work; compute-heavy core work outside Apps Script with local-first Python direction, without deciding cloud/server runtime.
-- **Status:** Planned
-- **Relevant files/docs:** `docs/decision_log.md`
-- **Done condition:** decision log entry is recorded as Accepted with explicit narrow scope.
-
-### T2 — Implement template-driven ICU/HD shell generation
-- **Purpose:** generate the structural ICU/HD request sheet shell driven by the settled template/generation contract surfaces.
-- **Status:** Planned
-- **Relevant files/docs:** `docs/sheet_generation_contract.md`, `docs/template_artifact_contract.md`
-- **Done condition:** generated sheet shell reflects declared structural surfaces for the empty-form ICU/HD case.
-
-### T3 — Support both output modes (new spreadsheet file / new tab in existing spreadsheet)
-- **Purpose:** let operators choose either destination without changing generated structural behavior.
-- **Status:** Planned
-- **Relevant files/docs:** `docs/sheet_generation_contract.md`
-- **Done condition:** both output modes are usable and produce equivalent structural output.
-
-### T4 — Apply locking / editable-surface / practical validation setup
-- **Purpose:** apply intended editable/protected surfaces and practical validation on the generated shell so operator edits stay within contract-declared surfaces.
-- **Status:** Planned
-- **Relevant files/docs:** `docs/sheet_generation_contract.md`, `docs/template_artifact_contract.md`
-- **Done condition:** generated shell exposes the intended editable regions and protects the rest at a practical level, with practical validation in place.
-
-### T5 — Confirm operator-ready acceptance for empty-form use
-- **Purpose:** confirm the generated shell is reviewable against the C3 acceptance checklist for the empty-form ICU/HD use.
-- **Status:** Planned
-- **Relevant files/docs:** `docs/delivery_plan.md`, `docs/sheet_generation_contract.md`
-- **Done condition:** an operator can generate the empty ICU/HD form on demand and the result is accepted against the C3 checklist.
+*(No active checkpoint; no task list. This section repopulates when M2 C1 is activated.)*
 
 ## 10. Explicitly deferred for now
 - Solver implementation details.
@@ -167,6 +121,17 @@ What must remain untouched for now:
 - Broad multi-department generalization beyond ICU/HD-first sequencing.
 
 ## 11. Recently completed checkpoints
+- **C4 — Implement operator-ready sheet generation** *(closed 2026-04-21)*
+  - Delivered the ICU/HD request sheet shell end-to-end through Google Apps Script in `apps_script/m1_sheet_generator/`, covering both output modes (new spreadsheet file, new tab in existing spreadsheet).
+  - Applied whole-sheet protection restricted to the script owner with unprotected exceptions for operator-editable surfaces (doctor-name cells, request-entry cells, call-point cells, lower-shell assignment cells) and warning-only regex validation on request-entry cells.
+  - Verified against the C3 acceptance checklist for an operator-owned May 2026 cycle (CGH ICU/HD Call, 2026-05-04 to 2026-06-01, 9/6/7 manpower) via `clasp run` execution against a user-managed GCP project.
+  - Operator-facing operational lesson recorded as D-0020: `clasp run` requires both (a) GCP OAuth consent-screen scope allowlist and (b) `clasp login --use-project-scopes --include-clasp-scopes`.
+  - Task closure status: T1 Done, T2 Done, T3 Done, T4 Done, T5 Done.
+  - Main affected surfaces: `apps_script/m1_sheet_generator/` (code + README); no authoritative contract changes required.
+
+### C4 sign-off note
+C4 is complete. M1 is now delivered on operator terms, not just contract closure: the generator produces an operator-usable ICU/HD request sheet shell against settled M1 contracts, in both output modes, with intended editable/protected surfaces and practical validation in place, and has been exercised hands-on against an operator-owned May 2026 spreadsheet.
+
 - **C3 — Define generation acceptance/handoff readiness** *(closed 2026-04-18)*
   - Locked M1 implementation-ready checklist for ICU/HD first-release generation handoff without reopening C1/C2.
   - Declared the first allowed implementation slice (template read + operator inputs + shell generation + output-mode support + practical locking/validation).
@@ -195,7 +160,8 @@ C2 is complete. Template artifact and generation contract surfaces are now suffi
 C1 is complete. The sheet-generation MVP boundary is now closed for execution: generation inputs, structural surfaces, allowed operator edits, editable/protected + validation expectations, explicit non-goals, and checkpoint acceptance framing are sufficiently fixed to proceed to C2 without reopening milestone-level scope.
 
 ### Recently completed milestones
-- *(none — M1 was temporarily marked closed on 2026-04-18 but has since been reopened in place; see Section 6 and `docs/decision_log.md` D-0016.)*
+- **M1 — Operator-ready request sheet generation** *(closed 2026-04-21)*
+  - Closed on operator delivery via C4, against settled contract surfaces fixed in C1/C2/C3. See D-0019 for the formal closure decision and D-0020 for the operator-facing clasp OAuth operational lesson surfaced during M1 execution.
 
 ## 12. Change log for this delivery plan
 - **2026-04-16:** Document created as the living execution guide.
@@ -210,6 +176,9 @@ C1 is complete. The sheet-generation MVP boundary is now closed for execution: g
 - **2026-04-18:** Seeded M2 active checkpoint (`Parser/normalizer implementation closure`) with narrow parser-first task framing.
 - **2026-04-18:** Reopened Milestone 1 in place so milestone closure aligns with operator delivery rather than contract closure alone; returned Milestone 2 to Planned.
 - **2026-04-18:** Activated Checkpoint 4 (`Implement operator-ready sheet generation`) as the current M1 implementation checkpoint; seeded compact task list T1–T5.
+- **2026-04-21:** Closed Checkpoint 4 (`Implement operator-ready sheet generation`) with T1–T5 Done; verified the generated shell against the C3 acceptance checklist against an operator-owned May 2026 cycle.
+- **2026-04-21:** Closed Milestone 1 (`Operator-ready request sheet generation`) on operator delivery; see D-0019.
+- **2026-04-21:** Activated Milestone 2 (`Minimal local compute pipeline`) at milestone level; M2 checkpoints listed but none yet activated (see §7 and §8).
 
 ## 13. Relationship to other repo docs
 - `README.md` = front door orientation.
@@ -228,8 +197,8 @@ C1 is complete. The sheet-generation MVP boundary is now closed for execution: g
 - If a task does not support the active checkpoint, it likely does not belong here.
 
 ## 15. Initial seed content
-This version reflects the 2026-04-18 reopen of M1 and is seeded with:
-- active milestone `Operator-ready request sheet generation`
-- active checkpoint `Implement operator-ready sheet generation`
-- compact M1 implementation task list (T1–T5)
-- explicit deferrals to prevent near-term drift into M2/M3/M4 scope
+This version reflects the 2026-04-21 closure of M1 on operator delivery and is seeded with:
+- active milestone `Minimal local compute pipeline` (M2)
+- no active checkpoint; M2 C1 (`Parser/normalizer implementation closure`) teed up but not yet activated
+- closed-milestone trail for M1 in §11 with C4 sign-off note and D-0019/D-0020 anchors
+- explicit deferrals retained to prevent near-term drift into M3/M4/M5 scope
