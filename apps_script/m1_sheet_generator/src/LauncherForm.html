@@ -3,13 +3,6 @@
   <head>
     <base target="_top">
     <meta charset="utf-8">
-    <!--
-      flatpickr pins the visible date format to dd / mm / yyyy regardless of
-      the operator's browser/OS locale. The underlying form input still
-      submits ISO yyyy-mm-dd, so no server change is required.
-    -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
     <style>
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -182,35 +175,8 @@
         }
         syncOutputMode();
 
-        // flatpickr's altInput hides the real <input type="date"> and replaces
-        // it with a visible input formatted as dd / mm / yyyy. The real input
-        // stays in the DOM with name="periodStartDate"/"periodEndDate" and a
-        // Y-m-d value, so the form submission continues to carry ISO dates.
-        // Guard the call so a failed CDN load falls back to the browser's
-        // native date picker rather than breaking the form.
-        if (typeof flatpickr === 'function') {
-          var datePickerOptions = {
-            altInput: true,
-            altFormat: 'd / m / Y',
-            dateFormat: 'Y-m-d',
-            allowInput: true,
-            disableMobile: true
-          };
-          flatpickr('#periodStartDate', datePickerOptions);
-          flatpickr('#periodEndDate', datePickerOptions);
-        }
-
         form.addEventListener('submit', function (e) {
           e.preventDefault();
-
-          // flatpickr's real input is hidden, so the browser skips HTML5
-          // `required` validation on it. Re-check the ISO values manually
-          // before we disable the submit button.
-          if (!form.periodStartDate.value || !form.periodEndDate.value) {
-            setStatus('error', 'Please choose both a start date and an end date.');
-            return;
-          }
-
           setStatus('pending', 'Generating sheet — this usually takes a few seconds.');
           submitBtn.disabled = true;
 

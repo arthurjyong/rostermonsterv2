@@ -190,10 +190,12 @@ unless they know what to expect. Walk them through it:
 3. Click **Go to CGH ICU/HD Roster Launcher (unsafe)**. The "unsafe" label
    is Google's default wording for unverified pilot-scope apps; it does not
    indicate a security problem with this script specifically.
-4. Review the requested scopes (spreadsheets, drive.file, userinfo.email,
-   matching the manifest's `oauthScopes`) and click **Allow**. `drive.file`
-   is used only to set the generated spreadsheet's sharing to
-   "anyone-with-the-link can edit" right after creation.
+4. Review the requested scopes (spreadsheets, drive, userinfo.email,
+   matching the manifest's `oauthScopes`) and click **Allow**. The `drive`
+   scope is required so the launcher can flip the generated spreadsheet's
+   sharing to "anyone-with-the-link can edit" right after creation
+   (`DriveApp.setSharing` needs the full `drive` scope, not the narrower
+   `drive.file`).
 5. The launcher form renders. Consent is cached per Google account; step 2–4
    does not repeat on subsequent visits.
 
@@ -203,11 +205,10 @@ The form collects exactly what the generation entrypoints already require:
 
 - **Department** — single-option selector, fixed to `CGH ICU/HD Call`. Kept
   visible so multi-department direction remains obvious.
-- **Period start / end date** — displayed as dd / mm / yyyy via a bundled
-  [flatpickr](https://flatpickr.js.org/) CDN dependency (pinned to 4.6.13) so
-  the format does not depend on each operator's browser/OS locale. Submitted
-  to the server as ISO `yyyy-mm-dd`, within the template-declared year
-  window (2025–2026 today).
+- **Period start / end date** — native `<input type="date">`. Display format
+  follows the operator's browser/OS locale (Singapore Chrome renders
+  dd/mm/yyyy). Submitted to the server as ISO `yyyy-mm-dd`, within the
+  template-declared year window (2025–2026 today).
 - **Doctor counts by group** — three non-negative integers in template order:
   ICU only, ICU + HD, HD only.
 - **Output mode** — radio: new spreadsheet file, or new tab in an existing
