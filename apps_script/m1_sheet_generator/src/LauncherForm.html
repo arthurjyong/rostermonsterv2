@@ -52,6 +52,16 @@
       .status { margin-top: 1rem; min-height: 1.25rem; }
       .status.pending { color: #5f6368; }
       .status.error { color: #c5221f; white-space: pre-wrap; }
+      pre.share-hint-error {
+        margin: 0.5rem 0 0;
+        padding: 0.5rem 0.75rem;
+        background: #fce8e6;
+        color: #c5221f;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.85rem;
+        white-space: pre-wrap;
+        border-radius: 4px;
+      }
       .hidden { display: none; }
       dl.run-details { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; }
       dl.run-details dt { font-weight: 600; color: #5f6368; }
@@ -246,6 +256,13 @@
                 'Couldn\'t set sharing automatically. Open the sheet, click the green ' +
                 '<strong>Share</strong> button, set <em>General access</em> to ' +
                 '"Anyone with the link", and change the role to <em>Editor</em>.';
+              if (result.autoShareError) {
+                var errEl = document.createElement('pre');
+                errEl.className = 'share-hint-error';
+                errEl.textContent = 'Auto-share error from Google: ' + result.autoShareError;
+                hint.appendChild(document.createElement('br'));
+                hint.appendChild(errEl);
+              }
             } else {
               hint.textContent =
                 'Sharing inherits from the existing spreadsheet you targeted.';
