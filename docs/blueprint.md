@@ -84,7 +84,7 @@ v2 follows a multi-layer model:
 - **Writer / Execution / Observability support layers**: package outputs, run compute in local/cloud modes, and emit diagnostics.
 
 This model separates reusable allocation logic from department-specific behavior.
-Implementation ownership note: sheet-native surface work may be implemented in Google Apps Script where that is the narrowest Sheets-facing integration path; compute-heavy core logic remains outside Apps Script and is intended to start local-first in Python. This blueprint note does not force a cloud/server/orchestration runtime decision.
+Implementation ownership note: sheet-native surface work is implemented in Google Apps Script — the narrowest Sheets-facing integration path — and today includes both the M1 generator core and the M1.1 operator-facing launcher that wraps it. Compute-heavy core logic remains outside Apps Script and is intended to start local-first in Python. This blueprint note does not force a cloud/server/orchestration runtime decision.
 
 ## 7. Boundary definitions
 
