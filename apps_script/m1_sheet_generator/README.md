@@ -26,6 +26,12 @@ Apps Script.
   cells.
 - Applies **warning-only** regex data validation to request-entry cells. The
   parser remains authoritative for request interpretation.
+- On new-spreadsheet mode, attempts to flip the generated file to
+  **anyone-with-the-link (Editor)** via the Drive Advanced Service so the
+  operator can paste the link to doctors without a per-account share step.
+  Falls back to a manual-share hint on the success page if the auto-share
+  call fails (e.g. operator denied the `drive.file` scope during consent).
+  Existing-spreadsheet mode leaves parent-file sharing untouched.
 - Exposes a thin operator-facing **Web App launcher** (M1.1) that wraps the
   existing generation entrypoints behind a small HTML form. See
   [Operator-facing Web App launcher (M1.1)](#operator-facing-web-app-launcher-m11).
@@ -127,6 +133,13 @@ entrypoints. It is a sheet-adapter front-end only — no parser, solver, or
 scoring logic runs inside it. Contract surface: `docs/sheet_generation_contract.md`
 §12.
 
+**Short URL for operators:** https://tinyurl.com/cghicuhdlauncherv1 redirects
+to the live `/exec` endpoint. Share this instead of the long deployment URL so
+a deployment ID change (if one ever becomes necessary) can be absorbed by
+updating the tinyurl target rather than re-sending the link. Redeploy via
+`clasp deploy -i <deployment-id> …` to keep the `/exec` URL stable and avoid
+needing to touch the tinyurl at all.
+
 ### Deployment model
 
 Deployment settings are declared in `src/appsscript.json`:
@@ -186,8 +199,11 @@ unless they know what to expect. Walk them through it:
 3. Click **Go to CGH ICU/HD Roster Launcher (unsafe)**. The "unsafe" label
    is Google's default wording for unverified pilot-scope apps; it does not
    indicate a security problem with this script specifically.
-4. Review the requested scopes (spreadsheets, userinfo.email, matching the
-   manifest's `oauthScopes`) and click **Allow**.
+4. Review the requested scopes (spreadsheets, drive.file, userinfo.email,
+   matching the manifest's `oauthScopes`) and click **Allow**. `drive.file`
+   is the narrow scope — it lets the launcher flip the generated spreadsheet
+   to "anyone with link can edit" automatically but does not grant access to
+   any pre-existing files in the operator's Drive.
 5. The launcher form renders. Consent is cached per Google account; step 2–4
    does not repeat on subsequent visits.
 

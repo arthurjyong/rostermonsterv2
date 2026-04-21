@@ -30,6 +30,8 @@ function generateIntoNewSpreadsheet(config) {
   applyValidations_(sheet, layoutInfo);
   applyProtections_(sheet, layoutInfo);
 
+  var autoShared = tryAutoShareAnyoneWithLink_(ss.getId());
+
   return {
     mode: 'NEW_SPREADSHEET',
     spreadsheetId: ss.getId(),
@@ -39,6 +41,7 @@ function generateIntoNewSpreadsheet(config) {
     periodStartDate: normalized.periodStartDate,
     periodEndDate: normalized.periodEndDate,
     doctorCountByGroup: normalized.doctorCountByGroup,
+    autoShared: autoShared,
   };
 }
 
@@ -173,4 +176,20 @@ function buildSpreadsheetName_(normalized) {
 function buildVersionedTabName_(now) {
   var tz = Session.getScriptTimeZone() || 'Asia/Singapore';
   return 'v' + Utilities.formatDate(now, tz, 'MMddHHmmss');
+}
+
+// Attempts to flip the newly-created spreadsheet to anyone-with-link = Editor
+// via the Drive Advanced Service (REST v3). Uses the narrower `drive.file`
+// scope, which covers files the app itself just created — unlike
+// `DriveApp.setSharing`, which forces the restricted full `drive` scope.
+// Returns true on success; swallows the error and returns false on failure
+// so the sheet still renders for the operator with a manual-share hint.
+function tryAutoShareAnyoneWithLink_(fileId) {
+  try {
+    Drive.Permissions.create({ type: 'anyone', role: 'writer' }, fileId);
+    return true;
+  } catch (e) {
+    Logger.log('Auto-share failed: ' + (e && e.message ? e.message : e));
+    return false;
+  }
 }
