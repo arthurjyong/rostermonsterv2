@@ -24,6 +24,10 @@ Apps Script.
   unprotected exceptions only for operator-editable ranges: doctor-name
   cells, request-entry cells, call-point cells, and lower-shell assignment
   cells.
+- Opens newly-created spreadsheets (new-spreadsheet mode only) to
+  **anyone-with-the-link can edit**, so the operator can share the generated
+  URL with doctors directly. Existing-spreadsheet mode leaves parent-file
+  sharing untouched.
 - Applies **warning-only** regex data validation to request-entry cells. The
   parser remains authoritative for request interpretation.
 - Exposes a thin operator-facing **Web App launcher** (M1.1) that wraps the
@@ -186,8 +190,10 @@ unless they know what to expect. Walk them through it:
 3. Click **Go to CGH ICU/HD Roster Launcher (unsafe)**. The "unsafe" label
    is Google's default wording for unverified pilot-scope apps; it does not
    indicate a security problem with this script specifically.
-4. Review the requested scopes (spreadsheets + userinfo.email, matching the
-   manifest's `oauthScopes`) and click **Allow**.
+4. Review the requested scopes (spreadsheets, drive.file, userinfo.email,
+   matching the manifest's `oauthScopes`) and click **Allow**. `drive.file`
+   is used only to set the generated spreadsheet's sharing to
+   "anyone-with-the-link can edit" right after creation.
 5. The launcher form renders. Consent is cached per Google account; step 2–4
    does not repeat on subsequent visits.
 
@@ -197,7 +203,10 @@ The form collects exactly what the generation entrypoints already require:
 
 - **Department** — single-option selector, fixed to `CGH ICU/HD Call`. Kept
   visible so multi-department direction remains obvious.
-- **Period start / end date** — YYYY-MM-DD, within the template-declared year
+- **Period start / end date** — displayed as dd / mm / yyyy via a bundled
+  [flatpickr](https://flatpickr.js.org/) CDN dependency (pinned to 4.6.13) so
+  the format does not depend on each operator's browser/OS locale. Submitted
+  to the server as ISO `yyyy-mm-dd`, within the template-declared year
   window (2025–2026 today).
 - **Doctor counts by group** — three non-negative integers in template order:
   ICU only, ICU + HD, HD only.
