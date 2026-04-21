@@ -22,12 +22,6 @@ function generateIntoNewSpreadsheet(config) {
 
   var spreadsheetName = buildSpreadsheetName_(normalized);
   var ss = SpreadsheetApp.create(spreadsheetName);
-  // Open the newly generated spreadsheet up to link-based collaborators so the
-  // operator can share the URL directly with doctors without running a
-  // per-account Drive sharing flow for every cycle. Scoped to new-mode only;
-  // existing-spreadsheet mode inherits the parent file's existing sharing.
-  DriveApp.getFileById(ss.getId())
-    .setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.EDIT);
   var tabName = buildVersionedTabName_(new Date());
   var sheet = ss.getActiveSheet();
   sheet.setName(tabName);
