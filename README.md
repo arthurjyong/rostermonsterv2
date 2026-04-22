@@ -14,9 +14,9 @@ This repo uses a single planning vocabulary:
 - **Task**: a concrete work item used to close a checkpoint.
 
 ## Current focus
-- **Active milestone:** `Operator-facing launcher` (M1.1, addendum to closed Milestone 1)
-- **Active checkpoint:** `Implement operator launcher web app` (M1.1 C1)
-- **Note:** M2 (`Minimal local compute pipeline`) is returned to Planned while M1.1 is active. See `docs/decision_log.md` D-0021 for the addendum-milestone convention and D-0022 for the launcher architecture.
+- **Active milestone:** `Minimal local compute pipeline` (M2), activated at milestone level only on 2026-04-22 after M1.1 closure
+- **Active checkpoint:** none currently — deliberate exception pending M2 first-checkpoint scoping; see `docs/delivery_plan.md` §8
+- **Note:** M1.1 (`Operator-facing launcher`) closed on 2026-04-22 on hands-on validation; see `docs/delivery_plan.md` §11. The addendum-milestone convention (D-0021), launcher architecture (D-0022), and auto-share additive scope (D-0023) remain accepted directional decisions.
 
 ## Repo navigation
 - `docs/blueprint.md` — Stable architecture truth (what the system is and how boundaries are defined).
