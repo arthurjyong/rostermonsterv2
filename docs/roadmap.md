@@ -31,7 +31,7 @@ This document defines **milestone-level delivery order** for Roster Monster v2. 
   - `docs/sheet_generation_contract.md` §3A (spreadsheet reference input) and §12 (launcher surface).
 - **Exit criteria:**
   - A non-maintainer test operator can, after one-time Google consent, load the launcher URL, submit the form, and receive a working generated sheet or tab in either output mode.
-- **Addendum framing:** Milestone 1.1 is the first addendum milestone under the `M<parent>.<n>` numbering convention (integer `n` only, no nested decimals) recorded in `docs/decision_log.md` D-0021. Milestone 1 itself stays `Completed`; Milestone 2 returns to Planned while Milestone 1.1 is active.
+- **Addendum framing:** Milestone 1.1 is the first addendum milestone under the `M<parent>.<n>` numbering convention (integer `n` only, no nested decimals) recorded in `docs/decision_log.md` D-0021. Milestone 1 itself stays `Completed`; Milestone 2 was returned to Planned while Milestone 1.1 was active and returned to active on Milestone 1.1 closure (2026-04-22). Milestone 1.1 itself closed on 2026-04-22 on hands-on validation — see `docs/delivery_plan.md` §11.
 
 ### 2) Minimal local compute pipeline
 - **Goal:** Establish a deterministic local parse → normalize → rule/scoring/solve execution path using closed contracts.

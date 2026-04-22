@@ -46,7 +46,7 @@ Roster Monster v2 builds a reusable roster-allocation core with department-speci
 ### M1.1 — Operator-facing launcher *(addendum to M1)*
 - **Goal:** Provide a narrow operator-facing launcher so named monthly-rotation pilot operators can invoke empty ICU/HD request-sheet generation without running Apps Script by hand.
 - **Why it matters:** Closes M1's operator-facing story end-to-end; turns a maintainer-only generator into a pilot-usable launcher without expanding M1's compute scope.
-- **Status:** **Active** *(addendum milestone; M1 itself stays Completed, not reopened)*
+- **Status:** **Completed** *(closed 2026-04-22 on hands-on validation; addendum milestone; M1 itself stays Completed, not reopened; see §11)*
 - **Dependencies:** M1 complete; `docs/sheet_generation_contract.md` §12 (launcher surface).
 - **Exit criteria:** a non-maintainer test operator can, after one-time Google consent, load the launcher URL, submit the form, and receive a working generated sheet or tab in either output mode, validated hands-on.
 - **Likely checkpoints:**
@@ -56,7 +56,7 @@ Roster Monster v2 builds a reusable roster-allocation core with department-speci
 ### M2 — Minimal local compute pipeline
 - **Goal:** Stand up deterministic local parse/normalize/solve flow against closed contracts.
 - **Why it matters:** Establishes executable core path before scale/orchestration.
-- **Status:** Planned *(deferred during M1.1 addendum; next to activate after M1.1 closure)*
+- **Status:** Active *(activated at milestone level on 2026-04-22 after M1.1 closure; first checkpoint to be scoped separately — see §8)*
 - **Dependencies:** M1 complete; snapshot/parser/domain boundaries stable.
 - **Exit criteria:** repeatable local run path with interpretable outputs for ICU/HD scenarios.
 - **Likely checkpoints:** parser-normalizer implementation closure; minimal rule/scorer/solver integration; local run artifact basics.
@@ -86,66 +86,25 @@ Roster Monster v2 builds a reusable roster-allocation core with department-speci
 - **Likely checkpoints:** event/log surface hardening; benchmark campaign baselines; reliability hardening passes.
 
 ## 6. Current active milestone
-- **Active milestone:** `Operator-facing launcher` (M1.1, addendum to M1)
+- **Active milestone:** `Minimal local compute pipeline` (M2)
 
 This is active now because:
-- M1 (`Operator-ready request sheet generation`) closed on 2026-04-21 with operator-delivered ICU/HD sheet-shell generation in both output modes
-- the generator is currently maintainer-only: each run requires direct Apps Script execution, which blocks non-maintainer operators in the monthly rotation from using it
-- M1.1 closes that gap with a narrow operator-facing launcher that wraps the existing M1 entrypoints — no new compute, no new contract surface beyond a thin launcher addendum in `docs/sheet_generation_contract.md` §12
-- activating M1.1 as an addendum (rather than reopening M1 or expanding M2) preserves M1 closure integrity and keeps M2's compute-core direction untouched; see D-0021 for the addendum-milestone framing and D-0022 for the launcher architecture
+- M1 (`Operator-ready request sheet generation`) closed on 2026-04-21 and M1.1 (`Operator-facing launcher`) closed on 2026-04-22, so the operator-facing request-sheet story is complete end-to-end; see §11
+- M2 was returned to Planned while M1.1 was active under the one-active-milestone rule and is now the natural next milestone under the roadmap sequence
+- M2 is activated at milestone level only for now; its first checkpoint has not yet been scoped and is to be selected as the next execution focus, mirroring the 2026-04-21 "activate at milestone level, checkpoint to follow" pattern
 
 ## 7. Checkpoint plan for the active milestone
 
-M1.1 has a single implementation checkpoint because its architecture/contract surface is settled inside this same planning patch (see `docs/sheet_generation_contract.md` §12 and D-0021/D-0022).
-
-### C1 — Implement operator launcher web app
-- **Goal:** deliver a pilot-usable Apps Script web-app launcher consistent with the settled M1.1 contract surface.
-- **In scope:** `doGet()` HTML form; form submission wired to the existing `generateIntoNewSpreadsheet` / `generateIntoExistingSpreadsheet` entrypoints; shared spreadsheet-reference normalization (accept URL or bare ID); Apps Script web-app deployment; GCP OAuth consent-screen Test Users list curation for the pilot operators.
-- **Out of scope:** operator-editable template, persisted per-operator state, multi-department selector beyond ICU/HD, any compute work moving into Apps Script, public/open signup, and M2 compute-core work.
-- **Dependencies:** M1 complete; `docs/sheet_generation_contract.md` §3A and §12.
-- **Done criteria:** a non-maintainer test operator can, after one-time Google consent, load the launcher URL, submit the form, and receive a working generated sheet/tab in either output mode; sign-off recorded in §11.
+M2 (`Minimal local compute pipeline`) is activated at milestone level only; no checkpoint is scoped yet. The milestone-level "Likely checkpoints" in §5 (parser/normalizer implementation closure; minimal rule/scorer/solver integration; local run artifact basics) are the candidate ordering but are not yet promoted to the checkpoint-plan level. The first M2 checkpoint will be scoped in a follow-up patch and filled in here before being declared active in §8.
 
 ## 8. Current active checkpoint
-- **Active checkpoint:** `Implement operator launcher web app` (M1.1 C1)
+- **Active checkpoint:** none currently
 
-Why this checkpoint is next:
-- it is the only remaining checkpoint under M1.1 once the contract/architecture closure in this planning patch lands
-- narrower than waiting for M2 to begin while the monthly rotation has no operator-facing entrypoint
-- preserves M2 sequencing by deferring, not skipping
+This is a deliberate exception to the one-active-checkpoint rule (§14): M1.1 closed on 2026-04-22 and M2 has been activated at milestone level only. M2's first checkpoint (parser/normalizer implementation closure is the likely first candidate per §5 and the roadmap) is to be scoped in a follow-up patch before it is declared active. This mirrors the prior 2026-04-21 pattern of activating a milestone first and selecting its first checkpoint separately.
 
 ## 9. Task list for the current checkpoint
 
-**C1 progress snapshot (reconciled 2026-04-22):** T1, T2, and T3 are Done — the launcher has shipped to the `/exec` deployment with §12.5 reference normalization, the `doGet()` form + `submitLauncherForm` wiring, and the deployment/Test-Users/consent walk-through documented in `apps_script/m1_sheet_generator/README.md`. T4 (hands-on non-maintainer verification + C1 sign-off note in §11) is the only remaining gate before M1.1 can close. Additive operational scope beyond T1–T4 landed during C1 and is captured in the **Additive scope landed during C1** note below rather than as retroactively-inserted tasks.
-
-### T1 — Extend generator config helper to accept spreadsheet URL or bare ID
-- **Purpose:** normalize the operator-supplied spreadsheet reference centrally (in `normalizeAndValidateConfig_`) so the launcher can pass the operator's raw input through unchanged, and existing entrypoint callers (including smoke tests) also benefit. Accepts both a full Google Sheets URL and a bare ID; extraction rule per `docs/sheet_generation_contract.md` §12.5.
-- **Status:** Done
-- **Relevant files:** `apps_script/m1_sheet_generator/src/GenerateSheet.gs`; `docs/sheet_generation_contract.md` §3A + §12.5.
-- **Done condition:** both forms normalize correctly to a bare ID before reaching `SpreadsheetApp.openById`, with a human-readable error on unrecognized input.
-- **Closure evidence:** `extractSpreadsheetId_` in `GenerateSheet.gs` implements §12.5 and is called from `normalizeAndValidateConfig_` before `SpreadsheetApp.openById`; landed via `f556d8a`, refined by `5bbf695` (matcher tightening) and `15b181d` (account-scoped URLs).
-
-### T2 — Implement `doGet()` HTML form + wiring to existing entrypoints
-- **Purpose:** serve an operator-facing form with the fields declared in `docs/sheet_generation_contract.md` §12.4, and wire submission (via `google.script.run`) to the existing generation entrypoints. Success/failure rendering per §12.6.
-- **Status:** Done
-- **Relevant files:** `apps_script/m1_sheet_generator/src/` (new launcher module and HTML).
-- **Done condition:** form renders, submits, and returns a clickable link to the generated sheet or tab on success; surfaces validation/normalization errors on failure.
-- **Closure evidence:** `Launcher.gs` (`doGet`, `submitLauncherForm`, `include_`), `LauncherForm.html` (form fields + `google.script.run.submitLauncherForm` wiring + success-view scriptlet), and `LauncherSuccess.html` (clickable link render) landed via `9887f4b`; error paths return through the `{ ok: false, error }` branch per §12.6.
-
-### T3 — Configure Apps Script web-app deployment and GCP OAuth Test Users
-- **Purpose:** deploy the Apps Script project as a web app ("Execute as: User accessing the web app"), and curate the GCP OAuth consent-screen Test Users list with the pilot operators per `docs/sheet_generation_contract.md` §12.3. Document the per-operator URL-visit consent step in `apps_script/m1_sheet_generator/README.md`.
-- **Status:** Done
-- **Relevant files:** `apps_script/m1_sheet_generator/README.md`; GCP console (no repo change).
-- **Done condition:** the deployed launcher URL loads the form for a maintainer account; Test Users list contains the pilot operators; README documents the one-time consent walk-through.
-- **Closure evidence:** README sections "Operator-facing Web App launcher (M1.1)" → "Deployment model", "Adding an operator to Test Users", and "First-run consent walk-through for a new operator" document the `executeAs: USER_ACCESSING` + `access: ANYONE` deployment and the per-operator Test Users workflow. A stable `/exec` deployment exists behind the operator-facing `https://tinyurl.com/cghicuhdlauncherv1` redirect. Off-repo GCP Test Users curation is an ongoing monthly-rotation maintainer action per D-0022, not a one-shot task closure.
-
-### T4 — Verify end-to-end with a non-maintainer test operator
-- **Purpose:** confirm M1.1 exit criteria hands-on — a non-maintainer test operator can load the launcher URL, complete OAuth consent, submit the form, and receive a working generated sheet/tab in both output modes. This is the last remaining gate before M1.1 can close, since T1–T3 are Done.
-- **Status:** Planned
-- **Relevant files:** `docs/delivery_plan.md` §11 (sign-off note).
-- **Done condition:** at least one non-maintainer pilot operator has exercised both output modes successfully and the result is recorded as the C1 sign-off note in §11.
-
-### Additive scope landed during C1
-Auto-share of newly-created spreadsheets to "anyone with the link (Editor)" landed during C1 as operational polish on top of T1–T4. It was not a pre-declared task and is not being retroactively inserted as one; the directional decision, the three-attempt sequence (`DriveApp` under `drive.file` → `DriveApp` under full `drive` → Drive Advanced Service v3 under `drive.file`), and the resulting additive response-field surface (`autoShared`, `autoShareError`) are recorded in **D-0023**. Implementation lives in `tryAutoShareAnyoneWithLink_` in `GenerateSheet.gs` and in the success-view rendering branch in `LauncherForm.html`. Existing-spreadsheet mode intentionally inherits parent-file sharing and is unchanged. No contract structural change was needed — the additive fields sit within the `docs/sheet_generation_contract.md` §12 launcher surface already described there.
+No active checkpoint; see §8. Task list will be seeded when M2's first checkpoint is activated. The closed M1.1 C1 task details (T1–T4) and the auto-share additive-scope note are preserved in §11 under the M1.1 C1 sign-off entry and in git history.
 
 ## 10. Explicitly deferred for now
 - Solver implementation details.
@@ -162,6 +121,16 @@ Auto-share of newly-created spreadsheets to "anyone with the link (Editor)" land
 - Alternative launcher platforms (for example a static page over the Apps Script API Executable); the pilot sticks with Apps Script Web App per D-0022.
 
 ## 11. Recently completed checkpoints
+- **M1.1 C1 — Implement operator launcher web app** *(closed 2026-04-22)*
+  - Delivered the M1.1 operator-facing launcher: Apps Script web-app (`doGet()` HTML form + `submitLauncherForm` wiring) against the existing `generateIntoNewSpreadsheet` / `generateIntoExistingSpreadsheet` entrypoints, shared spreadsheet-reference normalization (URL or bare ID) per `docs/sheet_generation_contract.md` §12.5, deployed at a stable `/exec` behind the operator-facing `https://tinyurl.com/cghicuhdlauncherv1` redirect with GCP OAuth consent-screen Test Users curated for the pilot operators.
+  - Auto-share of newly-created spreadsheets to "anyone with the link (Editor)" landed during C1 as additive operational polish on top of T1–T4; the directional decision, the three-attempt sequence (`DriveApp` under `drive.file` → `DriveApp` under full `drive` → Drive Advanced Service v3 under `drive.file`), and the additive response-field surface (`autoShared`, `autoShareError`) are recorded in **D-0023**. No contract structural change was required — the additive fields sit within the `docs/sheet_generation_contract.md` §12 launcher surface already described there.
+  - Verified end-to-end through the non-maintainer Test-User consent + generation path on a separate Google account and device; both output modes (new spreadsheet file, new tab in existing spreadsheet) exercised successfully, with negative-case input handling confirmed via an out-of-range 2027 request date. Pilot operator self-report independently confirms the end-to-end flow; pilot operators were not pushed through a recorded demo to avoid forcing OAuth consent for a maintainer-authored Test-User app.
+  - Task closure status: T1 Done, T2 Done, T3 Done, T4 Done.
+  - Main affected surfaces: `apps_script/m1_sheet_generator/` (launcher module, HTML, README); `docs/sheet_generation_contract.md` §12 launcher surface; no authoritative contract changes beyond the §12 addendum already in place.
+
+### M1.1 C1 sign-off note
+M1.1 C1 is complete. The operator-facing launcher delivers pilot-usable empty-form ICU/HD request-sheet generation in both output modes, with the non-maintainer OAuth consent path validated hands-on on a separate Google account and device. Pilot operator self-report independently confirms the end-to-end flow works; pilot operators were not pushed through a recorded demo to avoid forcing consent for a maintainer-authored Test-User app, consistent with the first-release access model in D-0022. M1.1's stated exit criteria are met and the launcher is the current pilot-operator entrypoint to ICU/HD request-sheet generation.
+
 - **C4 — Implement operator-ready sheet generation** *(closed 2026-04-21)*
   - Delivered the ICU/HD request sheet shell end-to-end through Google Apps Script in `apps_script/m1_sheet_generator/`, covering both output modes (new spreadsheet file, new tab in existing spreadsheet).
   - Applied whole-sheet protection restricted to the script owner with unprotected exceptions for operator-editable surfaces (doctor-name cells, request-entry cells, call-point cells, lower-shell assignment cells) and warning-only regex validation on request-entry cells.
@@ -201,6 +170,8 @@ C2 is complete. Template artifact and generation contract surfaces are now suffi
 C1 is complete. The sheet-generation MVP boundary is now closed for execution: generation inputs, structural surfaces, allowed operator edits, editable/protected + validation expectations, explicit non-goals, and checkpoint acceptance framing are sufficiently fixed to proceed to C2 without reopening milestone-level scope.
 
 ### Recently completed milestones
+- **M1.1 — Operator-facing launcher** *(closed 2026-04-22)*
+  - Closed on hands-on validation via M1.1 C1 against the M1.1 exit criteria. The non-maintainer Test-User consent + generation path was exercised on a separate Google account and device across both output modes, and pilot operator self-report independently confirms the end-to-end flow. Addendum-milestone framing preserved: M1 itself was not reopened; see D-0021 for the addendum convention and D-0022 for the launcher architecture. Auto-share additive operational polish captured in D-0023.
 - **M1 — Operator-ready request sheet generation** *(closed 2026-04-21)*
   - Closed on operator delivery via C4, against settled contract surfaces fixed in C1/C2/C3. See D-0019 for the formal closure decision and D-0020 for the operator-facing clasp OAuth operational lesson surfaced during M1 execution.
 
@@ -223,6 +194,10 @@ C1 is complete. The sheet-generation MVP boundary is now closed for execution: g
 - **2026-04-21:** Activated Milestone 1.1 (`Operator-facing launcher`) as an addendum to closed Milestone 1; returned Milestone 2 to Planned under the one-active-milestone rule. See D-0021 (addendum-milestone convention) and D-0022 (launcher architecture).
 - **2026-04-21:** Activated Checkpoint 1 (`Implement operator launcher web app`) as the M1.1 execution focus; seeded compact task list T1–T4.
 - **2026-04-22:** Reconciled §9 C1 task status against shipped code (T1/T2/T3 Done, T4 remains the only pending gate) and captured the auto-share additive scope (D-0023) that landed during C1 without retroactively inserting new tasks. Reconciliation is documentation-only; C1 stays active pending T4 sign-off.
+- **2026-04-22:** Closed Task T4 (`Verify end-to-end with a non-maintainer test operator`) on hands-on validation of the non-maintainer Test-User consent + generation path across both output modes on a separate Google account and device, with pilot operator self-report as independent confirmation and a negative-case 2027 request-date check.
+- **2026-04-22:** Closed Checkpoint 1 (`Implement operator launcher web app`) under M1.1 with T1–T4 Done; sign-off recorded in §11.
+- **2026-04-22:** Closed Milestone 1.1 (`Operator-facing launcher`) on hands-on validation; see §11.
+- **2026-04-22:** Activated Milestone 2 (`Minimal local compute pipeline`) at milestone level; first checkpoint to be scoped separately (§8), mirroring the 2026-04-21 "activate at milestone level, checkpoint to follow" pattern.
 
 ## 13. Relationship to other repo docs
 - `README.md` = front door orientation.
@@ -241,9 +216,8 @@ C1 is complete. The sheet-generation MVP boundary is now closed for execution: g
 - If a task does not support the active checkpoint, it likely does not belong here.
 
 ## 15. Initial seed content
-This version reflects the 2026-04-21 activation of M1.1 (`Operator-facing launcher`) as an addendum to closed Milestone 1, and is seeded with:
-- active milestone `Operator-facing launcher` (M1.1, addendum to M1)
-- active checkpoint `Implement operator launcher web app` (M1.1 C1), with compact task list T1–T4
-- M2 (`Minimal local compute pipeline`) returned to Planned pending M1.1 closure
-- closed-milestone trail for M1 in §11 with C4 sign-off note and D-0019/D-0020 anchors
-- explicit deferrals extended to cover launcher-scope drift (public signup, in-app allowlist, operator-editable template, persisted per-operator state, alternative launcher platforms)
+This version reflects the 2026-04-22 closure of M1.1 (`Operator-facing launcher`) and activation of M2 (`Minimal local compute pipeline`) at milestone level, and is currently in the following state:
+- active milestone `Minimal local compute pipeline` (M2), activated at milestone level only
+- no active checkpoint — deliberate exception pending M2 first-checkpoint scoping (§8)
+- closed-milestone trail for M1 (C1–C4 with C4 sign-off note) and M1.1 (C1 with sign-off note) in §11, with D-0019/D-0020/D-0021/D-0022/D-0023 anchors
+- explicit deferrals retained from the M1.1 scope (public signup, in-app allowlist, operator-editable template, persisted per-operator state, alternative launcher platforms)
