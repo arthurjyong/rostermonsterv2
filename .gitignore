@@ -146,3 +146,6 @@ apps_script/m1_sheet_generator/.ops.local.json
 
 # Local-only scratch folder for Claude Code context (screenshots, old-repo clones, papers)
 for_claude_code/
+
+# Claude Code worktrees and local agent state
+.claude/
