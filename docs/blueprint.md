@@ -287,7 +287,7 @@ Planned implementation sequence:
 
 ## 16. Initial working decisions for first release
 - Department templates are curated by maintainers for first release onboarding, not end-user self-serve.
-- Routine variation within an approved template is mainly limited to roster period/dates, doctor list, and doctor count.
+- Routine variation within an approved template is mainly limited to roster period/dates, doctor list, and doctor count, plus operator-tuneable scorer component weights and the solver's `crFloor.manualValue` knob in first release (v1 parity for scorer weights; see `docs/scorer_contract.md` §15 and `docs/solver_contract.md` §17 for the full tuneable surface).
 - Structural and mapping changes are not end-user configurable in first release and require maintainer-reviewed template updates. This includes slot/group structure, group-based eligibility declarations, and logical input/output mapping surfaces.
 - Request meaning and request-effect changes are handled in the request semantics contract (or rebinding to a different contract version), not by silently restating semantics inside template-layer docs/artifacts.
 - Allocation/search/scorer implementation changes are core-layer changes, not template-layer changes.
