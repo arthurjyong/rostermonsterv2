@@ -120,12 +120,12 @@ Keep entries implementation-facing. Do not restate contract meaning here. Do not
 - **Trigger to revisit:** A second-runtime port of any stage in the pipeline is seriously proposed.
 - **Related surfaces:** `docs/rule_engine_contract.md` §17; `docs/scorer_contract.md` §17; `docs/solver_contract.md` §16; `docs/decision_log.md` D-0018.
 
-### FW-0012 — Full-violation-set reporting mode for the rule engine
+### FW-0012 — Rule-engine rejection-reason distribution diagnostics
 - **Date noted:** 2026-04-23
-- **Context:** `docs/rule_engine_contract.md` §12 permits a first-release short-circuit optimization where the violation list length may be 1 even when multiple rules would fail. Canonical ordering is preserved either way, and callers that need full-list behavior can disable the optimization.
-- **Idea / direction:** If operator-facing diagnostics or benchmark campaigns want to understand why candidates are rejected in the full-validity sense (not just the first-hit reason), expose a rule-engine mode that always returns the full violation list. This is an implementation-side toggle, not a contract change — the contract already permits full-list return; it just does not require it.
-- **Why deferred now:** First-release diagnostic needs are satisfied by first-hit short-circuit. Enabling full-list mode by default would add rule-engine cost without operator benefit at this stage.
-- **Trigger to revisit:** Operator-facing rejection diagnostics grow rich enough to want full-list violation explanations, or benchmark campaigns want rejection-reason distributions for strategy comparison.
+- **Context:** `docs/rule_engine_contract.md` §12 requires the rule engine to return every applicable violation in canonical order, so each probe already carries full reason-cardinality information at the rule-engine boundary. The solver's `SearchDiagnostics` payload does not yet aggregate these rejection reasons into distributions across probes within a run or across runs.
+- **Idea / direction:** Extend the solver diagnostics payload to aggregate per-rule rejection counts and violation-combination histograms (for example, "20% of probes failed `BASELINE_ELIGIBILITY_FAIL` as the first canonical reason; 40% co-failed `SAME_DAY_HARD_BLOCK` and `BACK_TO_BACK_CALL`") so operators and benchmark campaigns can see which rules most constrain the search. This is an implementation-side diagnostics surface on top of already-complete per-probe data; it is not a contract change to the rule engine.
+- **Why deferred now:** First-release diagnostic needs are satisfied by the raw per-probe violation-reason emission; aggregation and visualization come later once benchmark-campaign surfaces exist.
+- **Trigger to revisit:** Operator-facing rejection diagnostics or benchmark-campaign comparison workflows need rule-level distribution summaries.
 - **Related surfaces:** `docs/rule_engine_contract.md` §12; future solver `SearchDiagnostics` payload; future operator-facing diagnostic surfaces.
 
 ### FW-0013 — Richer retention modes and artifact export formats
