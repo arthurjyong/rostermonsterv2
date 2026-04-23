@@ -107,7 +107,7 @@ CandidateSet {
 
 Normative properties:
 - `candidates` is a list of valid roster candidates emitted by the active strategy under its termination bounds.
-- Each `TrialCandidate` carries `AssignmentUnit[]` covering the full roster — including `FixedAssignment` entries from the normalized model and all solver-placed `AssignmentUnit` entries — and MUST NOT carry a score. Scoring happens downstream (`docs/scorer_contract.md`).
+- Each `TrialCandidate` carries `AssignmentUnit[]` covering the full roster — including `FixedAssignment` entries from the normalized model and all solver-placed `AssignmentUnit` entries. The `TrialCandidate` score-summary field (per `docs/domain_model.md` §12.3) is **unpopulated at solver-emission stage**; score presence is stage-dependent, and this field is populated downstream by the scorer (`docs/scorer_contract.md`). The solver MUST NOT populate the score field itself.
 - Each candidate MUST be free of rule-engine hard-validity violations under `docs/rule_engine_contract.md`. Emitting an invalid candidate is a contract-breaking defect.
 - `diagnostics` carries the solver's transparency payload; see §18.
 - `candidates` MUST be non-empty on the success branch. Since `terminationBounds.maxCandidates` is a required positive integer (§15), a successful search always emits at least one candidate; emitting an empty `CandidateSet` is a contract-breaking defect. When no valid complete candidate is reachable under the active bounds, the solver MUST return `UnsatisfiedResult` (§10.2) instead.
