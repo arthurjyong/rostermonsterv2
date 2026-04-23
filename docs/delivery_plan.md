@@ -90,21 +90,30 @@ Roster Monster v2 builds a reusable roster-allocation core with department-speci
 
 This is active now because:
 - M1 (`Operator-ready request sheet generation`) closed on 2026-04-21 and M1.1 (`Operator-facing launcher`) closed on 2026-04-22, so the operator-facing request-sheet story is complete end-to-end; see §11
-- M2 was returned to Planned while M1.1 was active under the one-active-milestone rule and is now the natural next milestone under the roadmap sequence
-- M2 is activated at milestone level only for now; its first checkpoint has not yet been scoped and is to be selected as the next execution focus, mirroring the 2026-04-21 "activate at milestone level, checkpoint to follow" pattern
+- M2 was returned to Planned while M1.1 was active under the one-active-milestone rule and was activated at milestone level after M1.1 closure, mirroring the 2026-04-21 "activate at milestone level, checkpoint to follow" pattern
+- M2 C1 (`Rule engine + scorer + solver contract closure`) has since been scoped and activated as the first M2 checkpoint on 2026-04-23; see §7 and §8
 
 ## 7. Checkpoint plan for the active milestone
 
-M2 (`Minimal local compute pipeline`) is activated at milestone level only; no checkpoint is scoped yet. The milestone-level "Likely checkpoints" in §5 (parser/normalizer implementation closure; minimal rule/scorer/solver integration; local run artifact basics) are the candidate ordering but are not yet promoted to the checkpoint-plan level. The first M2 checkpoint will be scoped in a follow-up patch and filled in here before being declared active in §8.
+M2 (`Minimal local compute pipeline`) has the following declared checkpoint plan:
+- **C1 — Rule engine + scorer + solver contract closure.** *(active; see §8)* Lock the three interlocking contract boundaries (rule engine, scorer, solver) plus supporting updates (future-work entries, decision-log entries, blueprint §16 clarifying patch) so downstream compute-pipeline implementation work rests on fixed boundaries. No executable code lands in C1; it is docs-only contract closure.
+- Subsequent M2 checkpoints remain candidate-ordered from §5 (parser/normalizer implementation closure; minimal rule/scorer/solver integration; local run artifact basics) and will be scoped individually after C1 closes.
 
 ## 8. Current active checkpoint
-- **Active checkpoint:** none currently
+- **Active checkpoint:** `Rule engine + scorer + solver contract closure` (M2 C1)
 
-This is a deliberate exception to the one-active-checkpoint rule (§14): M1.1 closed on 2026-04-22 and M2 has been activated at milestone level only. M2's first checkpoint (parser/normalizer implementation closure is the likely first candidate per §5 and the roadmap) is to be scoped in a follow-up patch before it is declared active. This mirrors the prior 2026-04-21 pattern of activating a milestone first and selecting its first checkpoint separately.
+M2 C1 was activated on 2026-04-23 and is the current execution focus. It is a docs-only checkpoint that closes the three interlocking contract boundaries (rule engine, scorer, solver) plus supporting updates (future-work entries, decision-log entries, blueprint §16 clarifying patch). The parser/normalizer implementation closure originally nominated as the likely first M2 candidate in §5 is re-sequenced behind C1: closing the compute-pipeline contract boundaries first gives subsequent implementation checkpoints fixed surfaces to build against.
 
 ## 9. Task list for the current checkpoint
 
-No active checkpoint; see §8. Task list will be seeded when M2's first checkpoint is activated. The closed M1.1 C1 task details (T1–T4) and the auto-share additive-scope note are preserved in §11 under the M1.1 C1 sign-off entry and in git history.
+M2 C1 — `Rule engine + scorer + solver contract closure` (active).
+
+- **T1 — Draft `docs/rule_engine_contract.md`.** Normative rule-engine boundary: stateless public surface, full-violation canonical ordering, first-release hard-rule enumeration aligned to `docs/domain_model.md` §9.2, scoped fixed-assignment handling, equivalence-test discipline for future non-stateless implementations, separation from soft-effect evaluation. *(Done — landed in branch commit `fc7792a`.)*
+- **T2 — Draft `docs/scorer_contract.md`.** Normative scorer boundary: pure-function public surface, required component breakdown on every `ScoreResult`, `HIGHER_IS_BETTER` direction-guard invariant, `crReward` diminishing-marginal-utility-per-doctor property, scorer-owned soft-effect reading, operator-tuneable weight surface (v1 parity), streaming/delta scoring permitted as optimization. *(Done — landed in branch commit `fc7792a`.)*
+- **T3 — Draft `docs/solver_contract.md`.** Normative solver boundary: scoring-blind public surface, strategy-pluggable interface with additive extension clause for future score-aware strategies, first-release `SEEDED_RANDOM_BLIND` composite (`CR_MINIMUM_PER_DOCTOR` Phase 1 + `MOST_CONSTRAINED_FIRST` Phase 2), `crFloor` computation (`SMART_MEDIAN` default / `MANUAL` override) with computed `X` logged in diagnostics, whole-run failure on any unfillable slot, `maxCandidates`-only termination, byte-identical determinism within a single implementation on a single platform, retention moved downstream to the selector stage. *(Done — landed in branch commit `d99c3c7`.)*
+- **T4 — Supporting updates.** Append `docs/future_work.md` entries for incremental rule engine, score-aware solver strategies, parallel solver strategy, scoring-consultation extension-clause activation, operator-tuneable scoring-curve parameters, per-unit-position fairness scoring component, `workloadWeight` on `SlotTypeDefinition`, streaming/delta scoring, cross-implementation determinism, full-violation-set reporting mode, richer retention modes / artifact export formats, v1 score-weight reference pass, benchmark campaign mode interaction with solver contract, and retention stage re-emergence under scoring-aware solvers. Append `docs/decision_log.md` entries D-0024 (rule engine contract), D-0025 (scorer contract), D-0026 (solver contract), D-0027 (pipeline stage separation), D-0028 (operator-tuneable surface broader than blueprint §16). Patch `docs/blueprint.md` §16 with a clarifying line covering scorer weights and solver `crFloor`. *(In progress — lands in the second commit of this branch.)*
+
+C1 closes when all four tasks are Done and the branch PR merges. Sign-off note is recorded in §11 at that point.
 
 ## 10. Explicitly deferred for now
 - Solver implementation details.
@@ -198,6 +207,7 @@ C1 is complete. The sheet-generation MVP boundary is now closed for execution: g
 - **2026-04-22:** Closed Checkpoint 1 (`Implement operator launcher web app`) under M1.1 with T1–T4 Done; sign-off recorded in §11.
 - **2026-04-22:** Closed Milestone 1.1 (`Operator-facing launcher`) on hands-on validation; see §11.
 - **2026-04-22:** Activated Milestone 2 (`Minimal local compute pipeline`) at milestone level; first checkpoint to be scoped separately (§8), mirroring the 2026-04-21 "activate at milestone level, checkpoint to follow" pattern.
+- **2026-04-23:** Activated M2 Checkpoint 1 (`Rule engine + scorer + solver contract closure`) as the current execution focus; seeded compact task list T1–T4 (T1/T2/T3 already Done on-branch; T4 in progress). C1 is docs-only contract closure and does not itself ship executable code.
 
 ## 13. Relationship to other repo docs
 - `README.md` = front door orientation.
@@ -216,8 +226,8 @@ C1 is complete. The sheet-generation MVP boundary is now closed for execution: g
 - If a task does not support the active checkpoint, it likely does not belong here.
 
 ## 15. Initial seed content
-This version reflects the 2026-04-22 closure of M1.1 (`Operator-facing launcher`) and activation of M2 (`Minimal local compute pipeline`) at milestone level, and is currently in the following state:
-- active milestone `Minimal local compute pipeline` (M2), activated at milestone level only
-- no active checkpoint — deliberate exception pending M2 first-checkpoint scoping (§8)
+This version reflects the 2026-04-23 activation of M2 C1 (`Rule engine + scorer + solver contract closure`) on top of the 2026-04-22 closure of M1.1 (`Operator-facing launcher`) and milestone-level activation of M2 (`Minimal local compute pipeline`), and is currently in the following state:
+- active milestone `Minimal local compute pipeline` (M2)
+- active checkpoint `Rule engine + scorer + solver contract closure` (M2 C1), a docs-only contract-closure checkpoint covering rule-engine / scorer / solver contract drafts plus supporting updates to `docs/future_work.md`, `docs/decision_log.md` (D-0024..D-0028), and `docs/blueprint.md` §16
 - closed-milestone trail for M1 (C1–C4 with C4 sign-off note) and M1.1 (C1 with sign-off note) in §11, with D-0019/D-0020/D-0021/D-0022/D-0023 anchors
 - explicit deferrals retained from the M1.1 scope (public signup, in-app allowlist, operator-editable template, persisted per-operator state, alternative launcher platforms)
