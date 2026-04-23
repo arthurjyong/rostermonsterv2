@@ -244,6 +244,7 @@ Notes:
 - `unitIndex` also preserves multiple explicit unfilled units.
 - `doctorId = null` supports explicit unfilled demand representation.
 - This is the normalized v2 core; a v1-style fixed per-day slot map is a compatibility/view/writeback projection for current ICU/HD, not the core representation.
+- All `AssignmentUnit` entries that share the same `(dateKey, slotType)` pair (i.e., differ only by `unitIndex`) are **equivalent** for hard-validity rules (eligibility, blocks, back-to-back, uniqueness) and for baseline workload weight. `unitIndex` is a stable operational identity that supports writeback labeling (for example, "MO1", "MO2", "MO3" mapping to `unitIndex = 0, 1, 2`); it MUST NOT carry implicit difficulty or workload differentiation. Departments that genuinely need semantically-differentiated roles MUST model them as distinct `SlotType` identities, not as distinct `unitIndex` values of the same `SlotType`. Per-position fairness across `unitIndex` values is a future additive scoring component (`docs/future_work.md` FW-0008), not a `unitIndex` weight; per-slot-type burden weighting is a future additive `SlotTypeDefinition` field (`docs/future_work.md` FW-0009). See `docs/decision_log.md` D-0029.
 
 ### 10.3 AllocationResult
 Minimum useful contents:
