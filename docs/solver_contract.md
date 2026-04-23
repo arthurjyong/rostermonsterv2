@@ -110,7 +110,7 @@ Normative properties:
 - Each `TrialCandidate` carries `AssignmentUnit[]` covering the full roster — including `FixedAssignment` entries from the normalized model and all solver-placed `AssignmentUnit` entries — and MUST NOT carry a score. Scoring happens downstream (`docs/scorer_contract.md`).
 - Each candidate MUST be free of rule-engine hard-validity violations under `docs/rule_engine_contract.md`. Emitting an invalid candidate is a contract-breaking defect.
 - `diagnostics` carries the solver's transparency payload; see §18.
-- `candidates` MAY be empty only when `terminationBounds.maxCandidates = 0`; otherwise emitting an empty `CandidateSet` from a successful search is a contract-breaking defect.
+- `candidates` MUST be non-empty on the success branch. Since `terminationBounds.maxCandidates` is a required positive integer (§15), a successful search always emits at least one candidate; emitting an empty `CandidateSet` is a contract-breaking defect. When no valid complete candidate is reachable under the active bounds, the solver MUST return `UnsatisfiedResult` (§10.2) instead.
 
 ### 10.2 `UnsatisfiedResult` — the whole-run failure branch
 
