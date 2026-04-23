@@ -124,9 +124,10 @@ When `valid = false`, `reasons` MUST be ordered in the following canonical seque
 5. `BACK_TO_BACK_CALL`
 
 Normative consequences:
-- The rule engine MUST return the full list of applicable violations, not only the first fail.
-- First-release implementations MAY short-circuit after the first fail and return a list of length 1 when performance warrants; this is a contract-permitted optimization, not a requirement, and the canonical ordering property is preserved either way.
-- When the full list is returned, entries MUST appear in the order above. Callers MAY use list membership for assertions without depending on list length.
+- When `valid = false`, `reasons` MUST include every applicable violation. Partial violation lists are non-compliant.
+- Entries in `reasons` MUST appear in the canonical order above. Canonical ordering is normative regardless of list length.
+- `reasons` MUST be non-empty when `valid = false` and MUST be empty when `valid = true`.
+- Callers MAY use list membership for assertions. Because completeness is required, list length carries meaningful information (exactly the count of applicable violations) and is not an implementation-defined value.
 
 ## 13) Statelessness and optional internal caching
 Proposed in this checkpoint (normative):
