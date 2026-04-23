@@ -81,7 +81,7 @@ Scorer queries are evaluated against three inputs:
 
 Normative properties:
 - The scorer MUST NOT read any state outside these three inputs. No environment variables, no clocks, no filesystem.
-- `allocation` MUST be a valid roster (no hard-validity violations). Scoring an invalid allocation is outside contract scope and MAY produce undefined output.
+- `allocation` MUST be free of rule-engine hard-rule violations (`docs/rule_engine_contract.md` §11). An allocation with unfilled demand units (`AssignmentUnit` entries with `doctorId = null`) IS in scope; such units produce `unfilledPenalty` contributions per §11.2 and are the specific case the direction-guard invariant in §13 exercises. Scoring an allocation with rule-engine hard-rule violations is outside contract scope and MAY produce undefined output.
 
 ## 10) Output shape
 Scorer returns a `ScoreResult` object:
@@ -169,7 +169,7 @@ Proposed in this checkpoint (normative):
 Proposed in this checkpoint (normative):
 - The scorer's public contract is a pure function `score(allocation, normalizedModel, scoringConfig) → ScoreResult`.
 - Implementations MAY internally compute scores incrementally or via streaming deltas applied during solver search, as an optimization.
-- Any streaming/delta implementation MUST produce `ScoreResult` values byte-identical (within floating-point reproducibility bounds declared by the implementation) to the pure-function evaluation over the same inputs.
+- Any streaming/delta implementation MUST produce `ScoreResult` values byte-identical to the pure-function evaluation over the same inputs within a single implementation on a single platform. Within one implementation on one platform, floating-point operations in the same order yield identical bit patterns; the byte-identical bar is both achievable and the single normative parity criterion under this contract.
 - Streaming implementations MUST NOT leak lifecycle state into the public contract; callers MUST be able to invoke the scorer as a stateless service.
 
 ## 17) Determinism
