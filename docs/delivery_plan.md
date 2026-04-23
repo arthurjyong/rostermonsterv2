@@ -90,8 +90,8 @@ Roster Monster v2 builds a reusable roster-allocation core with department-speci
 
 This is active now because:
 - M1 (`Operator-ready request sheet generation`) closed on 2026-04-21 and M1.1 (`Operator-facing launcher`) closed on 2026-04-22, so the operator-facing request-sheet story is complete end-to-end; see §11
-- M2 was returned to Planned while M1.1 was active under the one-active-milestone rule and is now the natural next milestone under the roadmap sequence
-- M2 is activated at milestone level only for now; its first checkpoint has not yet been scoped and is to be selected as the next execution focus, mirroring the 2026-04-21 "activate at milestone level, checkpoint to follow" pattern
+- M2 was returned to Planned while M1.1 was active under the one-active-milestone rule and was activated at milestone level after M1.1 closure, mirroring the 2026-04-21 "activate at milestone level, checkpoint to follow" pattern
+- M2 C1 (`Rule engine + scorer + solver contract closure`) has since been scoped and activated as the first M2 checkpoint on 2026-04-23; see §7 and §8
 
 ## 7. Checkpoint plan for the active milestone
 
