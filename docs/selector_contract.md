@@ -164,7 +164,7 @@ StrategyDescriptor {
 First release ships exactly one strategy:
 - `HIGHEST_SCORE_WITH_CASCADE` — see §12.
 
-Callers that request an unregistered `selectorStrategyId` MUST receive a structured failure (not a silent fallback). First-release failure handling for unregistered strategies is an implementation concern outside this contract.
+Callers that request an unregistered `selectorStrategyId` MUST be rejected at strategy-resolution time, **before** any §10 `FinalResultEnvelope` construction begins. Such a rejection is not a `FinalResultEnvelope.result` value — it never enters the §10 output schema at all, and therefore does not require a slot inside the `AllocationResult | UnsatisfiedResultEnvelope` branch discipline. The concrete shape of the strategy-resolution failure (exception class, structured error object, return code) is an implementation concern outside this contract.
 
 ### 11.2 Future strategies (extension clause)
 The contract anticipates future strategies (for example, score-with-fairness-bias selection, multi-objective Pareto selection, operator-preferred-candidate selection). Normative rules for future strategies:

@@ -150,7 +150,7 @@ StrategyDescriptor {
 First release ships exactly one strategy:
 - `SEEDED_RANDOM_BLIND` — see §12.
 
-Callers that request an unregistered `strategyId` MUST receive a structured failure (not a silent fallback). First-release failure handling for unregistered strategies is an implementation concern outside this contract.
+Callers that request an unregistered `strategyId` MUST be rejected at strategy-resolution time, **before** any §10 `CandidateSet` or `UnsatisfiedResult` construction begins. Such a rejection is not a §10 output value — it never enters the §10 output schema at all, and therefore does not require a slot inside the `CandidateSet | UnsatisfiedResult` branch discipline (§10.3). The concrete shape of the strategy-resolution failure (exception class, structured error object, return code) is an implementation concern outside this contract.
 
 ### 11.2 Future strategies (extension clause)
 The contract anticipates future strategies — for example, hill-climbing, simulated annealing, beam search, parallel seeded-merge, constraint propagation, CP-SAT. Normative rules for future strategies:
