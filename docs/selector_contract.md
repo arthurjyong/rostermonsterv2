@@ -21,8 +21,8 @@ Contract identity/version for binding:
 - `contractVersion: 1`
 
 Version bump rule (normative):
-- bump `contractVersion` only when selector-stage input/output shape, retention-mode semantics, sidecar artifact shape, determinism guarantees, or the strategy-interface contract changes.
-- do **not** bump for wording cleanup, formatting, added examples, new strategy registrations that conform to the existing strategy-interface contract, additive run-level metadata fields on the run envelope, or clarification that does not change behavior.
+- bump `contractVersion` only when selector-stage input/output shape, retention-mode semantics, sidecar artifact shape in a way that breaks v1-targeted readers (per §19), determinism guarantees, or the strategy-interface contract changes.
+- do **not** bump for wording cleanup, formatting, added examples, new strategy registrations that conform to the existing strategy-interface contract, additive run-level metadata fields on the run envelope, additive sidecar artifact column/field changes that v1-targeted readers can tolerate (per §19), or clarification that does not change behavior.
 
 ## 3) Status discipline used in this document
 Each normative statement is classified as one of:
@@ -227,7 +227,7 @@ Tabular per-candidate summary suitable for spreadsheet-grade inspection.
   - `candidateId` — run-monotonic integer (§16),
   - `totalScore` — the candidate's `ScoreResult.totalScore`,
   - one column per first-release component identifier from `docs/domain_model.md` §11.2 (the nine ICU/HD components: `unfilledPenalty`, `pointBalanceWithinSection`, `pointBalanceGlobal`, `spacingPenalty`, `preLeavePenalty`, `crReward`, `dualEligibleIcuBonus`, `standbyAdjacencyPenalty`, `standbyCountFairnessPenalty`),
-  - `runId`, `seed`, `batchId` (when batches were surfaced by the active solver strategy; see `docs/solver_contract.md` §18.2).
+  - `runId`, `seed`, `batchId` — always present as columns in the v1 header shape. The `batchId` cell carries the batch identifier when the active solver strategy surfaces batches per `docs/solver_contract.md` §18.2; when the strategy does not surface batches, the `batchId` cell MUST be the empty string `""`. Strategies that do not surface batches MUST NOT omit the column header — header shape is invariant across runs under `schemaVersion: 1` so downstream parsers and audit tooling can rely on a stable column layout.
 - `schemaVersion: 1` MUST be declared either in a top-of-file comment line (preferred where the CSV variant in use supports header comments) or as a first-row metadata block. The chosen mechanism MUST be uniform within an implementation so old tooling can detect a future bump (§19).
 
 ### 14.2 `candidates_full.json`
