@@ -87,7 +87,7 @@ This contract does **not** govern:
 Selector invocations are evaluated against the following inputs:
 1. **`scoredCandidateSet`** — a `CandidateSet` per `docs/solver_contract.md` §10.1 in which every `TrialCandidate.score` field has been populated by the scorer with a `ScoreResult` per `docs/scorer_contract.md` §10. We refer to this populated set as a `ScoredCandidateSet` for clarity within this contract; structurally it remains a `CandidateSet`. On the failure branch this input is replaced by an `UnsatisfiedResult` per `docs/solver_contract.md` §10.2 and is handled per §15.
 2. **`retentionMode`** — first release: `"BEST_ONLY"` (default) or `"FULL"` (operator opt-in). See §13. `TOP_K` and `FULL_WITH_DIAGNOSTICS` are deferred to FW-0013 Phase 2.
-3. **`runEnvelope`** — execution-layer-supplied run identity and provenance. Required fields: `runId` (stable string identifier), `snapshotRef`, `configRef`, `seed`, `fillOrderPolicy`, `crFloorMode`, `crFloorComputed`. See §16.
+3. **`runEnvelope`** — execution-layer-supplied run identity and provenance. Required fields: `runId` (stable string identifier), `snapshotRef`, `configRef`, `seed`, `fillOrderPolicy`, `crFloorMode`, `crFloorComputed`, `generationTimestamp`. See §16.
 4. **`selectorStrategyId`** — first release ships exactly `"HIGHEST_SCORE_WITH_CASCADE"`. See §11 and §12.
 5. **`selectorStrategyConfig`** (optional) — strategy-specific configuration. First-release `HIGHEST_SCORE_WITH_CASCADE` does not require any configuration fields; future strategies MAY declare them per their `StrategyDescriptor` (§11).
 
@@ -232,7 +232,7 @@ Tabular per-candidate summary suitable for spreadsheet-grade inspection.
 
 ### 14.2 `candidates_full.json`
 Full per-candidate payload suitable for programmatic round-trip.
-- Top-level fields MUST include `runId`, `schemaVersion: 1`, and a generation timestamp.
+- Top-level fields MUST include `runId`, `schemaVersion: 1`, and `generationTimestamp` (carried from `runEnvelope.generationTimestamp` per §16; execution-layer-supplied, never selector-synthesized, so byte-identical determinism per §18 holds across re-runs of identical inputs).
 - The candidate payload MUST be indexed by `candidateId` and MUST include the full `AssignmentUnit[]` of each retained candidate.
 - The candidate payload MUST include the full `ScoreResult` (total + components) for each retained candidate; `candidates_full.json` is the authoritative per-candidate scoring artifact under `FULL` retention.
 - The serialization format details (key ordering, whitespace, Unicode normalization) are implementation-level concerns, but the selector MUST emit byte-identical files under identical inputs on a single implementation on a single platform. See §18.
@@ -266,13 +266,13 @@ The full identity of any retained candidate is the pair `(runId, candidateId)`:
 - `candidateId` is a run-monotonic integer scoped to the run, assigned per `TrialCandidate` in solver-emission order. Candidate `1` is the first candidate emitted across all batches in the run; candidate `N` is the last. Within a single run, `candidateId` values are dense (no gaps) and stable under repeated invocations on identical inputs.
 
 ### 16.2 Run-level metadata flows once
-All run-level metadata (`runId`, `snapshotRef`, `configRef`, `seed`, `fillOrderPolicy`, `crFloorMode`, `crFloorComputed`) flows once on the `runEnvelope` at the `FinalResultEnvelope` level. It MUST NOT be repeated per candidate inside `candidates_summary.csv` or `candidates_full.json` beyond the explicit per-row `runId` reference and any explicitly-listed run-scope fields (for example, `seed` in `candidates_summary.csv` per §14.1). This avoids duplication that would silently drift if any field were updated mid-run.
+All run-level metadata (`runId`, `snapshotRef`, `configRef`, `seed`, `fillOrderPolicy`, `crFloorMode`, `crFloorComputed`, `generationTimestamp`) flows once on the `runEnvelope` at the `FinalResultEnvelope` level. `generationTimestamp` is execution-layer-supplied for the same reason as `runId` (§16.4): the selector MUST NOT consume clocks (§18), so any timestamp embedded in retained artifacts must arrive on the run envelope rather than be synthesized at write time. Run-level metadata MUST NOT be repeated per candidate inside `candidates_summary.csv` or `candidates_full.json` beyond the explicit per-row `runId` reference and any explicitly-listed run-scope fields (for example, `seed` in `candidates_summary.csv` per §14.1). This avoids duplication that would silently drift if any field were updated mid-run.
 
 ### 16.3 Run envelope additivity
 Future expansion of run-level metadata fields on `runEnvelope` is additive and does not require a `contractVersion` bump. Removing or renaming an existing field does require a bump.
 
 ### 16.4 Selector synthesizes nothing about identity
-The selector MUST NOT generate `runId`, MUST NOT remap `candidateId` values from the solver's emission order, and MUST NOT alter `snapshotRef` / `configRef` / `seed` / `fillOrderPolicy` / `crFloorMode` / `crFloorComputed` values received on the run envelope. The selector is a propagator of identity, not an originator.
+The selector MUST NOT generate `runId`, MUST NOT remap `candidateId` values from the solver's emission order, and MUST NOT alter `snapshotRef` / `configRef` / `seed` / `fillOrderPolicy` / `crFloorMode` / `crFloorComputed` / `generationTimestamp` values received on the run envelope. The selector is a propagator of identity, not an originator.
 
 ## 17) `TrialBatchResult` retroactive population
 Proposed in this checkpoint (normative):
