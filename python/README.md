@@ -7,12 +7,16 @@ surface, local-first Python for compute-heavy core).
 ## Status
 
 Active milestone: **M2** (`Minimal local compute pipeline`).
-Active checkpoint: **M2 C3** (`Parser/normalizer implementation closure`).
-Task progress: **T1 Done** (parser side), **T2 Done** (normalizer side —
-provenance, `displayLabel`, internal handoff-consistency defense), **T3
-Done** (real-data hand-test against the ICU/HD May 2026 dev-copy snapshot,
-fixture committed under `tests/data/`). **T4** (delivery-plan closure
-transition) remains.
+M2 C3 (`Parser/normalizer implementation closure`) **closed 2026-04-27** —
+all four tasks Done (T1 parser side, T2 normalizer side, T3 real-data
+hand-test against the ICU/HD May 2026 dev-copy, T4 delivery-plan closure
+transition). 24/24 tests pass.
+
+Next M2 checkpoint to be scoped separately. Candidates per
+`docs/delivery_plan.md` §5 / §7 ordering: minimal rule/scorer/solver
+integration, local run artifact basics, snapshot-extraction Apps Script
+implementation (per `docs/decision_log.md` D-0036, pinned to late-M2
+before M3 activation).
 
 Subsequent M2 checkpoints will extend this package with rule engine, scorer,
 solver, and selector implementations against the now-settled contract
