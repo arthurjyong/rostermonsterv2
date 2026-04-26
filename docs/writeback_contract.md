@@ -71,6 +71,8 @@ Writeback is a pure adapter from `(finalResultEnvelope, snapshot, doctorIdMap)` 
 ### 6.3 Transport mechanics deferred to implementation slice
 The concrete transport that delivers the JSON envelope to the writeback launcher (operator paste, file upload, Drive Picker, or alternative) is an implementation-slice concern and is **not** pinned by this contract. The contract requires only that the JSON envelope arrives in the Apps Script execution context with the categories of content named in §9; the launcher's input form and the wire-level representation of that JSON are execution-layer outputs. This mirrors the way `docs/selector_contract.md` §14.3 leaves sidecar file paths to the execution layer.
 
+The transport decision is jointly scoped with the structurally-symmetric inbound side per `docs/decision_log.md` D-0036 (snapshot-extraction Apps Script implementation pinned to a late-M2 checkpoint before M3 activation). When the transport is settled, both inbound (snapshot ingestion) and outbound (writeback envelope delivery) directions adopt the same transport mechanic to avoid two divergent transports across the same Apps Script ↔ Python boundary.
+
 ## 7) What this contract governs
 This contract governs:
 - the shape of writeback input (the `FinalResultEnvelope`, the snapshot bundle, and the `doctorIdMap`),
