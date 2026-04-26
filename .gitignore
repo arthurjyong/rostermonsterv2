@@ -149,3 +149,16 @@ for_claude_code/
 
 # Claude Code worktrees and local agent state
 .claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
