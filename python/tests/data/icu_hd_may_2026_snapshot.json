@@ -21,7 +21,7 @@
     {
       "sourceDoctorKey": "micu_dr_0",
       "displayName": "Jeevan Kumar",
-      "rawSectionText": "MICU",
+      "rawSectionText": "MICU  (ICU_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU",
@@ -38,7 +38,7 @@
     {
       "sourceDoctorKey": "micu_dr_1",
       "displayName": "Ong Wei Ren",
-      "rawSectionText": "MICU",
+      "rawSectionText": "MICU  (ICU_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU",
@@ -55,7 +55,7 @@
     {
       "sourceDoctorKey": "micu_dr_2",
       "displayName": "Laura Tan Jia Min",
-      "rawSectionText": "MICU",
+      "rawSectionText": "MICU  (ICU_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU",
@@ -72,7 +72,7 @@
     {
       "sourceDoctorKey": "micu_dr_3",
       "displayName": "Loh Xinpeng",
-      "rawSectionText": "MICU",
+      "rawSectionText": "MICU  (ICU_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU",
@@ -89,7 +89,7 @@
     {
       "sourceDoctorKey": "micu_dr_4",
       "displayName": "Pisupati Anushka",
-      "rawSectionText": "MICU",
+      "rawSectionText": "MICU  (ICU_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU",
@@ -106,7 +106,7 @@
     {
       "sourceDoctorKey": "micu_dr_5",
       "displayName": "Tan Rei",
-      "rawSectionText": "MICU",
+      "rawSectionText": "MICU  (ICU_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU",
@@ -123,7 +123,7 @@
     {
       "sourceDoctorKey": "micu_dr_6",
       "displayName": "Kimberly Tjahjadi",
-      "rawSectionText": "MICU",
+      "rawSectionText": "MICU  (ICU_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU",
@@ -140,7 +140,7 @@
     {
       "sourceDoctorKey": "micu_dr_7",
       "displayName": "Tung Yu Feng",
-      "rawSectionText": "MICU",
+      "rawSectionText": "MICU  (ICU_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU",
@@ -157,7 +157,7 @@
     {
       "sourceDoctorKey": "micu_dr_8",
       "displayName": "Teng Yee Sean",
-      "rawSectionText": "MICU",
+      "rawSectionText": "MICU  (ICU_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU",
@@ -174,7 +174,7 @@
     {
       "sourceDoctorKey": "micu_hd_dr_0",
       "displayName": "Matthew Leong Tze Ker",
-      "rawSectionText": "MICU_HD",
+      "rawSectionText": "ICU + HD  (ICU_HD)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU_HD",
@@ -191,7 +191,7 @@
     {
       "sourceDoctorKey": "micu_hd_dr_1",
       "displayName": "Goh Chubin",
-      "rawSectionText": "MICU_HD",
+      "rawSectionText": "ICU + HD  (ICU_HD)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU_HD",
@@ -208,7 +208,7 @@
     {
       "sourceDoctorKey": "micu_hd_dr_2",
       "displayName": "Ly Seav Huong",
-      "rawSectionText": "MICU_HD",
+      "rawSectionText": "ICU + HD  (ICU_HD)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU_HD",
@@ -225,7 +225,7 @@
     {
       "sourceDoctorKey": "micu_hd_dr_3",
       "displayName": "Ooi Gene Anne",
-      "rawSectionText": "MICU_HD",
+      "rawSectionText": "ICU + HD  (ICU_HD)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU_HD",
@@ -242,7 +242,7 @@
     {
       "sourceDoctorKey": "micu_hd_dr_4",
       "displayName": "Pan Zi Hang",
-      "rawSectionText": "MICU_HD",
+      "rawSectionText": "ICU + HD  (ICU_HD)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU_HD",
@@ -259,7 +259,7 @@
     {
       "sourceDoctorKey": "micu_hd_dr_5",
       "displayName": "Seah Zhi Yi Charlotte",
-      "rawSectionText": "MICU_HD",
+      "rawSectionText": "ICU + HD  (ICU_HD)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MICU_HD",
@@ -276,7 +276,7 @@
     {
       "sourceDoctorKey": "mhd_dr_0",
       "displayName": "Terence Lee Ji Hui",
-      "rawSectionText": "MHD",
+      "rawSectionText": "MHD  (HD_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MHD",
@@ -293,7 +293,7 @@
     {
       "sourceDoctorKey": "mhd_dr_1",
       "displayName": "Chua Ying Kai Justin",
-      "rawSectionText": "MHD",
+      "rawSectionText": "MHD  (HD_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MHD",
@@ -310,7 +310,7 @@
     {
       "sourceDoctorKey": "mhd_dr_2",
       "displayName": "Nicholas Teo Ann Hong",
-      "rawSectionText": "MHD",
+      "rawSectionText": "MHD  (HD_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MHD",
@@ -327,7 +327,7 @@
     {
       "sourceDoctorKey": "mhd_dr_3",
       "displayName": "Jack Tan Jie En",
-      "rawSectionText": "MHD",
+      "rawSectionText": "MHD  (HD_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MHD",
@@ -344,7 +344,7 @@
     {
       "sourceDoctorKey": "mhd_dr_4",
       "displayName": "Yeong Xun Lun",
-      "rawSectionText": "MHD",
+      "rawSectionText": "MHD  (HD_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MHD",
@@ -361,7 +361,7 @@
     {
       "sourceDoctorKey": "mhd_dr_5",
       "displayName": "Niam Jen Yong",
-      "rawSectionText": "MHD",
+      "rawSectionText": "MHD  (HD_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MHD",
@@ -378,7 +378,7 @@
     {
       "sourceDoctorKey": "mhd_dr_6",
       "displayName": "Glenn Ting",
-      "rawSectionText": "MHD",
+      "rawSectionText": "MHD  (HD_ONLY)",
       "sourceLocator": {
         "surfaceKey": "doctorRows",
         "sectionKey": "MHD",

@@ -164,11 +164,13 @@ def extract(xlsx_path: Path) -> dict:
     max_row = max(r for (r, _) in cells.keys())
     doctor_records: list[dict] = []
     current_section_key: str | None = None
+    current_section_raw_header: str | None = None
     doctor_index_in_section = 0
     for r in range(4, max_row + 1):
         a_val = (cells.get((r, "A"), "") or "").strip()
         if a_val in SECTION_HEADER_MAP:
             current_section_key = SECTION_HEADER_MAP[a_val]
+            current_section_raw_header = a_val
             doctor_index_in_section = 0
             continue
         # Stop when we hit the lower-shell / point-rows region — those are
@@ -186,6 +188,7 @@ def extract(xlsx_path: Path) -> dict:
             "Roster Notes / FAQ",
         }:
             current_section_key = None
+            current_section_raw_header = None
             continue
         if current_section_key is None or a_val == "":
             continue
@@ -195,11 +198,14 @@ def extract(xlsx_path: Path) -> dict:
         # Treat as a doctor row.
         display_name = a_val
         source_doctor_key = f"{current_section_key.lower()}_dr_{doctor_index_in_section}"
+        # snapshot_contract.md §7 — rawSectionText is the raw visible section
+        # header text from the sheet (audit/debug only); not the logical
+        # sectionKey. The mapped sectionKey rides on sourceLocator.path.
         doctor_records.append(
             {
                 "sourceDoctorKey": source_doctor_key,
                 "displayName": display_name,
-                "rawSectionText": current_section_key,
+                "rawSectionText": current_section_raw_header or "",
                 "sourceLocator": {
                     "surfaceKey": "doctorRows",
                     "sectionKey": current_section_key,
@@ -247,14 +253,16 @@ def extract(xlsx_path: Path) -> dict:
         doc_idx += 1
 
     # Request records — one per (doctor, day) cell, blank or otherwise per
-    # snapshot_contract.md §9 ("blank request cells still emit request records").
+    # snapshot_contract.md §9 ("blank request cells still emit request records";
+    # `rawRequestText` "preserves exact raw cell text (not trimmed or normalized)").
     request_records: list[dict] = []
     for doc in doctor_records:
         section_key = doc["sourceLocator"]["sectionKey"]
         key = doc["sourceDoctorKey"]
         row = name_to_row[(section_key, key)]
         for col, day_index in column_to_day_index.items():
-            cell_val = (cells.get((row, col), "") or "").strip()
+            # Do NOT trim — rawRequestText preserves exact raw cell text.
+            cell_val = cells.get((row, col), "") or ""
             request_records.append(
                 {
                     "sourceDoctorKey": key,
