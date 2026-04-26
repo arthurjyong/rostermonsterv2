@@ -9,9 +9,10 @@ surface, local-first Python for compute-heavy core).
 Active milestone: **M2** (`Minimal local compute pipeline`).
 Active checkpoint: **M2 C3** (`Parser/normalizer implementation closure`).
 Task progress: **T1 Done** (parser side), **T2 Done** (normalizer side —
-provenance, `displayLabel`, internal handoff-consistency defense). **T3**
-(hand-test against ICU/HD first-release inputs) and **T4** (delivery-plan
-closure transition) remain.
+provenance, `displayLabel`, internal handoff-consistency defense), **T3
+Done** (real-data hand-test against the ICU/HD May 2026 dev-copy snapshot,
+fixture committed under `tests/data/`). **T4** (delivery-plan closure
+transition) remains.
 
 Subsequent M2 checkpoints will extend this package with rule engine, scorer,
 solver, and selector implementations against the now-settled contract
