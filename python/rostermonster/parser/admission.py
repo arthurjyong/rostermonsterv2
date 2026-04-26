@@ -918,9 +918,12 @@ ISSUE_HANDOFF_FIXED_ASSIGNMENT_DATE_ORPHAN = "HANDOFF_FIXED_ASSIGNMENT_DATE_ORPH
 ISSUE_HANDOFF_FIXED_ASSIGNMENT_SLOT_ORPHAN = "HANDOFF_FIXED_ASSIGNMENT_SLOT_ORPHAN"
 ISSUE_HANDOFF_SLOT_DEMAND_DATE_ORPHAN = "HANDOFF_SLOT_DEMAND_DATE_ORPHAN"
 ISSUE_HANDOFF_SLOT_DEMAND_SLOT_ORPHAN = "HANDOFF_SLOT_DEMAND_SLOT_ORPHAN"
+ISSUE_HANDOFF_SLOT_DEMAND_INCOMPLETE = "HANDOFF_SLOT_DEMAND_INCOMPLETE"
 ISSUE_HANDOFF_ELIGIBILITY_SLOT_ORPHAN = "HANDOFF_ELIGIBILITY_SLOT_ORPHAN"
 ISSUE_HANDOFF_ELIGIBILITY_GROUP_ORPHAN = "HANDOFF_ELIGIBILITY_GROUP_ORPHAN"
 ISSUE_HANDOFF_DOCTOR_GROUP_ORPHAN = "HANDOFF_DOCTOR_GROUP_ORPHAN"
+ISSUE_HANDOFF_DAILY_EFFECT_DOCTOR_ORPHAN = "HANDOFF_DAILY_EFFECT_DOCTOR_ORPHAN"
+ISSUE_HANDOFF_DAILY_EFFECT_DATE_ORPHAN = "HANDOFF_DAILY_EFFECT_DATE_ORPHAN"
 
 
 def _verify_handoff_consistency(model: NormalizedModel) -> list[ValidationIssue]:
@@ -1057,6 +1060,59 @@ def _verify_handoff_consistency(model: NormalizedModel) -> list[ValidationIssue]
                         f"unknown slotType={sd.slotType!r}."
                     ),
                     context={"dateKey": sd.dateKey, "slotType": sd.slotType},
+                )
+            )
+
+    # SlotDemand completeness — every (dateKey × slotType) pair implied by
+    # period.days × slotTypes must have a SlotDemand record. A normalization
+    # defect that drops a pair would silently slip past the per-record orphan
+    # checks above; downstream solvers would then under-allocate by treating
+    # missing demand as absent.
+    expected_pairs = {
+        (day.dateKey, st.slotType)
+        for day in model.period.days
+        for st in model.slotTypes
+    }
+    actual_pairs = {(sd.dateKey, sd.slotType) for sd in model.slotDemand}
+    missing_pairs = expected_pairs - actual_pairs
+    for pair in sorted(missing_pairs):
+        issues.append(
+            ValidationIssue(
+                severity=IssueSeverity.ERROR,
+                code=ISSUE_HANDOFF_SLOT_DEMAND_INCOMPLETE,
+                message=(
+                    f"Internal handoff defect: SlotDemand missing for pair "
+                    f"(dateKey={pair[0]!r}, slotType={pair[1]!r}). Expected "
+                    f"every (period.day × slotType) pair to have a SlotDemand "
+                    f"record so downstream solver does not under-allocate."
+                ),
+                context={"dateKey": pair[0], "slotType": pair[1]},
+            )
+        )
+
+    for de in model.dailyEffects:
+        if de.doctorId not in doctor_ids:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_HANDOFF_DAILY_EFFECT_DOCTOR_ORPHAN,
+                    message=(
+                        f"Internal handoff defect: DailyEffectState references "
+                        f"unknown doctorId={de.doctorId!r}."
+                    ),
+                    context={"doctorId": de.doctorId, "dateKey": de.dateKey},
+                )
+            )
+        if de.dateKey not in date_keys:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_HANDOFF_DAILY_EFFECT_DATE_ORPHAN,
+                    message=(
+                        f"Internal handoff defect: DailyEffectState references "
+                        f"unknown dateKey={de.dateKey!r}."
+                    ),
+                    context={"doctorId": de.doctorId, "dateKey": de.dateKey},
                 )
             )
 
