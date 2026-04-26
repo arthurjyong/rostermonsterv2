@@ -575,6 +575,22 @@ def _parse_requests(
 # ---------------------------------------------------------------------------
 
 
+def _normalize_doctor_name(text: str) -> str:
+    """Apply the D-0034 doctor-name matching normalization: trim leading /
+    trailing whitespace, collapse internal whitespace runs to a single space,
+    and case-fold (Unicode case-insensitive comparison). Punctuation and
+    diacritics are NOT folded.
+
+    Handles realistic spreadsheet quirks observed on the ICU/HD May 2026
+    source (trailing space, occasional double-space inside names) and obvious
+    operator typing variations (case differences) without admitting risky
+    fuzzy matches that could confuse two distinct doctors. The §14 ambiguity
+    check (multiple matches → NON_CONSUMABLE) catches edge cases where this
+    normalization happens to collapse two distinct displayNames.
+    """
+    return " ".join(text.split()).casefold()
+
+
 def _process_prefilled_assignments(
     snapshot: Snapshot,
     template_artifact: TemplateArtifact,
@@ -589,6 +605,9 @@ def _process_prefilled_assignments(
     even when they would otherwise violate request-derived hard block, baseline
     eligibility, or back-to-back prohibition. The override applies only to
     that fixed assignment itself; downstream legality remains downstream.
+
+    Doctor-name matching uses the D-0034 normalization on both sides of the
+    comparison (see `_normalize_doctor_name`).
     """
     issues: list[ValidationIssue] = []
     fixed_assignments: list[FixedAssignment] = []
@@ -604,11 +623,13 @@ def _process_prefilled_assignments(
         for row in surface.assignmentRows:
             surface_row_to_slot[(surface.surfaceId, row.rowOffset)] = row.slotId
 
-    # Build display-name → doctorId lookup (case-insensitive, trim-tolerant)
-    # detecting ambiguity (two doctors sharing the same normalized display name).
+    # Build display-name → doctorId lookup using the D-0034 normalization on
+    # both sides (trim + collapse internal whitespace + casefold). Ambiguity
+    # (two doctors sharing the same normalized name) is detected here and
+    # surfaced when a prefilled cell matches the colliding form.
     name_to_doctors: dict[str, list[str]] = {}
     for doc in doctors:
-        norm = doc.displayName.strip().casefold()
+        norm = _normalize_doctor_name(doc.displayName)
         name_to_doctors.setdefault(norm, []).append(doc.doctorId)
 
     # Track to detect "same doctor fixed into two slots on the same date" and
@@ -665,7 +686,7 @@ def _process_prefilled_assignments(
         # Skip blank / whitespace-only prefill cells — they signal
         # "not yet prefilled by operator" rather than a populated fixed
         # assignment per snapshot_contract.md §11 ("populated cells").
-        norm_name = pf.rawAssignedDoctorText.strip().casefold()
+        norm_name = _normalize_doctor_name(pf.rawAssignedDoctorText)
         if norm_name == "":
             continue
 

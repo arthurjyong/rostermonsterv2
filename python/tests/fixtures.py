@@ -374,6 +374,21 @@ def with_prefill_into_unknown_surface(snapshot: Snapshot) -> Snapshot:
     )
 
 
+def with_prefill_using_messy_whitespace_and_case(snapshot: Snapshot) -> Snapshot:
+    """Replace the prefill cell text with a noisy form of the doctor's name —
+    leading/trailing spaces, doubled internal spaces, and lowercase — to
+    exercise the D-0034 normalization rule (trim + collapse internal
+    whitespace + casefold)."""
+    return replace(
+        snapshot,
+        prefilledAssignmentRecords=_replace_in_tuple(
+            snapshot.prefilledAssignmentRecords,
+            0,
+            rawAssignedDoctorText="   dr   foxtrot  ",
+        ),
+    )
+
+
 def with_prefill_doctor_two_slots_same_day(snapshot: Snapshot) -> Snapshot:
     """Add a second prefill record placing the same doctor in another slot
     on the same date as the existing prefill."""

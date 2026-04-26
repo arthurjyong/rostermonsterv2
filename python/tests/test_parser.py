@@ -53,6 +53,7 @@ from tests.fixtures import (  # noqa: E402
     with_non_contiguous_day_index,
     with_prefill_doctor_two_slots_same_day,
     with_prefill_into_unknown_surface,
+    with_prefill_using_messy_whitespace_and_case,
     with_request_referencing_unknown_doctor,
     with_unknown_doctor_section,
     with_unknown_request_token,
@@ -303,6 +304,21 @@ def test_prefill_unknown_surface_is_non_consumable() -> None:
     result = parse(snapshot, template)
     assert result.consumability is Consumability.NON_CONSUMABLE
     assert ISSUE_PREFILLED_SURFACE_UNKNOWN in _issue_codes(result)
+
+
+def test_prefill_with_messy_whitespace_and_case_resolves_per_d0034() -> None:
+    """D-0034 — doctor-name matching applies trim + internal-whitespace-collapse
+    + casefold on both sides of the comparison. `   dr   foxtrot  ` resolves
+    to `Dr Foxtrot`."""
+    template = icu_hd_template_artifact()
+    snapshot = with_prefill_using_messy_whitespace_and_case(icu_hd_snapshot())
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.CONSUMABLE, (
+        f"expected CONSUMABLE per D-0034 normalization; got {result.consumability!r} "
+        f"with issues {_issue_codes(result)}"
+    )
+    assert len(result.normalizedModel.fixedAssignments) == 1
+    assert result.normalizedModel.fixedAssignments[0].doctorId == "mhd_dr_f"
 
 
 def test_prefill_doctor_two_slots_same_day_is_non_consumable() -> None:
