@@ -67,7 +67,9 @@ Roster Monster v2 builds a reusable roster-allocation core with department-speci
 - **Status:** Planned
 - **Dependencies:** M2 complete; stable output/writeback contract surfaces.
 - **Exit criteria:** controlled operator-safe writeback and explicit failure/unsatisfied-state handling.
-- **Likely checkpoints:** output contract closure; writeback mapping validation; result safety checks.
+- **Likely checkpoints:**
+  - Writeback contract closure (drafted scope-ahead in this PR; see `docs/writeback_contract.md` and D-0031; remains the natural M3 C1 once M3 activates).
+  - Writeback mapping validation; result safety checks.
 
 ### M4 — Parallel operational search and orchestration
 - **Goal:** Add reliable external/parallel execution without changing core compute semantics.
@@ -120,7 +122,7 @@ C2 closes when all four tasks are Done and the branch PR merges. Sign-off note i
 - Solver implementation details.
 - Scorer implementation details.
 - Local run implementation mechanics.
-- Writeback implementation mechanics.
+- Writeback implementation mechanics. The writeback contract is now drafted scope-ahead per D-0031 (`docs/writeback_contract.md`); implementation mechanics remain deferred until M3 activates.
 - Worker/orchestrator mechanics.
 - Benchmark hardening depth beyond milestone-level framing.
 - Broad multi-department generalization beyond ICU/HD-first sequencing.
@@ -221,6 +223,7 @@ C1 is complete. The sheet-generation MVP boundary is now closed for execution: g
 - **2026-04-23:** Activated M2 Checkpoint 1 (`Rule engine + scorer + solver contract closure`) as the current execution focus; seeded compact task list T1–T4 (T1/T2/T3 already Done on-branch; T4 in progress). C1 is docs-only contract closure and does not itself ship executable code.
 - **2026-04-25:** Closed M2 Checkpoint 1 (`Rule engine + scorer + solver contract closure`) on operator audit and merge of PR #63 + PR #64; sign-off recorded in §11. Locked architectural decisions span D-0024..D-0029.
 - **2026-04-25:** Activated M2 Checkpoint 2 (`Selector contract closure`) as the current execution focus; seeded compact task list T1–T4. C2 is docs-only contract closure and does not itself ship executable code; it operationalizes D-0026 sub-decision 8 (selector retroactively populates `TrialBatchResult` best-candidate fields) and locks the selector-stage boundary deferred by D-0027 sub-decision 2.
+- **2026-04-26:** Drafted writeback contract (`docs/writeback_contract.md`) scope-ahead of M3 activation; recorded D-0031 with all eleven sub-decisions; appended FW-0019..FW-0023 for deferred richer-mode surfaces. Active milestone (M2) and active checkpoint state unchanged; no new active checkpoint added; M3 stays `Planned`.
 
 ## 13. Relationship to other repo docs
 - `README.md` = front door orientation.
