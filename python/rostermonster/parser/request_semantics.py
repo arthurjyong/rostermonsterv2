@@ -22,8 +22,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rostermonster.domain import CanonicalRequestClass, MachineEffect
-from rostermonster.parser.result import IssueSeverity, ValidationIssue
+from rostermonster.domain import (
+    CanonicalRequestClass,
+    IssueSeverity,
+    MachineEffect,
+    ValidationIssue,
+)
 
 # request_semantics_contract.md §7 — accepted raw token vocabulary.
 ACCEPTED_RAW_TOKENS: frozenset[str] = frozenset(

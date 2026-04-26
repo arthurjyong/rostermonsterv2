@@ -32,20 +32,17 @@ from rostermonster.domain import (
     EligibilityRule,
     FixedAssignment,
     DailyEffectState,
+    IssueSeverity,
     NormalizedModel,
     Request,
     RosterDay,
     RosterPeriod,
     SlotDemand,
     SlotTypeDefinition,
-)
-from rostermonster.parser.request_semantics import parse_request_text
-from rostermonster.parser.result import (
-    Consumability,
-    IssueSeverity,
-    ParserResult,
     ValidationIssue,
 )
+from rostermonster.parser.request_semantics import parse_request_text
+from rostermonster.parser.result import ParserResult
 from rostermonster.snapshot import Snapshot
 from rostermonster.template_artifact import TemplateArtifact
 
@@ -538,8 +535,12 @@ def _parse_requests(
         if not result.consumable:
             # request_semantics_contract.md §14 — request-level NON_CONSUMABLE
             # propagates upward. The parent ParserResult.consumability check
-            # will see ERROR-severity issues and refuse CONSUMABLE.
+            # will see ERROR-severity issues and refuse CONSUMABLE. Per §9, no
+            # partial Request is emitted when the parse fails.
             continue
+        # §10 rule 4 — request parse issues mirror onto the normalized Request.
+        # Top-level ParserResult.issues remains the authoritative record (§10
+        # rule 1); entity-local content here is supplemental (§10 rules 5-6).
         requests.append(
             Request(
                 doctorId=req.sourceDoctorKey,
@@ -548,6 +549,7 @@ def _parse_requests(
                 recognizedRawTokens=result.recognizedRawTokens,
                 canonicalClasses=result.canonicalClasses,
                 machineEffects=result.machineEffects,
+                parseIssues=result.issues,
             )
         )
 

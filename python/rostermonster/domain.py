@@ -10,6 +10,37 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
+
+
+class IssueSeverity(str, Enum):
+    """Severity tag on `ValidationIssue` (domain_model.md §13).
+
+    `ERROR` denotes admission-relevant findings (drives `NON_CONSUMABLE` when
+    accumulated). `WARNING` denotes non-blocking findings retained for
+    diagnostics on `CONSUMABLE` outputs (parser_normalizer_contract.md §15).
+    `INFO` is reserved for narrative/diagnostic content.
+    """
+
+    ERROR = "ERROR"
+    WARNING = "WARNING"
+    INFO = "INFO"
+
+
+@dataclass(frozen=True)
+class ValidationIssue:
+    """Shared structured issue shape (domain_model.md §13).
+
+    Used uniformly across parsing, normalization, rule, and allocation
+    validation outputs. Minimum fields: `severity`, `code`, `message`,
+    `context`. `context` is a free-shape mapping carrying entity references /
+    paths / dates / doctor / slot identifiers per the shared-shape direction.
+    """
+
+    severity: IssueSeverity
+    code: str
+    message: str
+    context: dict[str, Any] = field(default_factory=dict)
 
 
 class CanonicalRequestClass(str, Enum):
@@ -116,6 +147,13 @@ class Request:
 
     `recognizedRawTokens`, `canonicalClasses`, and `machineEffects` are
     canonical-deterministic-ordered sets per request_semantics_contract.md §15.
+
+    `parseIssues` mirrors any non-blocking parse issues raised on this
+    specific request per parser_normalizer_contract.md §10 rule 4: request
+    parse issues must also appear on the relevant normalized `Request` when a
+    normalized `Request` exists in a `CONSUMABLE` output. This is supplemental
+    to the authoritative top-level `ParserResult.issues` channel (§10 rules 1
+    and 6) — entity-local content is never the sole record.
     """
 
     doctorId: str
@@ -124,6 +162,7 @@ class Request:
     recognizedRawTokens: tuple[str, ...]
     canonicalClasses: tuple[CanonicalRequestClass, ...]
     machineEffects: tuple[MachineEffect, ...]
+    parseIssues: tuple[ValidationIssue, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

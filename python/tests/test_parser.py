@@ -145,6 +145,44 @@ def test_duplicate_recognized_tokens_emits_warning_but_stays_consumable() -> Non
     )
 
 
+def test_request_parse_issues_mirror_onto_normalized_request() -> None:
+    """parser_normalizer §10 rule 4 — request parse issues must also appear on
+    the relevant normalized Request when a normalized Request exists in a
+    CONSUMABLE output. The top-level channel remains authoritative."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.CONSUMABLE
+
+    # The duplicate-token request is Dr Charlie's `NC, NC` on day 1.
+    charlie_day1 = next(
+        (
+            r
+            for r in result.normalizedModel.requests
+            if r.doctorId == "icuhd_dr_c" and r.dateKey == "2026-05-02"
+        ),
+        None,
+    )
+    assert charlie_day1 is not None, "expected normalized Request for Dr Charlie day 1"
+    mirrored_codes = {issue.code for issue in charlie_day1.parseIssues}
+    assert ISSUE_REQUEST_DUPLICATE_TOKEN in mirrored_codes, (
+        f"expected duplicate-token issue mirrored onto Request; got "
+        f"{mirrored_codes}"
+    )
+
+    # Top-level remains authoritative (§10 rule 1).
+    assert _has_issue_with(
+        result, ISSUE_REQUEST_DUPLICATE_TOKEN, IssueSeverity.WARNING
+    )
+
+    # Requests with no warnings have empty parseIssues.
+    alpha_day0 = next(
+        r for r in result.normalizedModel.requests
+        if r.doctorId == "micu_dr_a" and r.dateKey == "2026-05-01"
+    )
+    assert alpha_day0.parseIssues == ()
+
+
 def test_canonical_classes_are_deterministically_ordered() -> None:
     """Request `EXAM, NC` should canonicalize to FULL_DAY_OFF + NC in alphabetical
     order per request_semantics_contract.md §15."""

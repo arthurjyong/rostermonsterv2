@@ -1,17 +1,25 @@
-"""ParserResult, ValidationIssue, and admission-decision enums.
+"""ParserResult and admission-decision enum.
 
 Implements parser_normalizer_contract.md §9 (parser outputs) and §10 (issue
-schema vs issue channel vs admission decision). `ValidationIssue` follows the
-shared shape from `docs/domain_model.md` §13.
+schema vs issue channel vs admission decision). `ValidationIssue` and
+`IssueSeverity` are shared domain types per `docs/domain_model.md` §13 and
+live in `rostermonster.domain`; they are re-exported here for ergonomics
+(callers reach them via `from rostermonster.parser import ...`).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any
 
-from rostermonster.domain import NormalizedModel
+from rostermonster.domain import IssueSeverity, NormalizedModel, ValidationIssue
+
+__all__ = [
+    "Consumability",
+    "IssueSeverity",
+    "ParserResult",
+    "ValidationIssue",
+]
 
 
 class Consumability(str, Enum):
@@ -19,35 +27,6 @@ class Consumability(str, Enum):
 
     CONSUMABLE = "CONSUMABLE"
     NON_CONSUMABLE = "NON_CONSUMABLE"
-
-
-class IssueSeverity(str, Enum):
-    """Severity tag on `ValidationIssue` (domain_model.md §13).
-
-    `ERROR` denotes admission-relevant findings (drives `NON_CONSUMABLE` when
-    accumulated). `WARNING` denotes non-blocking findings retained for
-    diagnostics on `CONSUMABLE` outputs (parser_normalizer_contract.md §15).
-    `INFO` is reserved for narrative/diagnostic content.
-    """
-
-    ERROR = "ERROR"
-    WARNING = "WARNING"
-    INFO = "INFO"
-
-
-@dataclass(frozen=True)
-class ValidationIssue:
-    """Shared structured issue shape (domain_model.md §13).
-
-    Minimum fields: `severity`, `code`, `message`, `context`. `context` is a
-    free-shape mapping carrying entity references / paths / dates / doctor /
-    slot identifiers per the shared-shape direction.
-    """
-
-    severity: IssueSeverity
-    code: str
-    message: str
-    context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
