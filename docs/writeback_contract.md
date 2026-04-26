@@ -38,7 +38,7 @@ The following are treated as repo-settled anchors:
 - The pipeline is three-stage `solver → scorer → selector`; the selector is the final compute stage producing the operator-facing result, and writeback consumes that result downstream (`docs/decision_log.md` D-0027).
 - Apps Script is the platform for the M1 sheet-generation surface and for operator-facing sheet-side work, with compute-heavy core staying local-first Python (`docs/decision_log.md` D-0017, D-0018). Writeback is sheet-facing and inherits this stack split; see §6.
 - Auto-share / Drive Advanced Service v3 OAuth-scope discipline established for M1.1 carries into writeback: writeback MUST stay on non-restricted scopes available to the operator-execution context already in use, and MUST NOT introduce a new credential surface (`docs/decision_log.md` D-0023).
-- The selector's `FinalResultEnvelope` shape (`docs/selector_contract.md` §10) is the upstream input writeback consumes. Run envelope additivity per `docs/selector_contract.md` §16.3 is the mechanism by which writeback gains the source-sheet identity fields it needs (see §18; `docs/decision_log.md` D-0030).
+- The selector's `FinalResultEnvelope` shape (`docs/selector_contract.md` §10) is the upstream input writeback consumes. Selector contract v2 (`docs/selector_contract.md` §2.1, §9 item 3; `docs/decision_log.md` D-0032) requires `runEnvelope.sourceSpreadsheetId` and `runEnvelope.sourceTabName` so selector compliance implies writeback input compatibility for source-sheet identity (see §18; `docs/decision_log.md` D-0030, D-0031, D-0032).
 - Operator-allowed edits after M1 sheet generation include column A doctor names, request-entry cells, call-point cells, and lower-shell prefilled fixed-assignment cells (`docs/sheet_generation_contract.md` §6). Writeback's snapshot bundle (§9) carries these surfaces literally so the writeback tab can reconstruct them without reaching back into the source tab.
 - `Doctor.doctorId` is runtime identity; `displayName` is the human-facing/output-facing identity (`docs/domain_model.md` §7.3). Writeback-side mapping from `doctorId` to displayed cell value is the writeback contract's resolution responsibility; see §12.
 - `AssignmentUnit` is the smallest retained assignment atom (`docs/domain_model.md` §10.2); `AllocationResult` is the canonical solved-allocation output object (`docs/domain_model.md` §10.3); `AssignmentUnit` and `AllocationResult` enter writeback through `FinalResultEnvelope.result` on the success branch.
@@ -82,7 +82,7 @@ This contract governs:
 - idempotency behavior on repeated envelope upload (§15),
 - run-envelope traceability into the sheet via visible footer rows and hidden developer metadata (§16),
 - the writeback-stage diagnostic surface the operator-facing launcher MUST expose (§17),
-- source-sheet identity propagation via additive run-envelope fields per `docs/selector_contract.md` §16.3 (§18),
+- source-sheet identity propagation via required `runEnvelope` fields per `docs/selector_contract.md` v2 §9 item 3 (§18; `docs/decision_log.md` D-0032),
 - determinism guarantees (§19),
 - schema versioning rules for the writeback artifact (§20).
 
@@ -305,9 +305,11 @@ On `UnsatisfiedResultEnvelope` input (fully-populated failure-branch tab, no run
 The launcher MUST NOT duplicate the failure-branch tab's `unfilledDemand` and `reasons` content into the launcher diagnostic itself; the detailed content lives on the failure tab per §13. Duplicating it into the launcher would create two truth surfaces for the same diagnostic.
 
 ### 17.3 Runtime-error state
-On runtime error (any exception during writeback after partial tab creation, per §14, including cleanup-on-failure secondary errors), the launcher MUST surface:
+On runtime error — any exception raised during writeback, whether before tab creation (input-validation defects, contract-input shape failures, missing-required-field detections at the writeback ingestion boundary), during tab population (mid-write Apps Script API failures), or during cleanup-on-failure (secondary errors per §14.2) — the launcher MUST surface:
 - the human-readable error message,
 - if cleanup-on-failure left an orphaned tab per §14.2, the orphan-tab name so the operator can manually delete it.
+
+Pre-write input-validation defects (for example, a `FinalResultEnvelope` that arrives at writeback ingestion without selector-contract-v2 required-`runEnvelope` fields per §9 item 1 and `docs/selector_contract.md` §9 item 3) MUST surface through this state without creating any tab. Post-creation runtime errors MUST attempt cleanup-on-failure per §14 and surface through this state with the orphan-tab name when cleanup itself fails. Defensive writeback-side validation of the required-fields set is a backstop against catastrophic execution-layer-composition defects; the primary enforcement of those required fields is upstream at the selector boundary per `docs/selector_contract.md` §9 item 3.
 
 ### 17.4 No partial-state launcher commit
 Writeback MUST NOT leave the operator in a state where the launcher diagnostic implies success but the spreadsheet contains a partial or absent tab, or where the spreadsheet contains a fully-populated tab but the launcher diagnostic implies failure. The launcher diagnostic and the spreadsheet state are surfaces of one writeback outcome and MUST agree.
@@ -315,27 +317,22 @@ Writeback MUST NOT leave the operator in a state where the launcher diagnostic i
 ## 18) Source-sheet identity propagation
 Proposed in this checkpoint (normative):
 
-Writeback consumes `runEnvelope.sourceSpreadsheetId` and `runEnvelope.sourceTabName` as additive fields on the run envelope per `docs/selector_contract.md` §16.3. These fields are execution-layer-supplied at parser/normalizer ingestion time (when the source tab and spreadsheet are known) and flow through the pipeline alongside `runId`, `generationTimestamp`, and other run-level metadata.
+Writeback consumes `runEnvelope.sourceSpreadsheetId` and `runEnvelope.sourceTabName` as required `runEnvelope` fields per `docs/selector_contract.md` §9 item 3 (selector `contractVersion: 2`; see `docs/decision_log.md` D-0032 for the selector v1 → v2 bump). The fields are execution-layer-supplied at parser/normalizer ingestion time (when the source tab and spreadsheet are known) and flow through the pipeline alongside `runId`, `generationTimestamp`, and other run-level metadata.
 
 ### 18.1 Field semantics
 - `sourceSpreadsheetId` — a Google Sheets spreadsheet identifier, normalized per `docs/sheet_generation_contract.md` §12.5 (bare ID extracted from URL or accepted as-is when supplied as a bare ID). Writeback uses this field to identify the target spreadsheet to create the writeback tab inside.
 - `sourceTabName` — a string naming the source tab the snapshot was taken from. Writeback uses this field as the basis for the new writeback tab name (§11.1).
 
-### 18.2 Additive on run envelope, not selector-contract bumps
-Per `docs/selector_contract.md` §16.3, future expansion of run-level metadata fields on the run envelope is additive and does not require a selector `contractVersion` bump. Adding `sourceSpreadsheetId` and `sourceTabName` exercises that additivity clause as designed; the selector contract is unchanged at its own version (`docs/selector_contract.md` §2 stays at `contractVersion: 1`). The selector contract continues to forward the run envelope unchanged from its inputs (`docs/selector_contract.md` §16.4); the additivity allows execution-layer code to populate these fields upstream of the selector without touching selector logic.
+### 18.2 Required runEnvelope fields per selector contract v2
+Both fields are required at the selector boundary per `docs/selector_contract.md` §9 item 3 under `contractVersion: 2`. Selector enforces the required-fields check on input alongside `runId`, `snapshotRef`, `configRef`, `seed`, `fillOrderPolicy`, `crFloorMode`, `crFloorComputed`, and `generationTimestamp`; absence at selector entry is a contract-breaking defect on the caller side (`docs/selector_contract.md` §9). The selector forwards the run envelope unchanged from its inputs to the `FinalResultEnvelope` per `docs/selector_contract.md` §16.4, so by the time the envelope reaches writeback the fields are guaranteed present by selector compliance — there is no separate execution-layer composition gate the writeback contract needs to enforce, and no contract-seam ambiguity between selector compliance and writeback compatibility on this surface.
+
+The fields were initially proposed as additive run-envelope fields per `docs/selector_contract.md` §16.3 (no selector contract bump) during the writeback contract's first-draft round; PR #66 codex review surfaced the resulting contract-seam gap (selector compliance without these fields would not imply writeback compatibility) as a P1 consistency flag, and the resolution adopted in this PR is the upstream patch — selector contract v1 → v2 with the fields added to §9 item 3 — recorded in `docs/decision_log.md` D-0032. Writeback-side defensive validation of these fields at the writeback ingestion boundary remains a backstop for catastrophic execution-layer-composition defects (the launcher surfaces such input-validation failures through the runtime-error state per §17.3); the primary enforcement is upstream at the selector boundary.
 
 ### 18.3 Destination is source-only in first release
 Writeback always targets the source spreadsheet and source tab named on the run envelope. The operator MAY manually copy or move the resulting tab afterwards if they want a different destination, but the writeback boundary itself does not accept an override. Cross-spreadsheet or cross-tab destination override is deferred; see §22 and FW-0022.
 
 ### 18.4 Launcher UX implication
 Because the launcher consumes the source spreadsheet identity from the run envelope rather than from a separate operator-supplied form field, the writeback launcher form does not require a `spreadsheetId` input. The launcher MAY surface a confirmation preview ("About to writeback to: `<sourceSpreadsheetName>` / `<sourceTabName>` — confirm?") sourced from the envelope before initiating the writeback; the preview content and confirmation interaction are implementation-slice concerns. The result page anchors its spreadsheet link to the new writeback tab (§17).
-
-### 18.5 Pipeline composition gate
-The selector contract treats `runEnvelope` field expansion as additive (`docs/selector_contract.md` §16.3) and does not by itself require `sourceSpreadsheetId` or `sourceTabName` to be populated — the selector's required-field set in `docs/selector_contract.md` §9 item 3 lists `runId`, `snapshotRef`, `configRef`, `seed`, `fillOrderPolicy`, `crFloorMode`, `crFloorComputed`, and `generationTimestamp`, and treats anything beyond that as additive. A selector implementation that emits a `FinalResultEnvelope` lacking `sourceSpreadsheetId` or `sourceTabName` is therefore selector-contract-compliant. The writeback contract makes both fields **required** at the writeback input boundary (§9 item 1, §18.1) — they are not optional for writeback consumption.
-
-The compatibility gate sits in **execution-layer composition**: any pipeline configuration that routes a `FinalResultEnvelope` to writeback MUST populate `sourceSpreadsheetId` and `sourceTabName` on the run envelope upstream of the selector at parser/normalizer ingestion time (per §18.1), so that by the time the envelope reaches writeback the fields are present. This is the same execution-layer responsibility that already populates `runId` and `generationTimestamp` upstream of the selector per `docs/selector_contract.md` §16.4.
-
-A writeback-bound `FinalResultEnvelope` that lacks either field is execution-layer-broken (not selector-broken and not writeback-broken). The failure mode is detected at the writeback boundary as a contract-level input defect at strategy-resolution time, before any tab creation begins (mirroring the selector's strategy-resolution rejection pattern in `docs/selector_contract.md` §11.1), and surfaces through the runtime-error launcher state per §17.3 — never silently swallowed and never resulting in a partial writeback. Pipeline configurations that do not route to writeback (for example, retention-only flows that consume the `FinalResultEnvelope` for audit purposes) are not subject to this composition gate.
 
 ## 19) Determinism
 Proposed in this checkpoint (normative):
@@ -372,7 +369,7 @@ Repo-settled alignments:
 - Consistent with `docs/decision_log.md` D-0017 / D-0018: Apps Script is the writeback stack; compute-heavy core stays local-first Python upstream of the JSON handoff (§6.1).
 - Consistent with `docs/decision_log.md` D-0023: writeback inherits the auto-share / OAuth-scope discipline established for M1.1; no new credential surface is introduced (§4, §6).
 - Consistent with `docs/decision_log.md` D-0027: writeback consumes the selector's `FinalResultEnvelope` as the canonical pipeline output and does not reach back into rule-engine, scorer, solver, or selector interfaces.
-- Consistent with `docs/selector_contract.md` §10, §16: writeback consumes the selector's success-branch `AllocationResult` and failure-branch `UnsatisfiedResultEnvelope`, propagates the run envelope unchanged into the writeback artifact, and exercises the §16.3 additivity clause to gain `sourceSpreadsheetId` and `sourceTabName` (§18) without forcing a selector contract bump.
+- Consistent with `docs/selector_contract.md` v2 §10, §16: writeback consumes the selector's success-branch `AllocationResult` and failure-branch `UnsatisfiedResultEnvelope`, propagates the run envelope unchanged into the writeback artifact, and depends on selector v2's expanded `runEnvelope` required-fields list — `sourceSpreadsheetId` and `sourceTabName` were added to `docs/selector_contract.md` §9 item 3 in the same change round per `docs/decision_log.md` D-0032 (selector v1 → v2 bump). Selector compliance therefore implies writeback compatibility on the source-sheet-identity surface; no execution-layer composition gate is required.
 - Consistent with `docs/sheet_generation_contract.md` §3A and §12.5: the source-sheet reference normalization rule (URL or bare ID) governs how `runEnvelope.sourceSpreadsheetId` is interpreted at the parser/normalizer ingestion boundary (§18.1); writeback inherits this rule rather than re-implementing it.
 - Consistent with `docs/sheet_generation_contract.md` §6: operator-allowed edits after generation (column A doctor names, request cells, call-point cells, lower-shell prefilled cells) are exactly the categories of content the writeback snapshot bundle (§9) carries forward into the writeback tab.
 - Consistent with `docs/sheet_generation_contract.md` §9: the writeback tab inherits the protection posture (whole-tab read-only, §10.3) consistent with the protection discipline established for M1-generated structural surfaces.
@@ -403,7 +400,7 @@ The following are explicitly deferred and not fixed by this document:
 - pipeline-stage separation `solver → scorer → selector` and selector ownership of the operator-facing final result (`docs/decision_log.md` D-0027; `docs/selector_contract.md`),
 - Apps Script as the sheet-facing surface; local-first Python for the compute-heavy core (`docs/decision_log.md` D-0017, D-0018),
 - OAuth-scope discipline and auto-share posture inherited from M1.1 (`docs/decision_log.md` D-0023),
-- `FinalResultEnvelope` shape and run-envelope additivity per selector contract (`docs/selector_contract.md` §10, §16.3; `docs/decision_log.md` D-0030),
+- `FinalResultEnvelope` shape per selector contract v2 (`docs/selector_contract.md` §10; `docs/decision_log.md` D-0030); `runEnvelope` required-fields list expanded to include `sourceSpreadsheetId` and `sourceTabName` in selector v2 (`docs/selector_contract.md` §9 item 3; `docs/decision_log.md` D-0032), with §16.3 retained for *future* optional-additive expansions,
 - operator-allowed edits after sheet generation and protection posture for generated surfaces (`docs/sheet_generation_contract.md` §6, §9),
 - spreadsheet reference normalization (`docs/sheet_generation_contract.md` §3A, §12.5),
 - `Doctor.doctorId` runtime-identity vs `displayName` sheet-facing-identity separation (`docs/domain_model.md` §7.3, §14),
@@ -420,7 +417,7 @@ The following are explicitly deferred and not fixed by this document:
 - operator-agency idempotency: every upload creates a new tab unconditionally (§15),
 - four-row visible footer (`Run ID:` / `Generated:` / `Source:` / `Status:`) plus six-key hidden developer metadata (`runId`, `generationTimestamp`, `sourceTabName`, `sourceSpreadsheetId`, `contractVersion`, `status`) (§16),
 - three-state launcher diagnostic surface (success / failure / runtime error) with orphan-tab surfacing on cleanup failure (§17),
-- source-sheet identity propagation via additive run-envelope fields `sourceSpreadsheetId` and `sourceTabName` per `docs/selector_contract.md` §16.3, with no selector contract bump (§18),
+- source-sheet identity propagation via required `runEnvelope` fields `sourceSpreadsheetId` and `sourceTabName` per `docs/selector_contract.md` v2 §9 item 3 (§18); selector contract bumped from v1 to v2 in the same change round (`docs/decision_log.md` D-0032) — the fields were initially proposed as §16.3 additive but the contract-seam gap surfaced in PR #66 codex review motivated the upstream-patch resolution,
 - content-equivalent determinism within a single implementation on a single platform (§19),
 - writeback artifact `contractVersion: 1` with explicit additive-vs-breaking bump rule (§20).
 
