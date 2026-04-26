@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 from rostermonster.domain import (  # noqa: E402  (import after sys.path)
     CanonicalRequestClass,
+    DailyEffectState,
     Doctor,
     DoctorGroup,
     EligibilityRule,
@@ -40,9 +41,12 @@ from rostermonster.parser.admission import (  # noqa: E402
     ISSUE_DAY_INDEX_NON_CONTIGUOUS,
     ISSUE_DOCTOR_KEY_DUPLICATE,
     ISSUE_DOCTOR_SECTION_UNKNOWN,
+    ISSUE_HANDOFF_DAILY_EFFECT_DATE_ORPHAN,
+    ISSUE_HANDOFF_DAILY_EFFECT_DOCTOR_ORPHAN,
     ISSUE_HANDOFF_DOCTOR_GROUP_ORPHAN,
     ISSUE_HANDOFF_FIXED_ASSIGNMENT_SLOT_ORPHAN,
     ISSUE_HANDOFF_REQUEST_DOCTOR_ORPHAN,
+    ISSUE_HANDOFF_SLOT_DEMAND_INCOMPLETE,
     ISSUE_PREFILLED_DOCTOR_NAME_AMBIGUOUS,
     ISSUE_PREFILLED_DOCTOR_NAME_UNRESOLVED,
     ISSUE_PREFILLED_DOCTOR_TWO_SLOTS_SAME_DAY,
@@ -331,6 +335,156 @@ def test_handoff_consistency_check_catches_internal_defects() -> None:
     issues = _verify_handoff_consistency(bad_model)
     codes = {i.code for i in issues}
     assert ISSUE_HANDOFF_DOCTOR_GROUP_ORPHAN in codes
+
+
+def test_handoff_consistency_check_catches_daily_effect_orphans() -> None:
+    """parser_normalizer §17 — DailyEffectState with unknown doctorId or
+    dateKey must surface as a handoff defect. Without this check, a parser
+    regression in request → effect projection could ship CONSUMABLE with
+    orphaned effect facts that downstream stages would silently consume."""
+    period = RosterPeriod(
+        periodId="p1",
+        periodLabel="P1",
+        days=(
+            RosterDay(
+                dateKey="2026-05-01",
+                dayIndex=0,
+                provenance=DayLocator(dayIndex=0),
+            ),
+        ),
+    )
+    doctors = (
+        Doctor(
+            doctorId="dr_a",
+            displayName="Dr A",
+            groupId="ICU_ONLY",
+            provenance=DoctorLocator(sectionKey="MICU", doctorIndexInSection=0),
+        ),
+    )
+    bad_model = NormalizedModel(
+        period=period,
+        doctors=doctors,
+        doctorGroups=(DoctorGroup(groupId="ICU_ONLY"),),
+        slotTypes=(
+            SlotTypeDefinition(
+                slotType="MICU_CALL",
+                displayLabel="MICU Call",
+                slotFamily="MICU",
+                slotKind="CALL",
+            ),
+        ),
+        slotDemand=(
+            SlotDemand(
+                dateKey="2026-05-01",
+                slotType="MICU_CALL",
+                requiredCount=1,
+                provenance=DayLocator(dayIndex=0),
+            ),
+        ),
+        eligibility=(
+            EligibilityRule(slotType="MICU_CALL", eligibleGroups=("ICU_ONLY",)),
+        ),
+        dailyEffects=(
+            DailyEffectState(
+                doctorId="dr_ghost",  # orphan: not in doctors
+                dateKey="2026-05-01",
+                effects=(MachineEffect.sameDayHardBlock,),
+                provenance=RequestLocator(sourceDoctorKey="dr_ghost", dayIndex=0),
+            ),
+            DailyEffectState(
+                doctorId="dr_a",
+                dateKey="2026-12-31",  # orphan: not in period.days
+                effects=(MachineEffect.sameDayHardBlock,),
+                provenance=RequestLocator(sourceDoctorKey="dr_a", dayIndex=99),
+            ),
+        ),
+    )
+
+    issues = _verify_handoff_consistency(bad_model)
+    codes = {i.code for i in issues}
+    assert ISSUE_HANDOFF_DAILY_EFFECT_DOCTOR_ORPHAN in codes
+    assert ISSUE_HANDOFF_DAILY_EFFECT_DATE_ORPHAN in codes
+
+
+def test_handoff_consistency_check_catches_slot_demand_incompleteness() -> None:
+    """parser_normalizer §17 — SlotDemand must cover every (dateKey × slotType)
+    pair implied by period.days × slotTypes. A normalization defect that drops
+    a pair would otherwise silently slip past the per-record orphan checks and
+    cause downstream solvers to under-allocate."""
+    period = RosterPeriod(
+        periodId="p1",
+        periodLabel="P1",
+        days=(
+            RosterDay(
+                dateKey="2026-05-01",
+                dayIndex=0,
+                provenance=DayLocator(dayIndex=0),
+            ),
+            RosterDay(
+                dateKey="2026-05-02",
+                dayIndex=1,
+                provenance=DayLocator(dayIndex=1),
+            ),
+        ),
+    )
+    bad_model = NormalizedModel(
+        period=period,
+        doctors=(),
+        doctorGroups=(DoctorGroup(groupId="ICU_ONLY"),),
+        slotTypes=(
+            SlotTypeDefinition(
+                slotType="MICU_CALL",
+                displayLabel="MICU Call",
+                slotFamily="MICU",
+                slotKind="CALL",
+            ),
+            SlotTypeDefinition(
+                slotType="MICU_STANDBY",
+                displayLabel="MICU Standby",
+                slotFamily="MICU",
+                slotKind="STANDBY",
+            ),
+        ),
+        # Expected: 2 days × 2 slot types = 4 SlotDemand records.
+        # Missing: (2026-05-02, MICU_STANDBY) — exactly the kind of pair drop
+        # that the per-record orphan checks would not catch.
+        slotDemand=(
+            SlotDemand(
+                dateKey="2026-05-01",
+                slotType="MICU_CALL",
+                requiredCount=1,
+                provenance=DayLocator(dayIndex=0),
+            ),
+            SlotDemand(
+                dateKey="2026-05-01",
+                slotType="MICU_STANDBY",
+                requiredCount=1,
+                provenance=DayLocator(dayIndex=0),
+            ),
+            SlotDemand(
+                dateKey="2026-05-02",
+                slotType="MICU_CALL",
+                requiredCount=1,
+                provenance=DayLocator(dayIndex=1),
+            ),
+        ),
+        eligibility=(
+            EligibilityRule(slotType="MICU_CALL", eligibleGroups=("ICU_ONLY",)),
+            EligibilityRule(
+                slotType="MICU_STANDBY", eligibleGroups=("ICU_ONLY",)
+            ),
+        ),
+    )
+
+    issues = _verify_handoff_consistency(bad_model)
+    incompleteness_issues = [
+        i for i in issues if i.code == ISSUE_HANDOFF_SLOT_DEMAND_INCOMPLETE
+    ]
+    assert len(incompleteness_issues) == 1
+    assert incompleteness_issues[0].context == {
+        "dateKey": "2026-05-02",
+        "slotType": "MICU_STANDBY",
+    }
 
 
 def test_canonical_classes_are_deterministically_ordered() -> None:
