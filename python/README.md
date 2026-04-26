@@ -7,11 +7,15 @@ surface, local-first Python for compute-heavy core).
 ## Status
 
 Active milestone: **M2** (`Minimal local compute pipeline`).
-Active checkpoint: **M2 C3** (`Parser/normalizer implementation closure`),
-currently at **T1** (parser side).
+Active checkpoint: **M2 C3** (`Parser/normalizer implementation closure`).
+Task progress: **T1 Done** (parser side), **T2 Done** (normalizer side —
+provenance, `displayLabel`, internal handoff-consistency defense). **T3**
+(hand-test against ICU/HD first-release inputs) and **T4** (delivery-plan
+closure transition) remain.
 
-Subsequent tasks/checkpoints will extend this package with the normalizer side
-(T2), rule engine, scorer, solver, and selector implementations.
+Subsequent M2 checkpoints will extend this package with rule engine, scorer,
+solver, and selector implementations against the now-settled contract
+surfaces.
 
 ## Layout
 

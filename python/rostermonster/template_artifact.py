@@ -28,6 +28,7 @@ class SlotDefinition:
     """One slot record (template_artifact_contract.md §5)."""
 
     slotId: str
+    label: str
     slotFamily: str
     slotKind: str
     requiredCountPerDay: int
