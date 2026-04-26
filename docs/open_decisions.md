@@ -27,40 +27,11 @@ Each entry is short and concrete:
 
 ## Current entries
 
-### OD-0001 — Provenance field-shape standard across normalized entities
-- **Surfaced:** M2 C3 T2 implementation (parser/normalizer normalizer side).
-- **Question:** What is the long-term shape of the `provenance` field on
-  snapshot-derived normalized entities? Current implementation uses the
-  `rostermonster.snapshot` locator types directly (`Doctor.provenance:
-  DoctorLocator`, `RosterDay.provenance: DayLocator`, `Request.provenance:
-  RequestLocator`, `FixedAssignment.provenance: PrefilledAssignmentLocator`,
-  `DailyEffectState.provenance: RequestLocator`, `SlotDemand.provenance:
-  DayLocator`). `docs/parser_normalizer_contract.md` §16 declares the
-  parser-stage traceability obligation but explicitly defers concrete
-  field-shape standardization (§16 last paragraph + §19). Candidate
-  alternative shapes include a uniform `ProvenanceTrace` wrapper class with
-  `sourceRecordKind` + `locatorPath` fields, embedding `physicalSourceRef`
-  alongside the logical locator, or a tuple-of-locators shape for entities
-  whose origin spans multiple snapshot records.
-- **Why deferred now:** The current shape satisfies the §16 traceability
-  obligation. No downstream stage has yet been implemented to consume
-  provenance. Picking a different shape later is a mechanical refactor —
-  entities already know their origin via locator-typed fields regardless of
-  how those fields are wrapped.
-- **Trigger to close:** Any of the following materializes —
-  (a) rule engine / scorer / solver / selector implementation surfaces a
-  need for a uniform provenance API across stages,
-  (b) writeback implementation needs provenance-driven diagnostics that the
-  locator-direct shape doesn't easily support,
-  (c) a benchmark-campaign or audit workflow wants stable provenance
-  serialization across all normalized entity types,
-  (d) a future entity has multi-record origin (for example, derived facts
-  combining multiple requests) and the locator-direct shape becomes
-  insufficient.
-- **Affects:** Touches every snapshot-derived normalized type in
-  `python/rostermonster/domain.py` if changed; locator types in
-  `python/rostermonster/snapshot.py` stay unchanged regardless. No
-  downstream stage is blocked by leaving this open.
+*(none currently open)*
+
+Recently closed entries promote to `docs/decision_log.md`. The most recent
+promotion: **OD-0001 → D-0035** on 2026-04-27 (provenance field-shape standard
+locked at locator-direct).
 
 ## Maintenance
 - Add an entry when implementation surfaces a real open decision — not when
