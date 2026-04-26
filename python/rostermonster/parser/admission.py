@@ -468,6 +468,7 @@ def _interpret_template(
                 doctorId=doc.sourceDoctorKey,
                 displayName=doc.displayName,
                 groupId=group_id,
+                provenance=doc.sourceLocator,
             )
         )
 
@@ -476,6 +477,7 @@ def _interpret_template(
     slot_types = [
         SlotTypeDefinition(
             slotType=s.slotId,
+            displayLabel=s.label,
             slotFamily=s.slotFamily,
             slotKind=s.slotKind,
         )
@@ -493,6 +495,7 @@ def _interpret_template(
                     dateKey=date_key,
                     slotType=slot.slotId,
                     requiredCount=slot.requiredCountPerDay,
+                    provenance=day.sourceLocator,
                 )
             )
 
@@ -549,18 +552,21 @@ def _parse_requests(
                 recognizedRawTokens=result.recognizedRawTokens,
                 canonicalClasses=result.canonicalClasses,
                 machineEffects=result.machineEffects,
+                provenance=req.sourceLocator,
                 parseIssues=result.issues,
             )
         )
 
     # Derive per-(doctor, date) DailyEffectState as the union of effects across
     # any requests fired on that day. With first-release one-request-per-cell
-    # uniqueness, this is just a direct projection.
+    # uniqueness, this is just a direct projection — the originating request's
+    # source locator carries through as DailyEffectState.provenance per §16.
     daily_effects: list[DailyEffectState] = [
         DailyEffectState(
             doctorId=r.doctorId,
             dateKey=r.dateKey,
             effects=r.machineEffects,
+            provenance=r.provenance,
         )
         for r in requests
         if r.machineEffects
@@ -784,6 +790,7 @@ def _process_prefilled_assignments(
                 dateKey=date_key,
                 slotType=slot_id,
                 doctorId=doctor_id,
+                provenance=pf.sourceLocator,
             )
         )
 
@@ -861,6 +868,7 @@ def parse(snapshot: Snapshot, template_artifact: TemplateArtifact) -> ParserResu
             RosterDay(
                 dateKey=d.rawDateText.strip(),
                 dayIndex=d.dayIndex,
+                provenance=d.sourceLocator,
             )
             for d in sorted(snapshot.dayRecords, key=lambda x: x.dayIndex)
         ),
@@ -878,7 +886,206 @@ def parse(snapshot: Snapshot, template_artifact: TemplateArtifact) -> ParserResu
         dailyEffects=tuple(daily_effects),
     )
 
+    # §17 explicit-handoff defense: confirm assembled model is internally
+    # consistent before emitting. This is a backstop — earlier admission
+    # stages already guarantee these properties; a failure here indicates a
+    # parser-internal defect, not a snapshot/template issue.
+    consistency_issues = _verify_handoff_consistency(normalized_model)
+    if consistency_issues:
+        # Internal-defect path: fail closed by surfacing as NON_CONSUMABLE
+        # rather than emitting a malformed CONSUMABLE handoff.
+        return ParserResult.non_consumable(
+            tuple(accumulated) + tuple(consistency_issues)
+        )
+
     return ParserResult.consumable(
         normalizedModel=normalized_model,
         issues=tuple(accumulated),
     )
+
+
+# ---------------------------------------------------------------------------
+# §17 explicit-handoff internal-consistency check
+# ---------------------------------------------------------------------------
+
+
+# §17 internal-consistency codes — fire only when an earlier admission stage
+# has missed a check that should have caught the inconsistency upstream.
+ISSUE_HANDOFF_REQUEST_DOCTOR_ORPHAN = "HANDOFF_REQUEST_DOCTOR_ORPHAN"
+ISSUE_HANDOFF_REQUEST_DATE_ORPHAN = "HANDOFF_REQUEST_DATE_ORPHAN"
+ISSUE_HANDOFF_FIXED_ASSIGNMENT_DOCTOR_ORPHAN = "HANDOFF_FIXED_ASSIGNMENT_DOCTOR_ORPHAN"
+ISSUE_HANDOFF_FIXED_ASSIGNMENT_DATE_ORPHAN = "HANDOFF_FIXED_ASSIGNMENT_DATE_ORPHAN"
+ISSUE_HANDOFF_FIXED_ASSIGNMENT_SLOT_ORPHAN = "HANDOFF_FIXED_ASSIGNMENT_SLOT_ORPHAN"
+ISSUE_HANDOFF_SLOT_DEMAND_DATE_ORPHAN = "HANDOFF_SLOT_DEMAND_DATE_ORPHAN"
+ISSUE_HANDOFF_SLOT_DEMAND_SLOT_ORPHAN = "HANDOFF_SLOT_DEMAND_SLOT_ORPHAN"
+ISSUE_HANDOFF_ELIGIBILITY_SLOT_ORPHAN = "HANDOFF_ELIGIBILITY_SLOT_ORPHAN"
+ISSUE_HANDOFF_ELIGIBILITY_GROUP_ORPHAN = "HANDOFF_ELIGIBILITY_GROUP_ORPHAN"
+ISSUE_HANDOFF_DOCTOR_GROUP_ORPHAN = "HANDOFF_DOCTOR_GROUP_ORPHAN"
+
+
+def _verify_handoff_consistency(model: NormalizedModel) -> list[ValidationIssue]:
+    """§17 explicit-handoff internal-consistency check.
+
+    Verifies the assembled `NormalizedModel` satisfies the rule-engine handoff
+    assumptions per parser_normalizer_contract.md §17:
+      - normalized identities required downstream are already resolved,
+      - normalized references are internally consistent,
+      - downstream-governing eligibility / demand facts are instantiated.
+
+    Earlier admission stages enforce these properties on the path that
+    produces the model. This function is a defense layer that fails closed if
+    a parser-internal defect produced an inconsistent model — an internal
+    invariant violation, not a snapshot/template issue.
+    """
+    issues: list[ValidationIssue] = []
+
+    doctor_ids = {d.doctorId for d in model.doctors}
+    group_ids = {g.groupId for g in model.doctorGroups}
+    slot_type_ids = {st.slotType for st in model.slotTypes}
+    date_keys = {day.dateKey for day in model.period.days}
+
+    for doc in model.doctors:
+        if doc.groupId not in group_ids:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_HANDOFF_DOCTOR_GROUP_ORPHAN,
+                    message=(
+                        f"Internal handoff defect: Doctor doctorId={doc.doctorId!r} "
+                        f"references unknown groupId={doc.groupId!r}."
+                    ),
+                    context={"doctorId": doc.doctorId, "groupId": doc.groupId},
+                )
+            )
+
+    for req in model.requests:
+        if req.doctorId not in doctor_ids:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_HANDOFF_REQUEST_DOCTOR_ORPHAN,
+                    message=(
+                        f"Internal handoff defect: Request references unknown "
+                        f"doctorId={req.doctorId!r}."
+                    ),
+                    context={"doctorId": req.doctorId, "dateKey": req.dateKey},
+                )
+            )
+        if req.dateKey not in date_keys:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_HANDOFF_REQUEST_DATE_ORPHAN,
+                    message=(
+                        f"Internal handoff defect: Request references unknown "
+                        f"dateKey={req.dateKey!r}."
+                    ),
+                    context={"doctorId": req.doctorId, "dateKey": req.dateKey},
+                )
+            )
+
+    for fa in model.fixedAssignments:
+        if fa.doctorId not in doctor_ids:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_HANDOFF_FIXED_ASSIGNMENT_DOCTOR_ORPHAN,
+                    message=(
+                        f"Internal handoff defect: FixedAssignment references "
+                        f"unknown doctorId={fa.doctorId!r}."
+                    ),
+                    context={
+                        "doctorId": fa.doctorId,
+                        "dateKey": fa.dateKey,
+                        "slotType": fa.slotType,
+                    },
+                )
+            )
+        if fa.dateKey not in date_keys:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_HANDOFF_FIXED_ASSIGNMENT_DATE_ORPHAN,
+                    message=(
+                        f"Internal handoff defect: FixedAssignment references "
+                        f"unknown dateKey={fa.dateKey!r}."
+                    ),
+                    context={
+                        "doctorId": fa.doctorId,
+                        "dateKey": fa.dateKey,
+                        "slotType": fa.slotType,
+                    },
+                )
+            )
+        if fa.slotType not in slot_type_ids:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_HANDOFF_FIXED_ASSIGNMENT_SLOT_ORPHAN,
+                    message=(
+                        f"Internal handoff defect: FixedAssignment references "
+                        f"unknown slotType={fa.slotType!r}."
+                    ),
+                    context={
+                        "doctorId": fa.doctorId,
+                        "dateKey": fa.dateKey,
+                        "slotType": fa.slotType,
+                    },
+                )
+            )
+
+    for sd in model.slotDemand:
+        if sd.dateKey not in date_keys:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_HANDOFF_SLOT_DEMAND_DATE_ORPHAN,
+                    message=(
+                        f"Internal handoff defect: SlotDemand references "
+                        f"unknown dateKey={sd.dateKey!r}."
+                    ),
+                    context={"dateKey": sd.dateKey, "slotType": sd.slotType},
+                )
+            )
+        if sd.slotType not in slot_type_ids:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_HANDOFF_SLOT_DEMAND_SLOT_ORPHAN,
+                    message=(
+                        f"Internal handoff defect: SlotDemand references "
+                        f"unknown slotType={sd.slotType!r}."
+                    ),
+                    context={"dateKey": sd.dateKey, "slotType": sd.slotType},
+                )
+            )
+
+    for er in model.eligibility:
+        if er.slotType not in slot_type_ids:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_HANDOFF_ELIGIBILITY_SLOT_ORPHAN,
+                    message=(
+                        f"Internal handoff defect: EligibilityRule references "
+                        f"unknown slotType={er.slotType!r}."
+                    ),
+                    context={"slotType": er.slotType},
+                )
+            )
+        for gid in er.eligibleGroups:
+            if gid not in group_ids:
+                issues.append(
+                    ValidationIssue(
+                        severity=IssueSeverity.ERROR,
+                        code=ISSUE_HANDOFF_ELIGIBILITY_GROUP_ORPHAN,
+                        message=(
+                            f"Internal handoff defect: EligibilityRule for "
+                            f"slotType={er.slotType!r} references unknown "
+                            f"groupId={gid!r}."
+                        ),
+                        context={"slotType": er.slotType, "groupId": gid},
+                    )
+                )
+
+    return issues

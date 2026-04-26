@@ -2,8 +2,17 @@
 
 These are the post-parser/post-normalizer types that downstream stages (rule
 engine, scorer, solver, selector) consume. Parser populates them during
-admission; T2 (normalizer side) will refine provenance per §16 and explicit
-handoff per §17.
+admission; the normalizer side adds parser-stage provenance per
+`docs/parser_normalizer_contract.md` §16 (recoverable linkage back to origin
+snapshot records/locators on snapshot-derived entities) and ensures the
+emitted normalized model satisfies the §17 explicit-handoff guarantees.
+
+Provenance shape (first release): each snapshot-derived entity carries a
+`provenance` field typed as the relevant `sourceLocator` from
+`rostermonster.snapshot`. Concrete provenance field-shape standardization
+across all entities is deferred per parser_normalizer §16 and §19; this is
+the simplest stable shape that satisfies the §16 traceability obligation
+without inventing a new field-shape standard.
 """
 
 from __future__ import annotations
@@ -11,6 +20,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+from rostermonster.snapshot import (
+    DayLocator,
+    DoctorLocator,
+    PrefilledAssignmentLocator,
+    RequestLocator,
+)
 
 
 class IssueSeverity(str, Enum):
@@ -62,10 +78,15 @@ class MachineEffect(str, Enum):
 
 @dataclass(frozen=True)
 class RosterDay:
-    """One date in the roster period (domain_model.md §7.2)."""
+    """One date in the roster period (domain_model.md §7.2).
+
+    `provenance` traces back to the snapshot `dayRecord` per
+    parser_normalizer_contract.md §16.
+    """
 
     dateKey: str
     dayIndex: int
+    provenance: DayLocator
 
 
 @dataclass(frozen=True)
@@ -84,11 +105,14 @@ class Doctor:
     `doctorId` is runtime identity; `displayName` is sheet-facing identity.
     `groupId` is parser-resolved canonical membership per §7.3
     (snapshot.sectionKey → inputSheetLayout.sections[].groupId).
+    `provenance` traces back to the snapshot `doctorRecord` per
+    parser_normalizer_contract.md §16.
     """
 
     doctorId: str
     displayName: str
     groupId: str
+    provenance: DoctorLocator
 
 
 @dataclass(frozen=True)
@@ -103,21 +127,32 @@ class SlotTypeDefinition:
     """Normalized slot metadata (domain_model.md §7.6).
 
     First-release minimum required fields per §7.6: `slotType` (identity) +
-    `displayLabel`. `workloadWeight` is deferred (FW-0009).
+    `displayLabel`. `slotFamily` and `slotKind` are first-release optional
+    semantic metadata sourced from the template artifact's slot record.
+    `workloadWeight` is deferred (FW-0009). Template-only entity — no
+    snapshot provenance per parser_normalizer_contract.md §16.
     """
 
     slotType: str
+    displayLabel: str
     slotFamily: str
     slotKind: str
 
 
 @dataclass(frozen=True)
 class SlotDemand:
-    """Explicit demand per `(dateKey, slotType)` (domain_model.md §7.7)."""
+    """Explicit demand per `(dateKey, slotType)` (domain_model.md §7.7).
+
+    Origin includes one snapshot record (the day) crossed with one template
+    declaration (the slot). `provenance` traces back to the day side per
+    parser_normalizer_contract.md §16; the slot side is template-only and
+    needs no snapshot provenance.
+    """
 
     dateKey: str
     slotType: str
     requiredCount: int
+    provenance: DayLocator
 
 
 @dataclass(frozen=True)
@@ -134,11 +169,14 @@ class FixedAssignment:
 
     First-class normalized input, not an allocation result. Solver fills only
     residual unfilled demand after accounting for fixed assignments.
+    `provenance` traces back to the snapshot `prefilledAssignmentRecord` per
+    parser_normalizer_contract.md §16.
     """
 
     dateKey: str
     slotType: str
     doctorId: str
+    provenance: PrefilledAssignmentLocator
 
 
 @dataclass(frozen=True)
@@ -154,6 +192,9 @@ class Request:
     normalized `Request` exists in a `CONSUMABLE` output. This is supplemental
     to the authoritative top-level `ParserResult.issues` channel (§10 rules 1
     and 6) — entity-local content is never the sole record.
+
+    `provenance` traces back to the snapshot `requestRecord` per
+    parser_normalizer_contract.md §16.
     """
 
     doctorId: str
@@ -162,6 +203,7 @@ class Request:
     recognizedRawTokens: tuple[str, ...]
     canonicalClasses: tuple[CanonicalRequestClass, ...]
     machineEffects: tuple[MachineEffect, ...]
+    provenance: RequestLocator
     parseIssues: tuple[ValidationIssue, ...] = field(default_factory=tuple)
 
 
@@ -171,11 +213,15 @@ class DailyEffectState:
 
     Derived from per-doctor `Request` machine effects. Keyed by
     `(doctorId, dateKey)`; carries the union of effects firing on that day.
+    `provenance` traces back to the originating `requestRecord` per
+    parser_normalizer_contract.md §16 (one Request → one DailyEffectState in
+    first-release one-request-per-cell semantics).
     """
 
     doctorId: str
     dateKey: str
     effects: tuple[MachineEffect, ...]
+    provenance: RequestLocator
 
 
 @dataclass(frozen=True)

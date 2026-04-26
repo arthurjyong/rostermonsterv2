@@ -57,24 +57,28 @@ def icu_hd_template_artifact() -> TemplateArtifact:
         slots=(
             SlotDefinition(
                 slotId="MICU_CALL",
+                label="MICU Call",
                 slotFamily="MICU",
                 slotKind="CALL",
                 requiredCountPerDay=1,
             ),
             SlotDefinition(
                 slotId="MICU_STANDBY",
+                label="MICU Standby",
                 slotFamily="MICU",
                 slotKind="STANDBY",
                 requiredCountPerDay=1,
             ),
             SlotDefinition(
                 slotId="MHD_CALL",
+                label="MHD Call",
                 slotFamily="MHD",
                 slotKind="CALL",
                 requiredCountPerDay=1,
             ),
             SlotDefinition(
                 slotId="MHD_STANDBY",
+                label="MHD Standby",
                 slotFamily="MHD",
                 slotKind="STANDBY",
                 requiredCountPerDay=1,

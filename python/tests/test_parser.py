@@ -21,7 +21,15 @@ if str(ROOT) not in sys.path:
 
 from rostermonster.domain import (  # noqa: E402  (import after sys.path)
     CanonicalRequestClass,
+    Doctor,
+    DoctorGroup,
+    EligibilityRule,
     MachineEffect,
+    NormalizedModel,
+    RosterDay,
+    RosterPeriod,
+    SlotDemand,
+    SlotTypeDefinition,
 )
 from rostermonster.parser import (  # noqa: E402
     Consumability,
@@ -32,17 +40,27 @@ from rostermonster.parser.admission import (  # noqa: E402
     ISSUE_DAY_INDEX_NON_CONTIGUOUS,
     ISSUE_DOCTOR_KEY_DUPLICATE,
     ISSUE_DOCTOR_SECTION_UNKNOWN,
+    ISSUE_HANDOFF_DOCTOR_GROUP_ORPHAN,
+    ISSUE_HANDOFF_FIXED_ASSIGNMENT_SLOT_ORPHAN,
+    ISSUE_HANDOFF_REQUEST_DOCTOR_ORPHAN,
     ISSUE_PREFILLED_DOCTOR_NAME_AMBIGUOUS,
     ISSUE_PREFILLED_DOCTOR_NAME_UNRESOLVED,
     ISSUE_PREFILLED_DOCTOR_TWO_SLOTS_SAME_DAY,
     ISSUE_PREFILLED_SURFACE_UNKNOWN,
     ISSUE_REQUEST_DOCTOR_REF_BROKEN,
     ISSUE_TEMPLATE_MISMATCH,
+    _verify_handoff_consistency,
 )
 from rostermonster.parser.request_semantics import (  # noqa: E402
     ISSUE_REQUEST_DUPLICATE_TOKEN,
     ISSUE_REQUEST_MALFORMED_GRAMMAR,
     ISSUE_REQUEST_UNKNOWN_TOKEN,
+)
+from rostermonster.snapshot import (  # noqa: E402
+    DayLocator,
+    DoctorLocator,
+    PrefilledAssignmentLocator,
+    RequestLocator,
 )
 from tests.fixtures import (  # noqa: E402
     icu_hd_snapshot,
@@ -182,6 +200,137 @@ def test_request_parse_issues_mirror_onto_normalized_request() -> None:
         if r.doctorId == "micu_dr_a" and r.dateKey == "2026-05-01"
     )
     assert alpha_day0.parseIssues == ()
+
+
+def test_slot_type_definition_carries_display_label() -> None:
+    """domain_model.md §7.6 — SlotTypeDefinition first-release minimum required
+    fields are `slotType` + `displayLabel`. Verify both are populated from the
+    template artifact's slot record."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.CONSUMABLE
+    nm = result.normalizedModel
+
+    by_slot = {st.slotType: st for st in nm.slotTypes}
+    assert by_slot["MICU_CALL"].displayLabel == "MICU Call"
+    assert by_slot["MICU_STANDBY"].displayLabel == "MICU Standby"
+    assert by_slot["MHD_CALL"].displayLabel == "MHD Call"
+    assert by_slot["MHD_STANDBY"].displayLabel == "MHD Standby"
+
+
+def test_provenance_traces_back_to_snapshot_locators() -> None:
+    """parser_normalizer §16 — snapshot-derived entities carry recoverable
+    linkage back to origin records/locators. Verify provenance is populated
+    on Doctor / RosterDay / Request / FixedAssignment / DailyEffectState /
+    SlotDemand and matches the corresponding snapshot locator."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.CONSUMABLE
+    nm = result.normalizedModel
+
+    # Doctor.provenance — DoctorLocator.
+    alpha = next(d for d in nm.doctors if d.doctorId == "micu_dr_a")
+    assert isinstance(alpha.provenance, DoctorLocator)
+    assert alpha.provenance.sectionKey == "MICU"
+    assert alpha.provenance.doctorIndexInSection == 0
+
+    # RosterDay.provenance — DayLocator.
+    day0 = next(d for d in nm.period.days if d.dayIndex == 0)
+    assert isinstance(day0.provenance, DayLocator)
+    assert day0.provenance.dayIndex == 0
+
+    # SlotDemand.provenance — DayLocator (per-day side of template×day product).
+    sd_day0_call = next(
+        sd
+        for sd in nm.slotDemand
+        if sd.dateKey == "2026-05-01" and sd.slotType == "MICU_CALL"
+    )
+    assert isinstance(sd_day0_call.provenance, DayLocator)
+    assert sd_day0_call.provenance.dayIndex == 0
+
+    # Request.provenance — RequestLocator.
+    cr_req = next(
+        r
+        for r in nm.requests
+        if r.doctorId == "micu_dr_a" and r.dateKey == "2026-05-01"
+    )
+    assert isinstance(cr_req.provenance, RequestLocator)
+    assert cr_req.provenance.sourceDoctorKey == "micu_dr_a"
+    assert cr_req.provenance.dayIndex == 0
+
+    # DailyEffectState.provenance — same RequestLocator as the originating Request.
+    al_de = next(
+        de
+        for de in nm.dailyEffects
+        if de.doctorId == "micu_dr_a" and de.dateKey == "2026-05-03"
+    )
+    assert isinstance(al_de.provenance, RequestLocator)
+    assert al_de.provenance.sourceDoctorKey == "micu_dr_a"
+    assert al_de.provenance.dayIndex == 2
+
+    # FixedAssignment.provenance — PrefilledAssignmentLocator.
+    fa = nm.fixedAssignments[0]
+    assert isinstance(fa.provenance, PrefilledAssignmentLocator)
+    assert fa.provenance.surfaceId == "lowerRosterAssignments"
+    assert fa.provenance.rowOffset == 2
+    assert fa.provenance.dayIndex == 3
+
+
+def test_handoff_consistency_check_catches_internal_defects() -> None:
+    """parser_normalizer §17 — the internal handoff-consistency defense layer
+    fires when a malformed NormalizedModel reaches it (parser-internal defect,
+    not a snapshot/template issue). Constructing a model with orphan
+    references directly bypasses normal admission and exercises the backstop."""
+    period = RosterPeriod(
+        periodId="p1",
+        periodLabel="P1",
+        days=(
+            RosterDay(
+                dateKey="2026-05-01",
+                dayIndex=0,
+                provenance=DayLocator(dayIndex=0),
+            ),
+        ),
+    )
+    bad_model = NormalizedModel(
+        period=period,
+        doctors=(
+            Doctor(
+                doctorId="dr_a",
+                displayName="Dr A",
+                groupId="GHOST_GROUP",  # orphan: not in doctorGroups
+                provenance=DoctorLocator(
+                    sectionKey="MICU", doctorIndexInSection=0
+                ),
+            ),
+        ),
+        doctorGroups=(DoctorGroup(groupId="ICU_ONLY"),),
+        slotTypes=(
+            SlotTypeDefinition(
+                slotType="MICU_CALL",
+                displayLabel="MICU Call",
+                slotFamily="MICU",
+                slotKind="CALL",
+            ),
+        ),
+        slotDemand=(
+            SlotDemand(
+                dateKey="2026-05-01",
+                slotType="MICU_CALL",
+                requiredCount=1,
+                provenance=DayLocator(dayIndex=0),
+            ),
+        ),
+        eligibility=(
+            EligibilityRule(slotType="MICU_CALL", eligibleGroups=("ICU_ONLY",)),
+        ),
+    )
+
+    issues = _verify_handoff_consistency(bad_model)
+    codes = {i.code for i in issues}
+    assert ISSUE_HANDOFF_DOCTOR_GROUP_ORPHAN in codes
 
 
 def test_canonical_classes_are_deterministically_ordered() -> None:
