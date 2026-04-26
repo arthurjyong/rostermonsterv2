@@ -18,11 +18,15 @@ Hard validity is **not** in selector scope; the rule engine is the sole hard-val
 ## 2) Contract identity and versioning
 Contract identity/version for binding:
 - `contractId: SELECTOR`
-- `contractVersion: 1`
+- `contractVersion: 2`
 
 Version bump rule (normative):
-- bump `contractVersion` only when selector-stage input/output shape, retention-mode semantics, sidecar artifact shape in a way that breaks v1-targeted readers (per §19), determinism guarantees, or the strategy-interface contract changes.
-- do **not** bump for wording cleanup, formatting, added examples, new strategy registrations that conform to the existing strategy-interface contract, additive run-level metadata fields on the run envelope, additive sidecar artifact column/field changes that v1-targeted readers can tolerate (per §19), or clarification that does not change behavior.
+- bump `contractVersion` only when selector-stage input/output shape, retention-mode semantics, sidecar artifact shape in a way that breaks v1-targeted or v2-targeted readers (per §19), determinism guarantees, or the strategy-interface contract changes.
+- do **not** bump for wording cleanup, formatting, added examples, new strategy registrations that conform to the existing strategy-interface contract, optional additive run-level metadata fields on the run envelope (per §16.3 — fields where readers of the prior version can ignore the field if not present and still process the envelope), additive sidecar artifact column/field changes that prior-version-targeted readers can tolerate (per §19), or clarification that does not change behavior.
+
+### 2.1 Version history
+- **v1 (2026-04-25, PR #65):** initial selector contract closure per `docs/decision_log.md` D-0030. `runEnvelope` required-fields list: `runId`, `snapshotRef`, `configRef`, `seed`, `fillOrderPolicy`, `crFloorMode`, `crFloorComputed`, `generationTimestamp`.
+- **v2 (2026-04-26, PR #66):** `runEnvelope` required-fields list expanded to add `sourceSpreadsheetId` and `sourceTabName` so selector compliance implies `docs/writeback_contract.md` §18 input compatibility (see `docs/decision_log.md` D-0032). The expansion is a required-fields-add — v1-targeted callers that supply only the v1 required-field set are non-compliant against v2 — and therefore takes a `contractVersion` bump per the rule above. Per §16.3 the same expansion would NOT have taken a bump if the new fields were optional; required-status is what triggers the bump.
 
 ## 3) Status discipline used in this document
 Each normative statement is classified as one of:
@@ -87,7 +91,7 @@ This contract does **not** govern:
 Selector invocations are evaluated against the following inputs:
 1. **`scoredCandidateSet`** — a `CandidateSet` per `docs/solver_contract.md` §10.1 in which every `TrialCandidate.score` field has been populated by the scorer with a `ScoreResult` per `docs/scorer_contract.md` §10. We refer to this populated set as a `ScoredCandidateSet` for clarity within this contract; structurally it remains a `CandidateSet`. On the failure branch this input is replaced by an `UnsatisfiedResult` per `docs/solver_contract.md` §10.2 and is handled per §15.
 2. **`retentionMode`** — first release: `"BEST_ONLY"` (default) or `"FULL"` (operator opt-in). See §13. `TOP_K` and `FULL_WITH_DIAGNOSTICS` are deferred to FW-0013 Phase 2.
-3. **`runEnvelope`** — execution-layer-supplied run identity and provenance. Required fields: `runId` (stable string identifier), `snapshotRef`, `configRef`, `seed`, `fillOrderPolicy`, `crFloorMode`, `crFloorComputed`, `generationTimestamp`. See §16.
+3. **`runEnvelope`** — execution-layer-supplied run identity and provenance. Required fields under `contractVersion: 2`: `runId` (stable string identifier), `snapshotRef`, `configRef`, `seed`, `fillOrderPolicy`, `crFloorMode`, `crFloorComputed`, `generationTimestamp`, `sourceSpreadsheetId` (Google Sheets spreadsheet identifier of the operator-facing source spreadsheet, normalized per `docs/sheet_generation_contract.md` §12.5), `sourceTabName` (string naming the source tab the snapshot was taken from). The trailing two fields were added in v2 so selector compliance implies `docs/writeback_contract.md` §18 input compatibility (see `docs/decision_log.md` D-0032 and §2.1). The selector itself does not consume `sourceSpreadsheetId` or `sourceTabName` — they ride through unchanged per §16.4 — but they are required at the selector boundary so a downstream writeback adapter cannot receive a contract-compliant envelope that lacks them. See §16.
 4. **`selectorStrategyId`** — first release ships exactly `"HIGHEST_SCORE_WITH_CASCADE"`. See §11 and §12.
 5. **`selectorStrategyConfig`** (optional) — strategy-specific configuration. First-release `HIGHEST_SCORE_WITH_CASCADE` does not require any configuration fields; future strategies MAY declare them per their `StrategyDescriptor` (§11).
 
@@ -266,13 +270,13 @@ The full identity of any retained candidate is the pair `(runId, candidateId)`:
 - `candidateId` is a run-monotonic integer scoped to the run, assigned per `TrialCandidate` in solver-emission order. Candidate `1` is the first candidate emitted across all batches in the run; candidate `N` is the last. Within a single run, `candidateId` values are dense (no gaps) and stable under repeated invocations on identical inputs.
 
 ### 16.2 Run-level metadata flows once
-All run-level metadata (`runId`, `snapshotRef`, `configRef`, `seed`, `fillOrderPolicy`, `crFloorMode`, `crFloorComputed`, `generationTimestamp`) flows once on the `runEnvelope` at the `FinalResultEnvelope` level. `generationTimestamp` is execution-layer-supplied for the same reason as `runId` (§16.4): the selector MUST NOT consume clocks (§18), so any timestamp embedded in retained artifacts must arrive on the run envelope rather than be synthesized at write time. Run-level metadata MUST NOT be repeated per candidate inside `candidates_summary.csv` or `candidates_full.json` beyond the explicit per-row `runId` reference and any explicitly-listed run-scope fields (for example, `seed` in `candidates_summary.csv` per §14.1). This avoids duplication that would silently drift if any field were updated mid-run.
+All run-level metadata (`runId`, `snapshotRef`, `configRef`, `seed`, `fillOrderPolicy`, `crFloorMode`, `crFloorComputed`, `generationTimestamp`, `sourceSpreadsheetId`, `sourceTabName`) flows once on the `runEnvelope` at the `FinalResultEnvelope` level. `generationTimestamp` is execution-layer-supplied for the same reason as `runId` (§16.4): the selector MUST NOT consume clocks (§18), so any timestamp embedded in retained artifacts must arrive on the run envelope rather than be synthesized at write time. `sourceSpreadsheetId` and `sourceTabName` are likewise execution-layer-supplied at parser/normalizer ingestion time, when the source tab and spreadsheet are known, and ride through the selector unchanged for downstream writeback consumption per `docs/writeback_contract.md` §18. Run-level metadata MUST NOT be repeated per candidate inside `candidates_summary.csv` or `candidates_full.json` beyond the explicit per-row `runId` reference and any explicitly-listed run-scope fields (for example, `seed` in `candidates_summary.csv` per §14.1). This avoids duplication that would silently drift if any field were updated mid-run.
 
 ### 16.3 Run envelope additivity
-Future expansion of run-level metadata fields on `runEnvelope` is additive and does not require a `contractVersion` bump. Removing or renaming an existing field does require a bump.
+Future expansion of `runEnvelope` with **optional** fields (where prior-version-targeted readers can ignore the field if not present and still process the envelope) is additive and does not require a `contractVersion` bump. Adding a **required** field — one whose absence makes the envelope non-compliant against the new version — does require a bump, since callers that supplied only the previous required-field set become non-compliant; this is the rule the v1 → v2 bump in §2.1 records for `sourceSpreadsheetId` and `sourceTabName`. Removing or renaming an existing field also requires a bump.
 
 ### 16.4 Selector synthesizes nothing about identity
-The selector MUST NOT generate `runId`, MUST NOT remap `candidateId` values from the solver's emission order, and MUST NOT alter `snapshotRef` / `configRef` / `seed` / `fillOrderPolicy` / `crFloorMode` / `crFloorComputed` / `generationTimestamp` values received on the run envelope. The selector is a propagator of identity, not an originator.
+The selector MUST NOT generate `runId`, MUST NOT remap `candidateId` values from the solver's emission order, and MUST NOT alter `snapshotRef` / `configRef` / `seed` / `fillOrderPolicy` / `crFloorMode` / `crFloorComputed` / `generationTimestamp` / `sourceSpreadsheetId` / `sourceTabName` values received on the run envelope. The selector is a propagator of identity, not an originator.
 
 ## 17) `TrialBatchResult` retroactive population
 Proposed in this checkpoint (normative):
@@ -362,5 +366,10 @@ The following are explicitly deferred and not fixed by this document:
 - richer retention modes and artifact export formats (`docs/future_work.md` FW-0013 Phase 2),
 - cross-implementation and cross-platform determinism (`docs/future_work.md` FW-0011),
 - alternative selector strategies beyond `HIGHEST_SCORE_WITH_CASCADE`.
+
+### v2 follow-on (2026-04-26, PR #66)
+- `runEnvelope` required-fields list expanded in §9 item 3 to add `sourceSpreadsheetId` and `sourceTabName`; the §16.2 metadata enumeration is updated to match. Driven by `docs/decision_log.md` D-0032 — selector compliance now implies `docs/writeback_contract.md` §18 input compatibility on this surface, removing an end-to-end contract-seam gap surfaced by PR #66 codex review.
+- `contractVersion` bumped from `1` to `2` per §2.1; the bump is taken because the change is a required-fields-add (v1-targeted callers that supply only the v1 required-field set are non-compliant against v2), not because the fields are merely additive.
+- §16.3 wording tightened to distinguish optional-additive (non-bumping) from required-fields-add (bumping); the prior phrasing was less precise and the v1 → v2 bump made the distinction worth pinning.
 
 This document is a first-pass working draft checkpoint intended to unblock implementation planning without reopening broader architecture scope.
