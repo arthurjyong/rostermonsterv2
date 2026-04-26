@@ -154,7 +154,7 @@ A single selector invocation MUST return exactly one of `AllocationResult` or `U
 ## 11) Selector strategy interface
 Proposed in this checkpoint (normative):
 
-The selector is pluggable by named strategy. A strategy is identified by a stable `selectorStrategyId` and described by a `StrategyDescriptor`, mirroring the solver's pattern (`docs/solver_contract.md` §11):
+The selector is pluggable by named strategy. A strategy is identified by a stable `selectorStrategyId` and described by a `StrategyDescriptor`, mirroring the solver's pattern (`docs/solver_contract.md` §11). The descriptor's identity field is namespaced as `selectorStrategyId` (vs the solver descriptor's `strategyId`) so the two strategy registries remain unambiguous when both appear in the same run envelope or diagnostic surface:
 
 ```
 StrategyDescriptor {

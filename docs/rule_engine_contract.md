@@ -50,7 +50,7 @@ Repo-settled intent + checkpoint narrowing:
 Repo-settled:
 - Upstream: parser/normalizer emits a `CONSUMABLE` `ParserResult` with `normalizedModel` populated.
 - Boundary: rule engine evaluates candidate assignments against the normalized model.
-- Downstream: solver/search queries the rule engine; scorer/selector consume valid candidates.
+- Downstream: solver queries the rule engine to keep its search space legal; scorer and selector consume the solver's resulting valid `CandidateSet` per the three-stage `solver → scorer → selector` separation (`docs/decision_log.md` D-0027).
 
 Proposed in this checkpoint:
 - Rule engine presents a stateless contract surface to callers. Any internal caching or indexing is an implementation detail that MUST NOT leak into the contract (see §13).

@@ -160,7 +160,7 @@ Keep entries implementation-facing. Do not restate contract meaning here. Do not
 - **Idea / direction:** Once a score-aware solver strategy lands (FW-0004), revisit whether some retention decisions meaningfully re-emerge mid-search (for example, a hill-climb strategy that keeps a top-K of best-so-far neighbors during search). If so, specify the retention-in-solver surface as an additive strategy-descriptor field rather than a contract-wide override, preserving §14's rule that scoring-blind strategies do not populate best-candidate fields and do not implement retention modes.
 - **Why deferred now:** First-release solver is scoring-blind by contract (§11.1), so mid-search retention has no score to rank against. The contract's current retention boundary is deliberate, not provisional.
 - **Trigger to revisit:** First score-aware strategy is being designed and its behavior benefits from in-search retention decisions.
-- **Related surfaces:** `docs/solver_contract.md` §11.2, §14, §20; future `docs/selector_contract.md` (not yet created).
+- **Related surfaces:** `docs/solver_contract.md` §11.2, §14, §20; `docs/selector_contract.md` §13, §21.
 
 ### FW-0017 — Canonical lowest-`unitIndex`-first fill-order rule for `requiredCount > 1`
 - **Date noted:** 2026-04-23
