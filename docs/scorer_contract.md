@@ -49,7 +49,7 @@ Repo-settled intent + checkpoint narrowing:
 Repo-settled:
 - Upstream: solver emits a `CandidateSet` of valid rosters (or an `UnsatisfiedResult`; see `docs/solver_contract.md`).
 - Boundary: scorer ranks every candidate in the `CandidateSet` by applying component-wise scoring against the normalized model and a scoring configuration.
-- Downstream: selector + retention policy consume scored candidates and produce the final `AllocationResult` or persisted retention artifacts.
+- Downstream: selector consumes scored candidates and produces the final `AllocationResult`, applying retention policy per `docs/selector_contract.md` §13 (with sidecar artifacts under `FULL` retention per `docs/selector_contract.md` §14).
 
 Proposed in this checkpoint:
 - Scorer is a pure function of `(allocation, normalizedModel, scoringConfig)`. No solver coupling, no lifecycle, no side effects.
@@ -168,7 +168,7 @@ Proposed in this checkpoint (normative):
 ## 16) Pure-function normative shape; streaming as permitted optimization
 Proposed in this checkpoint (normative):
 - The scorer's public contract is a pure function `score(allocation, normalizedModel, scoringConfig) → ScoreResult`.
-- Implementations MAY internally compute scores incrementally or via streaming deltas when evaluating multiple candidates in a single scorer invocation (for example, reusing sub-computations across structurally-similar candidates within one `CandidateSet` pass), as an optimization. Search-time streaming — scoring deltas applied during solver search in response to `tryAdd`/`undo` operations — is out of first-release scope because the first-release solver is scoring-blind (`docs/solver_contract.md` §13); search-time streaming becomes applicable only under a future score-aware solver strategy activated through the scoring-consultation extension clause declared in `docs/solver_contract.md`.
+- Implementations MAY internally compute scores incrementally or via streaming deltas when evaluating multiple candidates in a single scorer invocation (for example, reusing sub-computations across structurally-similar candidates within one `CandidateSet` pass), as an optimization. Search-time streaming — scoring deltas applied during solver search in response to `tryAdd`/`undo` operations — is out of first-release scope because the first-release solver is scoring-blind (`docs/solver_contract.md` §6, §11.1); search-time streaming becomes applicable only under a future score-aware solver strategy activated through the scoring-consultation extension clause declared in `docs/solver_contract.md`.
 - Any streaming/delta implementation MUST produce `ScoreResult` values byte-identical to the pure-function evaluation over the same inputs within a single implementation on a single platform. Within one implementation on one platform, floating-point operations in the same order yield identical bit patterns; the byte-identical bar is both achievable and the single normative parity criterion under this contract.
 - Streaming implementations MUST NOT leak lifecycle state into the public contract; callers MUST be able to invoke the scorer as a stateless service.
 
