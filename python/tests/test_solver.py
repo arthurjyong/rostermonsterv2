@@ -806,6 +806,42 @@ def test_max_candidates_rejects_non_integer() -> None:
 # --- Scoring-blind property (architectural invariant) --------------------
 
 
+def test_phase2_dedupes_doctors_when_eligible_groups_repeat() -> None:
+    """Per Codex P1 round-6 finding on PR #85: `EligibilityRule.eligibleGroups`
+    is a tuple, so the contract does not forbid the same group from being
+    listed twice. Phase 2 must dedupe per-unit candidate doctors while
+    preserving first-seen order; otherwise duplicated entries would
+    double-count in the `MOST_CONSTRAINED_FIRST` constraint count, skew the
+    seeded tie-break, and could spuriously trigger `UnsatisfiedResult` even
+    when a full valid assignment exists.
+
+    Behavioral equivalence: a model with `eligibleGroups=("ICU_HD", "ICU_HD")`
+    MUST produce the same output as one with `eligibleGroups=("ICU_HD",)`."""
+    base = _model()
+    bounds = TerminationBounds(maxCandidates=2)
+
+    duplicated_eligibility = tuple(
+        EligibilityRule(
+            slotType=er.slotType,
+            eligibleGroups=tuple(g for g in er.eligibleGroups for _ in range(2)),
+        )
+        for er in base.eligibility
+    )
+    dup_model = replace(base, eligibility=duplicated_eligibility)
+
+    r_dedup = _solve(base, seed=7, terminationBounds=bounds)
+    r_dup = _solve(dup_model, seed=7, terminationBounds=bounds)
+
+    assert isinstance(r_dedup, CandidateSet)
+    assert isinstance(r_dup, CandidateSet)
+    assert tuple(c.assignments for c in r_dedup.candidates) == tuple(
+        c.assignments for c in r_dup.candidates
+    ), (
+        "duplicated eligibleGroups produced a different CandidateSet from "
+        "the deduped version — Phase 2 dedup is missing or order-unstable"
+    )
+
+
 def test_solver_package_does_not_import_scorer() -> None:
     """Per §9 + §11: the solver MUST NOT consume the scorer interface.
     Architectural invariant: `rostermonster.solver` and its submodules MUST

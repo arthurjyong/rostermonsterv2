@@ -326,9 +326,22 @@ def _phase2_fill(
         scored: list[tuple[int, _DemandUnit, list[str]]] = []
         for unit in remaining:
             eligible_groups = eligibility.get(unit.slotType, ())
-            candidate_doctors: list[str] = []
-            for group in eligible_groups:
-                candidate_doctors.extend(doctor_ids_by_group.get(group, []))
+            # Build the eligible-doctor list, deduplicating across repeated
+            # group entries while preserving first-seen order. The contract
+            # doesn't forbid `eligibleGroups` from listing the same group
+            # twice, and without dedup repeated entries would double-count
+            # the affected doctors in the `MOST_CONSTRAINED_FIRST` count
+            # and skew the seeded tie-break — driving wrong early picks
+            # that can spuriously trigger `UnsatisfiedResult` when a valid
+            # assignment exists. `dict.fromkeys` preserves insertion order
+            # since Python 3.7. Codex P1 round-6 finding on PR #85.
+            candidate_doctors = list(
+                dict.fromkeys(
+                    doc_id
+                    for group in eligible_groups
+                    for doc_id in doctor_ids_by_group.get(group, [])
+                )
+            )
             valid: list[str] = []
             current_state = RuleState(assignments=tuple(state_units))
             for doc_id in candidate_doctors:
