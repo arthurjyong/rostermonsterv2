@@ -154,6 +154,7 @@ Field vocabulary:
 - `visibleLabels.departmentLabel`
 - `pointRows`
 - `pointRows[].rowKey`
+- `pointRows[].slotType` *(added under `docs/decision_log.md` D-0037)*
 - `pointRows[].label`
 - `pointRows[].defaultRule`
 - `pointRows[].defaultRule.weekdayToWeekday`
@@ -176,6 +177,11 @@ Point-row default-rule shape (first-release ICU/HD):
   - `weekdayToWeekendOrPublicHoliday = 1.75`
   - `weekendOrPublicHolidayToWeekendOrPublicHoliday = 2`
   - `weekendOrPublicHolidayToWeekday = 1.5`
+
+Point-row slot-type binding *(added under `docs/decision_log.md` D-0037)*:
+- `pointRows[].slotType` is required and MUST reference a `slots[].slotId` whose `slotKind == "CALL"`. The binding anchors the parser's `(callPointRowKey, dayIndex) → (slotType, dateKey)` mapping per `docs/parser_normalizer_contract.md` §9 — without this binding, the parser cannot deterministically derive `ScoringConfig.pointRules` from snapshot `callPointRecords`.
+- For ICU/HD first release: `MICU_CALL_POINT.slotType = MICU_CALL`, `MHD_CALL_POINT.slotType = MHD_CALL`.
+- Standby slots and other non-call slots have no point-row weight; pointBalance scoring (`docs/scorer_contract.md` §11) only counts call-slot assignments.
 
 Section-based doctor-group derivation (first-release ICU/HD):
 - each `inputSheetLayout.sections[]` record must declare canonical `groupId`
@@ -258,6 +264,7 @@ A template artifact is invalid if any of the following are true:
 - forbidden procedural/runtime content appears in declarative sections (`inputSheetLayout`, `outputMapping`, `scoring`)
 - *(under `docs/decision_log.md` D-0037)* `scoring.componentWeights` is missing or fails to declare a numeric default for any first-release component identifier in `docs/domain_model.md` §11.2
 - *(under D-0037)* any `scoring.componentWeights` value violates per-component sign orientation (penalty component declared positive, or reward component declared negative — sign classification per `docs/scorer_contract.md` §10 / §15)
+- *(under D-0037)* any `inputSheetLayout.pointRows[]` record is missing `slotType`, OR `slotType` does not reference a known `slots[].slotId`, OR the referenced slot's `slotKind != "CALL"`
 
 ## 13. Parser-facing guarantees
 If the artifact is valid, parser-facing consumers may assume:
@@ -377,6 +384,7 @@ inputSheetLayout:
         requestStartColumn: B
   pointRows:
     - rowKey: MICU_CALL_POINT
+      slotType: MICU_CALL
       label: MICU Call Point
       defaultRule:
         weekdayToWeekday: 1
@@ -384,6 +392,7 @@ inputSheetLayout:
         weekendOrPublicHolidayToWeekendOrPublicHoliday: 2
         weekendOrPublicHolidayToWeekday: 1.5
     - rowKey: MHD_CALL_POINT
+      slotType: MHD_CALL
       label: MHD Call Point
       defaultRule:
         weekdayToWeekday: 1
