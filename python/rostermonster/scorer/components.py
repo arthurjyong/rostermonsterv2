@@ -82,15 +82,22 @@ def unfilled_penalty(
 # --- 2 + 3. point balance components -------------------------------------
 
 
-def _call_count_per_doctor(
+def _call_points_per_doctor(
     allocation: tuple[AssignmentUnit, ...],
     call_slots: frozenset[str],
-) -> dict[str, int]:
-    counts: dict[str, int] = defaultdict(int)
+    point_rules: dict[tuple[str, str], float],
+) -> dict[str, float]:
+    """Per-doctor weighted call-point load per scorer v2 §11. Each call-slot
+    `AssignmentUnit` contributes `point_rules[(slotType, dateKey)]` to its
+    doctor's running total; missing entries fall back to `1.0` per-call so
+    partial-overlay configurations remain sign-correct (D-0037)."""
+    points: dict[str, float] = defaultdict(float)
     for a in allocation:
-        if a.doctorId is not None and a.slotType in call_slots:
-            counts[a.doctorId] += 1
-    return counts
+        if a.doctorId is None or a.slotType not in call_slots:
+            continue
+        weight = point_rules.get((a.slotType, a.dateKey), 1.0)
+        points[a.doctorId] += weight
+    return points
 
 
 def point_balance_within_section(
@@ -98,20 +105,20 @@ def point_balance_within_section(
     model: NormalizedModel,
     config: ScoringConfig,
 ) -> float:
-    """Penalty proportional to call-count variance within each doctor group.
-    Lower variance ⇒ smaller penalty (more balanced load within the section).
-    First release uses 1-point-per-call; weighted points (weekday/weekend per
-    template `pointRows`) is a future component-tuning surface."""
+    """Penalty proportional to call-point-load variance within each doctor
+    group. Lower variance ⇒ smaller penalty (more balanced load within the
+    section). Per-call point weight comes from `config.pointRules` per
+    scorer v2 §11; missing entries fall back to `1.0` per-call."""
     weight = config.weights[COMPONENT_POINT_BALANCE_WITHIN_SECTION]
     if weight == 0:
         return 0.0
     call_slots = _call_slot_types(model)
-    calls_per_doctor = _call_count_per_doctor(allocation, call_slots)
+    points_per_doctor = _call_points_per_doctor(allocation, call_slots, config.pointRules)
 
     # Group doctors by groupId.
     by_group: dict[str, list[float]] = defaultdict(list)
     for doc in model.doctors:
-        by_group[doc.groupId].append(float(calls_per_doctor.get(doc.doctorId, 0)))
+        by_group[doc.groupId].append(points_per_doctor.get(doc.doctorId, 0.0))
 
     total_variance = 0.0
     for group_loads in by_group.values():
@@ -125,16 +132,17 @@ def point_balance_global(
     model: NormalizedModel,
     config: ScoringConfig,
 ) -> float:
-    """Penalty proportional to call-count variance across all doctors.
+    """Penalty proportional to call-point-load variance across all doctors.
     Lower variance ⇒ smaller penalty (more balanced load across the roster
-    as a whole)."""
+    as a whole). Per-call point weight comes from `config.pointRules` per
+    scorer v2 §11; missing entries fall back to `1.0` per-call."""
     weight = config.weights[COMPONENT_POINT_BALANCE_GLOBAL]
     if weight == 0:
         return 0.0
     call_slots = _call_slot_types(model)
-    calls_per_doctor = _call_count_per_doctor(allocation, call_slots)
+    points_per_doctor = _call_points_per_doctor(allocation, call_slots, config.pointRules)
 
-    loads = [float(calls_per_doctor.get(doc.doctorId, 0)) for doc in model.doctors]
+    loads = [points_per_doctor.get(doc.doctorId, 0.0) for doc in model.doctors]
     if len(loads) <= 1:
         return 0.0
     return pvariance(loads) * weight
