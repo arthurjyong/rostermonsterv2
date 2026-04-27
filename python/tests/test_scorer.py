@@ -153,11 +153,32 @@ def test_score_result_carries_every_first_release_component() -> None:
     assert result.direction is ScoreDirection.HIGHER_IS_BETTER
 
 
+def test_scoring_config_requires_explicit_point_rules() -> None:
+    """Per Codex P2 fix on PR #82: `pointRules` is a required field with no
+    default. Constructing `ScoringConfig` without explicit `pointRules` MUST
+    raise at construction time so a producer (parser overlay) that forgets
+    to wire pointRules through fails fast rather than silently falling back
+    to 1.0-per-call scoring on the consumer side."""
+    raised = False
+    try:
+        ScoringConfig(weights={c: 0.0 for c in ALL_COMPONENTS})  # no pointRules
+    except TypeError:
+        # Python's dataclass missing-required-arg error.
+        raised = True
+    assert raised, (
+        "ScoringConfig must require pointRules to be specified explicitly "
+        "(no default_factory) per scorer v2 §11 + Codex P2 fix on PR #82"
+    )
+
+
 def test_missing_weight_raises() -> None:
     """Per §11, `weights` MUST cover every first-release component;
     omission is a configuration defect."""
     model = _model()
-    config = ScoringConfig(weights={COMPONENT_UNFILLED_PENALTY: -1.0})
+    config = ScoringConfig(
+        weights={COMPONENT_UNFILLED_PENALTY: -1.0},
+        pointRules={},
+    )
     raised = False
     try:
         score((), model, config)
@@ -180,7 +201,7 @@ def test_wrong_sign_weight_raises_per_scorer_10_and_15() -> None:
     weights_a[COMPONENT_UNFILLED_PENALTY] = +100.0
     raised_a = False
     try:
-        score((), model, ScoringConfig(weights=weights_a))
+        score((), model, ScoringConfig(weights=weights_a, pointRules={}))
     except ValueError:
         raised_a = True
     assert raised_a, "expected ValueError for positive unfilledPenalty weight"
@@ -190,7 +211,7 @@ def test_wrong_sign_weight_raises_per_scorer_10_and_15() -> None:
     weights_b[COMPONENT_CR_REWARD] = -1.0
     raised_b = False
     try:
-        score((), model, ScoringConfig(weights=weights_b))
+        score((), model, ScoringConfig(weights=weights_b, pointRules={}))
     except ValueError:
         raised_b = True
     assert raised_b, "expected ValueError for negative crReward weight"
@@ -200,7 +221,7 @@ def test_wrong_sign_weight_raises_per_scorer_10_and_15() -> None:
     weights_c = ScoringConfig.first_release_defaults().weights.copy()
     weights_c[COMPONENT_UNFILLED_PENALTY] = 0.0
     weights_c[COMPONENT_CR_REWARD] = 0.0
-    score((), model, ScoringConfig(weights=weights_c))  # must not raise
+    score((), model, ScoringConfig(weights=weights_c, pointRules={}))  # must not raise
 
 
 # --- Per-component positive tests ----------------------------------------
@@ -341,6 +362,85 @@ def test_point_balance_global_negative_when_unbalanced() -> None:
     assert result.components[COMPONENT_POINT_BALANCE_GLOBAL] < 0
 
 
+def test_point_balance_falls_back_to_one_per_call_when_pointrules_empty() -> None:
+    """Per scorer v2 §11 (D-0037): missing `(slotType, dateKey)` entries fall
+    back to `1.0` per-call. With empty pointRules dict, point_balance_global
+    reduces to call-count variance — equivalent to the prior 1-point-per-call
+    behavior."""
+    model = _model()
+    # Two configs: empty pointRules (default) vs explicit 1.0 for each
+    # placement. Both should produce identical pointBalance scores.
+    config_empty = ScoringConfig.first_release_defaults()
+    config_explicit = ScoringConfig(
+        weights=dict(config_empty.weights),
+        pointRules={
+            ("MICU_CALL", "2026-05-01"): 1.0,
+            ("MICU_CALL", "2026-05-04"): 1.0,
+        },
+    )
+    alloc = (
+        _unit("dr_icu", "MICU_CALL", "2026-05-01"),
+        _unit("dr_icu", "MICU_CALL", "2026-05-04"),
+    )
+    s_empty = score(alloc, model, config_empty)
+    s_explicit = score(alloc, model, config_explicit)
+    assert s_empty.components[COMPONENT_POINT_BALANCE_GLOBAL] == \
+        s_explicit.components[COMPONENT_POINT_BALANCE_GLOBAL]
+    assert s_empty.components[COMPONENT_POINT_BALANCE_WITHIN_SECTION] == \
+        s_explicit.components[COMPONENT_POINT_BALANCE_WITHIN_SECTION]
+
+
+def test_point_balance_consumes_point_rules_when_overridden() -> None:
+    """Per scorer v2 §11 (D-0037): pointBalance components MUST consume
+    `pointRules` for per-call point weighting. Set a heavy weight on one
+    specific (slotType, dateKey) and confirm the variance reflects the
+    weighted points, not a flat 1-per-call count."""
+    model = _model()
+    weights = dict(ScoringConfig.first_release_defaults().weights)
+    # Zero out everything except pointBalanceGlobal to measure it in isolation.
+    for component in weights:
+        if component != COMPONENT_POINT_BALANCE_GLOBAL:
+            weights[component] = 0.0
+
+    # Allocation: dr_icu takes one MICU_CALL on 2026-05-01; dr_both takes one
+    # MICU_CALL on 2026-05-02. Without weighting, each has 1 call point —
+    # variance is 0 across doctors with one call each (and 0 for the third
+    # doctor with no calls means variance > 0 only because of dr_hd).
+    alloc = (
+        _unit("dr_icu", "MICU_CALL", "2026-05-01"),
+        _unit("dr_both", "MICU_CALL", "2026-05-02"),
+    )
+
+    # With pointRules empty (1.0 fallback for both placements):
+    # loads = [1.0, 1.0, 0.0] → variance ≈ 0.222.
+    config_unweighted = ScoringConfig(weights=weights, pointRules={})
+    s_unweighted = score(alloc, model, config_unweighted)
+
+    # With pointRules giving dr_icu's day 3.0× weight:
+    # loads = [3.0, 1.0, 0.0] → variance > prior variance.
+    config_weighted = ScoringConfig(
+        weights=weights,
+        pointRules={("MICU_CALL", "2026-05-01"): 3.0},
+    )
+    s_weighted = score(alloc, model, config_weighted)
+
+    # Larger spread of loads ⇒ larger variance ⇒ more-negative pointBalance
+    # under negative weight. Both must remain non-positive (penalty
+    # orientation per §10), and the weighted case must be strictly more
+    # negative than the unweighted case.
+    assert s_unweighted.components[COMPONENT_POINT_BALANCE_GLOBAL] < 0
+    assert s_weighted.components[COMPONENT_POINT_BALANCE_GLOBAL] < 0
+    assert (
+        s_weighted.components[COMPONENT_POINT_BALANCE_GLOBAL]
+        < s_unweighted.components[COMPONENT_POINT_BALANCE_GLOBAL]
+    ), (
+        f"weighted pointBalanceGlobal ({s_weighted.components[COMPONENT_POINT_BALANCE_GLOBAL]}) "
+        f"must be strictly more negative than unweighted "
+        f"({s_unweighted.components[COMPONENT_POINT_BALANCE_GLOBAL]}) "
+        f"when one placement carries a 3.0× point weight"
+    )
+
+
 def test_standby_count_fairness_penalty_negative_when_unbalanced() -> None:
     model = _model()
     config = ScoringConfig.first_release_defaults()
@@ -417,7 +517,7 @@ def test_cr_reward_strictly_diminishes_per_doctor() -> None:
     # we measure the curve in isolation.
     weights = {c: 0.0 for c in ALL_COMPONENTS}
     weights[COMPONENT_CR_REWARD] = 5.0
-    config = ScoringConfig(weights=weights)
+    config = ScoringConfig(weights=weights, pointRules={})
 
     rewards: list[float] = []
     for k in range(1, 6):
