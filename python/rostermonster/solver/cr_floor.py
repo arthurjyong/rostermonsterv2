@@ -25,19 +25,41 @@ def compute_cr_floor(model: NormalizedModel, config: CrFloorConfig) -> int:
 
     `MANUAL`: returns `manualValue` after validation (§13.2 — non-negative
     integer required).
+
+    Mode comparison uses value equality (`==`), not identity (`is`).
+    `CrFloorMode` is a `(str, Enum)`, so callers MAY legitimately pass the
+    bare string `"MANUAL"` per the contract's value vocabulary; identity
+    comparison would silently treat the string as `SMART_MEDIAN`.
     """
-    if config.mode is CrFloorMode.MANUAL:
-        if config.manualValue is None:
+    if config.mode == CrFloorMode.MANUAL:
+        manual = config.manualValue
+        if manual is None:
             raise ValueError(
                 "CrFloorConfig.manualValue is required when mode = MANUAL "
                 "per docs/solver_contract.md §13.2"
             )
-        if config.manualValue < 0:
+        # `bool` is a subclass of `int` in Python; reject it explicitly so
+        # `True`/`False` don't slip through as 1/0 — the contract requires a
+        # non-negative integer, and a boolean configuration value is almost
+        # certainly a caller-side bug.
+        if isinstance(manual, bool) or not isinstance(manual, int):
+            raise ValueError(
+                f"CrFloorConfig.manualValue must be a non-negative integer "
+                f"per docs/solver_contract.md §13.2; got "
+                f"{type(manual).__name__}={manual!r}"
+            )
+        if manual < 0:
             raise ValueError(
                 f"CrFloorConfig.manualValue must be >= 0 per "
-                f"docs/solver_contract.md §13.2; got {config.manualValue!r}"
+                f"docs/solver_contract.md §13.2; got {manual!r}"
             )
-        return config.manualValue
+        return manual
+    if config.mode != CrFloorMode.SMART_MEDIAN:
+        raise ValueError(
+            f"Unknown CrFloorConfig.mode {config.mode!r}; first-release "
+            f"modes are exactly {{ SMART_MEDIAN, MANUAL }} per "
+            f"docs/solver_contract.md §13"
+        )
 
     cr_count_per_doctor: list[int] = []
     for doctor in model.doctors:

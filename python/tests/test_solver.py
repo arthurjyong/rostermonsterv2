@@ -332,6 +332,66 @@ def test_manual_floor_rejects_negative() -> None:
     assert raised
 
 
+def test_manual_floor_rejects_non_integer() -> None:
+    """Per §13.2: `manualValue` MUST be a non-negative INTEGER. Floats and
+    bools are caller-side configuration bugs that should fail fast at
+    `compute_cr_floor` rather than silently propagating into Phase 1's
+    placement counter (e.g. `placed_for_doctor >= 1.5` would change Phase 1
+    semantics relative to the integer contract). Codex P2 finding on PR #85."""
+    model = _model()
+
+    for bad_value in (1.5, 0.0, True, False, "3"):
+        raised = False
+        try:
+            compute_cr_floor(
+                model,
+                # CrFloorConfig has `manualValue: int | None`; test runtime
+                # rejection for callers that bypass the type hint.
+                CrFloorConfig(mode=CrFloorMode.MANUAL, manualValue=bad_value),  # type: ignore[arg-type]
+            )
+        except ValueError:
+            raised = True
+        assert raised, (
+            f"compute_cr_floor accepted non-integer manualValue {bad_value!r} "
+            f"(type {type(bad_value).__name__}); should fail per §13.2"
+        )
+
+
+def test_manual_floor_accepts_string_mode_value() -> None:
+    """`CrFloorMode` is a `(str, Enum)`, so callers MAY legitimately pass
+    the bare string `"MANUAL"` per the contract's value vocabulary
+    (docs/solver_contract.md §13). `compute_cr_floor` MUST compare modes by
+    value equality, not object identity, so the string form is honored
+    rather than silently falling through to `SMART_MEDIAN`. Codex P1
+    finding on PR #85."""
+    model = _model()
+    # Construct CrFloorConfig with the string value directly — this skirts
+    # the enum constructor that callers might use, but exercises the
+    # mode-comparison path that takes whatever value lands in `config.mode`.
+    config = CrFloorConfig(mode="MANUAL", manualValue=7)  # type: ignore[arg-type]
+    x = compute_cr_floor(model, config)
+    assert x == 7, (
+        f"compute_cr_floor fell through to SMART_MEDIAN when given the "
+        f"contract-valid string mode 'MANUAL'; got X={x}"
+    )
+
+
+def test_unknown_cr_floor_mode_is_rejected() -> None:
+    """Modes outside `{SMART_MEDIAN, MANUAL}` are first-release defects per
+    §13. Silently defaulting to SMART_MEDIAN would mask configuration
+    typos."""
+    model = _model()
+    raised = False
+    try:
+        compute_cr_floor(
+            model,
+            CrFloorConfig(mode="GENEROUS", manualValue=2),  # type: ignore[arg-type]
+        )
+    except ValueError:
+        raised = True
+    assert raised
+
+
 def test_x_zero_disables_phase_1() -> None:
     """Per §13.3: `X = 0` makes Phase 1 a no-op; strategy reduces to
     Phase 2 alone. With no CR requests, SMART_MEDIAN evaluates to 0 over
