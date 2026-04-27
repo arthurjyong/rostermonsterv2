@@ -166,6 +166,43 @@ def test_missing_weight_raises() -> None:
     assert raised
 
 
+def test_wrong_sign_weight_raises_per_scorer_10_and_15() -> None:
+    """Per §10 / §15 sign orientation is a property of the component, not the
+    weight. Penalty weight > 0 (or reward weight < 0) inverts the direction-
+    guard invariant — for example, a positive `unfilledPenalty` weight would
+    make adding unfilled assignments INCREASE totalScore. score() rejects
+    mis-signed weights at config validation rather than allowing the
+    inversion."""
+    model = _model()
+
+    # Penalty given positive weight — wrong sign.
+    weights_a = ScoringConfig.first_release_defaults().weights.copy()
+    weights_a[COMPONENT_UNFILLED_PENALTY] = +100.0
+    raised_a = False
+    try:
+        score((), model, ScoringConfig(weights=weights_a))
+    except ValueError:
+        raised_a = True
+    assert raised_a, "expected ValueError for positive unfilledPenalty weight"
+
+    # Reward given negative weight — wrong sign.
+    weights_b = ScoringConfig.first_release_defaults().weights.copy()
+    weights_b[COMPONENT_CR_REWARD] = -1.0
+    raised_b = False
+    try:
+        score((), model, ScoringConfig(weights=weights_b))
+    except ValueError:
+        raised_b = True
+    assert raised_b, "expected ValueError for negative crReward weight"
+
+    # Zero weight is allowed for both penalty and reward (component
+    # contributes nothing); not a sign violation.
+    weights_c = ScoringConfig.first_release_defaults().weights.copy()
+    weights_c[COMPONENT_UNFILLED_PENALTY] = 0.0
+    weights_c[COMPONENT_CR_REWARD] = 0.0
+    score((), model, ScoringConfig(weights=weights_c))  # must not raise
+
+
 # --- Per-component positive tests ----------------------------------------
 
 

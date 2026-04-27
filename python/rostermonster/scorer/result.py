@@ -39,6 +39,33 @@ ALL_COMPONENTS: tuple[str, ...] = (
     COMPONENT_STANDBY_COUNT_FAIRNESS_PENALTY,
 )
 
+# Per scorer §10: "Reward components contribute non-negatively to totalScore;
+# penalty components contribute non-positively. Sign orientation is a property
+# of the component, not the weight." Per §15: "Operator-supplied weights MUST
+# preserve per-component sign orientation: a reward component remains a reward,
+# a penalty component remains a penalty, regardless of the numeric weight the
+# operator supplies." score(...) validates these classifications at entry.
+PENALTY_COMPONENTS: frozenset[str] = frozenset(
+    {
+        COMPONENT_UNFILLED_PENALTY,
+        COMPONENT_POINT_BALANCE_WITHIN_SECTION,
+        COMPONENT_POINT_BALANCE_GLOBAL,
+        COMPONENT_SPACING_PENALTY,
+        COMPONENT_PRE_LEAVE_PENALTY,
+        COMPONENT_STANDBY_ADJACENCY_PENALTY,
+        COMPONENT_STANDBY_COUNT_FAIRNESS_PENALTY,
+    }
+)
+REWARD_COMPONENTS: frozenset[str] = frozenset(
+    {
+        COMPONENT_CR_REWARD,
+        COMPONENT_DUAL_ELIGIBLE_ICU_BONUS,
+    }
+)
+# Sanity: classifications partition the component set exactly.
+assert PENALTY_COMPONENTS | REWARD_COMPONENTS == set(ALL_COMPONENTS)
+assert PENALTY_COMPONENTS.isdisjoint(REWARD_COMPONENTS)
+
 
 class ScoreDirection(str, Enum):
     """Score direction is fixed to `HIGHER_IS_BETTER` per blueprint §5 +

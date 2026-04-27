@@ -33,6 +33,8 @@ from rostermonster.scorer.result import (
     COMPONENT_STANDBY_ADJACENCY_PENALTY,
     COMPONENT_STANDBY_COUNT_FAIRNESS_PENALTY,
     COMPONENT_UNFILLED_PENALTY,
+    PENALTY_COMPONENTS,
+    REWARD_COMPONENTS,
     ScoreResult,
     ScoringConfig,
 )
@@ -60,11 +62,20 @@ def score(
 ) -> ScoreResult:
     """Score one candidate allocation per `docs/scorer_contract.md`.
 
-    Verifies `scoringConfig.weights` covers every first-release component
-    identifier per §11 (missing entries are a configuration defect), then
-    invokes each component in canonical order. Sums the signed contributions
-    into `totalScore` via `ScoreResult.from_components`, which also enforces
-    the §10 component-breakdown completeness rule.
+    Validates:
+    1. §11 — `scoringConfig.weights` covers every first-release component
+       identifier (missing entries are a configuration defect).
+    2. §10 + §15 — sign orientation is a property of the component, not the
+       weight: a penalty component's weight MUST be ≤ 0 and a reward
+       component's weight MUST be ≥ 0. Mis-signed weights would invert the
+       direction-guard invariant (§13) — for example, a positive
+       `unfilledPenalty` weight would make unfilled assignments INCREASE
+       totalScore — so we reject at config validation rather than silently
+       allowing the inversion.
+
+    Then invokes each component in canonical order and sums the signed
+    contributions into `totalScore` via `ScoreResult.from_components`,
+    which enforces the §10 component-breakdown completeness rule.
     """
     missing_weights = [
         c for c in ALL_COMPONENTS if c not in scoringConfig.weights
@@ -73,6 +84,25 @@ def score(
         raise ValueError(
             f"scoringConfig.weights missing required entries per "
             f"docs/scorer_contract.md §11: {missing_weights}"
+        )
+
+    sign_errors: list[str] = []
+    for component, weight in scoringConfig.weights.items():
+        if component in PENALTY_COMPONENTS and weight > 0:
+            sign_errors.append(
+                f"{component} is a penalty (must contribute non-positively "
+                f"per §10) but weight is {weight!r} (> 0)"
+            )
+        elif component in REWARD_COMPONENTS and weight < 0:
+            sign_errors.append(
+                f"{component} is a reward (must contribute non-negatively "
+                f"per §10) but weight is {weight!r} (< 0)"
+            )
+    if sign_errors:
+        raise ValueError(
+            "scoringConfig.weights violates per-component sign orientation "
+            "per docs/scorer_contract.md §10 / §15: "
+            + "; ".join(sign_errors)
         )
 
     components: dict[str, float] = {}
