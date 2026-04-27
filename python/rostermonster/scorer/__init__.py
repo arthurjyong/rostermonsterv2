@@ -23,6 +23,7 @@ from rostermonster.scorer.result import (
     ScoreDirection,
     ScoreResult,
     ScoringConfig,
+    uniform_point_rules,
 )
 from rostermonster.scorer.scorer import score
 
@@ -31,6 +32,7 @@ __all__ = [
     "ScoreResult",
     "ScoringConfig",
     "ScoreDirection",
+    "uniform_point_rules",
     "ALL_COMPONENTS",
     "COMPONENT_UNFILLED_PENALTY",
     "COMPONENT_POINT_BALANCE_WITHIN_SECTION",

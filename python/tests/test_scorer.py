@@ -48,6 +48,7 @@ from rostermonster.scorer import (  # noqa: E402
     ScoreDirection,
     ScoringConfig,
     score,
+    uniform_point_rules,
 )
 from rostermonster.snapshot import (  # noqa: E402
     DayLocator,
@@ -144,7 +145,7 @@ def test_score_result_carries_every_first_release_component() -> None:
     """Per §10 every first-release component identifier MUST appear in
     `ScoreResult.components`, even when contributing zero."""
     model = _model()
-    config = ScoringConfig.first_release_defaults()
+    config = ScoringConfig.first_release_defaults(model)
     result = score((), model, config)
     for component in ALL_COMPONENTS:
         assert component in result.components, (
@@ -177,7 +178,7 @@ def test_missing_weight_raises() -> None:
     model = _model()
     config = ScoringConfig(
         weights={COMPONENT_UNFILLED_PENALTY: -1.0},
-        pointRules={},
+        pointRules=uniform_point_rules(model),
     )
     raised = False
     try:
@@ -195,33 +196,73 @@ def test_wrong_sign_weight_raises_per_scorer_10_and_15() -> None:
     mis-signed weights at config validation rather than allowing the
     inversion."""
     model = _model()
+    point_rules = uniform_point_rules(model)
 
     # Penalty given positive weight — wrong sign.
-    weights_a = ScoringConfig.first_release_defaults().weights.copy()
+    weights_a = ScoringConfig.first_release_defaults(model).weights.copy()
     weights_a[COMPONENT_UNFILLED_PENALTY] = +100.0
     raised_a = False
     try:
-        score((), model, ScoringConfig(weights=weights_a, pointRules={}))
+        score((), model, ScoringConfig(weights=weights_a, pointRules=point_rules))
     except ValueError:
         raised_a = True
     assert raised_a, "expected ValueError for positive unfilledPenalty weight"
 
     # Reward given negative weight — wrong sign.
-    weights_b = ScoringConfig.first_release_defaults().weights.copy()
+    weights_b = ScoringConfig.first_release_defaults(model).weights.copy()
     weights_b[COMPONENT_CR_REWARD] = -1.0
     raised_b = False
     try:
-        score((), model, ScoringConfig(weights=weights_b, pointRules={}))
+        score((), model, ScoringConfig(weights=weights_b, pointRules=point_rules))
     except ValueError:
         raised_b = True
     assert raised_b, "expected ValueError for negative crReward weight"
 
     # Zero weight is allowed for both penalty and reward (component
     # contributes nothing); not a sign violation.
-    weights_c = ScoringConfig.first_release_defaults().weights.copy()
+    weights_c = ScoringConfig.first_release_defaults(model).weights.copy()
     weights_c[COMPONENT_UNFILLED_PENALTY] = 0.0
     weights_c[COMPONENT_CR_REWARD] = 0.0
-    score((), model, ScoringConfig(weights=weights_c, pointRules={}))  # must not raise
+    score(  # must not raise
+        (), model, ScoringConfig(weights=weights_c, pointRules=point_rules)
+    )
+
+
+def test_score_raises_on_missing_point_rules_key() -> None:
+    """Per scorer v2 §11 (D-0038): `pointRules` MUST cover the full cross-
+    product of `(call-slot slotType, dateKey)`. Missing keys cause `score()`
+    to raise — there is no silent `1.0` fallback. This locks the fail-loud
+    behavior that revises the original D-0037 sub-decision 5."""
+    model = _model()
+    # Build complete pointRules then drop one key to simulate a parser-side
+    # producer defect (a layout regression / missing template-default path).
+    pr = uniform_point_rules(model)
+    dropped_key = ("MICU_CALL", "2026-05-01")
+    assert dropped_key in pr  # sanity: the cross-product covered it
+    del pr[dropped_key]
+    config = ScoringConfig(
+        weights=ScoringConfig.first_release_defaults(model).weights,
+        pointRules=pr,
+    )
+    raised = False
+    err_msg = ""
+    try:
+        score(
+            (_unit("dr_icu", "MICU_CALL", "2026-05-01"),),
+            model,
+            config,
+        )
+    except ValueError as exc:
+        raised = True
+        err_msg = str(exc)
+    assert raised, (
+        "score() must raise on a missing (slotType, dateKey) key in "
+        "pointRules per D-0038 fail-loud rule"
+    )
+    assert "MICU_CALL" in err_msg and "2026-05-01" in err_msg, (
+        f"error message must name the missing key for diagnostics; got "
+        f"{err_msg!r}"
+    )
 
 
 # --- Per-component positive tests ----------------------------------------
@@ -229,7 +270,7 @@ def test_wrong_sign_weight_raises_per_scorer_10_and_15() -> None:
 
 def test_unfilled_penalty_fires_on_unfilled_unit() -> None:
     model = _model()
-    config = ScoringConfig.first_release_defaults()
+    config = ScoringConfig.first_release_defaults(model)
     alloc = (_unit(None, "MICU_CALL", "2026-05-01"),)
     result = score(alloc, model, config)
     assert result.components[COMPONENT_UNFILLED_PENALTY] < 0
@@ -253,7 +294,7 @@ def test_cr_reward_honors_cr_request() -> None:
             ),
         ),
     )
-    config = ScoringConfig.first_release_defaults()
+    config = ScoringConfig.first_release_defaults(model)
     alloc = (_unit("dr_icu", "MICU_CALL", "2026-05-02"),)
     result = score(alloc, model, config)
     assert result.components[COMPONENT_CR_REWARD] > 0
@@ -277,7 +318,7 @@ def test_pre_leave_penalty_fires_on_call_before_leave() -> None:
             ),
         ),
     )
-    config = ScoringConfig.first_release_defaults()
+    config = ScoringConfig.first_release_defaults(model)
     alloc = (_unit("dr_icu", "MICU_CALL", "2026-05-02"),)
     result = score(alloc, model, config)
     assert result.components[COMPONENT_PRE_LEAVE_PENALTY] < 0
@@ -285,7 +326,7 @@ def test_pre_leave_penalty_fires_on_call_before_leave() -> None:
 
 def test_dual_eligible_icu_bonus_fires_for_icu_hd_on_micu() -> None:
     model = _model()
-    config = ScoringConfig.first_release_defaults()
+    config = ScoringConfig.first_release_defaults(model)
     alloc = (_unit("dr_both", "MICU_CALL", "2026-05-01"),)
     result = score(alloc, model, config)
     assert result.components[COMPONENT_DUAL_ELIGIBLE_ICU_BONUS] > 0
@@ -295,7 +336,7 @@ def test_dual_eligible_icu_bonus_zero_for_icu_only_doctor() -> None:
     """ICU_ONLY doctor on MICU does NOT contribute to dualEligibleIcuBonus —
     this component is specifically about ICU_HD doctors taking MICU work."""
     model = _model()
-    config = ScoringConfig.first_release_defaults()
+    config = ScoringConfig.first_release_defaults(model)
     alloc = (_unit("dr_icu", "MICU_CALL", "2026-05-01"),)
     result = score(alloc, model, config)
     assert result.components[COMPONENT_DUAL_ELIGIBLE_ICU_BONUS] == 0.0
@@ -305,7 +346,7 @@ def test_spacing_penalty_fires_on_close_call_pair() -> None:
     """Two calls for the same doctor 2 days apart — fall under the 3-day
     minimum-gap threshold → one spacingPenalty unit fires."""
     model = _model()
-    config = ScoringConfig.first_release_defaults()
+    config = ScoringConfig.first_release_defaults(model)
     alloc = (
         _unit("dr_both", "MICU_CALL", "2026-05-01"),
         _unit("dr_both", "MHD_CALL", "2026-05-03"),
@@ -317,7 +358,7 @@ def test_spacing_penalty_fires_on_close_call_pair() -> None:
 def test_spacing_penalty_zero_when_calls_far_apart() -> None:
     """Two calls 4 days apart → no spacing penalty (≥ 3-day threshold)."""
     model = _model()
-    config = ScoringConfig.first_release_defaults()
+    config = ScoringConfig.first_release_defaults(model)
     alloc = (
         _unit("dr_both", "MICU_CALL", "2026-05-01"),
         _unit("dr_both", "MHD_CALL", "2026-05-05"),
@@ -330,7 +371,7 @@ def test_standby_adjacency_penalty_fires() -> None:
     """Same doctor: standby on day N + call on day N+1 → standby-adjacency
     penalty fires."""
     model = _model()
-    config = ScoringConfig.first_release_defaults()
+    config = ScoringConfig.first_release_defaults(model)
     alloc = (
         _unit("dr_both", "MICU_STANDBY", "2026-05-01"),
         _unit("dr_both", "MICU_CALL", "2026-05-02"),
@@ -343,7 +384,7 @@ def test_point_balance_within_section_zero_when_only_one_doctor_per_group() -> N
     """`pvariance` of a single-element list is zero; the minimal model has
     one doctor per group, so within-section variance is 0."""
     model = _model()
-    config = ScoringConfig.first_release_defaults()
+    config = ScoringConfig.first_release_defaults(model)
     alloc = (_unit("dr_icu", "MICU_CALL", "2026-05-01"),)
     result = score(alloc, model, config)
     assert result.components[COMPONENT_POINT_BALANCE_WITHIN_SECTION] == 0.0
@@ -353,7 +394,7 @@ def test_point_balance_global_negative_when_unbalanced() -> None:
     """Three doctors, only one takes a call — the other two have zero call
     load, producing positive variance → negative pointBalanceGlobal."""
     model = _model()
-    config = ScoringConfig.first_release_defaults()
+    config = ScoringConfig.first_release_defaults(model)
     alloc = (
         _unit("dr_icu", "MICU_CALL", "2026-05-01"),
         _unit("dr_icu", "MICU_CALL", "2026-05-04"),
@@ -362,41 +403,17 @@ def test_point_balance_global_negative_when_unbalanced() -> None:
     assert result.components[COMPONENT_POINT_BALANCE_GLOBAL] < 0
 
 
-def test_point_balance_falls_back_to_one_per_call_when_pointrules_empty() -> None:
-    """Per scorer v2 §11 (D-0037): missing `(slotType, dateKey)` entries fall
-    back to `1.0` per-call. With empty pointRules dict, point_balance_global
-    reduces to call-count variance — equivalent to the prior 1-point-per-call
-    behavior."""
-    model = _model()
-    # Two configs: empty pointRules (default) vs explicit 1.0 for each
-    # placement. Both should produce identical pointBalance scores.
-    config_empty = ScoringConfig.first_release_defaults()
-    config_explicit = ScoringConfig(
-        weights=dict(config_empty.weights),
-        pointRules={
-            ("MICU_CALL", "2026-05-01"): 1.0,
-            ("MICU_CALL", "2026-05-04"): 1.0,
-        },
-    )
-    alloc = (
-        _unit("dr_icu", "MICU_CALL", "2026-05-01"),
-        _unit("dr_icu", "MICU_CALL", "2026-05-04"),
-    )
-    s_empty = score(alloc, model, config_empty)
-    s_explicit = score(alloc, model, config_explicit)
-    assert s_empty.components[COMPONENT_POINT_BALANCE_GLOBAL] == \
-        s_explicit.components[COMPONENT_POINT_BALANCE_GLOBAL]
-    assert s_empty.components[COMPONENT_POINT_BALANCE_WITHIN_SECTION] == \
-        s_explicit.components[COMPONENT_POINT_BALANCE_WITHIN_SECTION]
-
-
 def test_point_balance_consumes_point_rules_when_overridden() -> None:
     """Per scorer v2 §11 (D-0037): pointBalance components MUST consume
     `pointRules` for per-call point weighting. Set a heavy weight on one
     specific (slotType, dateKey) and confirm the variance reflects the
-    weighted points, not a flat 1-per-call count."""
+    weighted points, not a flat 1-per-call count.
+
+    Both configs supply complete `pointRules` per D-0038 fail-loud rule —
+    baseline is uniform 1.0 across the cross-product; weighted overrides one
+    key to 3.0 atop the same uniform baseline."""
     model = _model()
-    weights = dict(ScoringConfig.first_release_defaults().weights)
+    weights = dict(ScoringConfig.first_release_defaults(model).weights)
     # Zero out everything except pointBalanceGlobal to measure it in isolation.
     for component in weights:
         if component != COMPONENT_POINT_BALANCE_GLOBAL:
@@ -411,17 +428,18 @@ def test_point_balance_consumes_point_rules_when_overridden() -> None:
         _unit("dr_both", "MICU_CALL", "2026-05-02"),
     )
 
-    # With pointRules empty (1.0 fallback for both placements):
+    # Baseline: uniform 1.0 across the cross-product (every placement scores 1.0).
     # loads = [1.0, 1.0, 0.0] → variance ≈ 0.222.
-    config_unweighted = ScoringConfig(weights=weights, pointRules={})
+    config_unweighted = ScoringConfig(
+        weights=weights, pointRules=uniform_point_rules(model)
+    )
     s_unweighted = score(alloc, model, config_unweighted)
 
-    # With pointRules giving dr_icu's day 3.0× weight:
+    # Weighted: same uniform baseline with dr_icu's day overridden to 3.0×.
     # loads = [3.0, 1.0, 0.0] → variance > prior variance.
-    config_weighted = ScoringConfig(
-        weights=weights,
-        pointRules={("MICU_CALL", "2026-05-01"): 3.0},
-    )
+    weighted_rules = uniform_point_rules(model)
+    weighted_rules[("MICU_CALL", "2026-05-01")] = 3.0
+    config_weighted = ScoringConfig(weights=weights, pointRules=weighted_rules)
     s_weighted = score(alloc, model, config_weighted)
 
     # Larger spread of loads ⇒ larger variance ⇒ more-negative pointBalance
@@ -443,7 +461,7 @@ def test_point_balance_consumes_point_rules_when_overridden() -> None:
 
 def test_standby_count_fairness_penalty_negative_when_unbalanced() -> None:
     model = _model()
-    config = ScoringConfig.first_release_defaults()
+    config = ScoringConfig.first_release_defaults(model)
     alloc = (
         _unit("dr_icu", "MICU_STANDBY", "2026-05-01"),
         _unit("dr_icu", "MICU_STANDBY", "2026-05-03"),
@@ -461,7 +479,7 @@ def test_direction_guard_invariant_holds_per_scorer_13() -> None:
     S2 where S2.totalScore ≤ S1.totalScore. Per scorer §13, this property
     MUST be exercised in any scorer implementation's test suite."""
     model = _model()
-    config = ScoringConfig.first_release_defaults()
+    config = ScoringConfig.first_release_defaults(model)
     # Several distinct filled allocations; for each, mutate every filled
     # unit to unfilled and confirm S2 ≤ S1.
     sample_allocations = [
@@ -517,7 +535,7 @@ def test_cr_reward_strictly_diminishes_per_doctor() -> None:
     # we measure the curve in isolation.
     weights = {c: 0.0 for c in ALL_COMPONENTS}
     weights[COMPONENT_CR_REWARD] = 5.0
-    config = ScoringConfig(weights=weights, pointRules={})
+    config = ScoringConfig(weights=weights, pointRules=uniform_point_rules(model))
 
     rewards: list[float] = []
     for k in range(1, 6):
@@ -545,7 +563,7 @@ def test_cr_reward_strictly_diminishes_per_doctor() -> None:
 
 def test_repeated_scoring_is_byte_identical() -> None:
     model = _model()
-    config = ScoringConfig.first_release_defaults()
+    config = ScoringConfig.first_release_defaults(model)
     alloc = (
         _unit("dr_icu", "MICU_CALL", "2026-05-01"),
         _unit("dr_both", "MHD_STANDBY", "2026-05-02"),
