@@ -172,6 +172,23 @@ This contract intentionally does not redefine:
 - writer/orchestrator procedures,
 - low-level external API integration mechanics.
 
+## 11A. Scorer Config tab (added under `docs/decision_log.md` D-0037)
+The launcher generates a separate **Scorer Config tab** in the source spreadsheet alongside the request-entry tab. The tab carries the operator-tuneable scoring component weight cells declared in `docs/scorer_contract.md` v2 §11 + §15 — one cell per first-release component identifier in `docs/domain_model.md` §11.2 (nine cells: `unfilledPenalty`, `pointBalanceWithinSection`, `pointBalanceGlobal`, `spacingPenalty`, `preLeavePenalty`, `crReward`, `dualEligibleIcuBonus`, `standbyAdjacencyPenalty`, `standbyCountFairnessPenalty`).
+
+Settled constraints:
+- Tab is generated alongside the request-entry tab in the same source spreadsheet (single-spreadsheet-multi-tab shape).
+- Each component-weight cell is pre-populated from `docs/template_artifact_contract.md` §11 `scoring.componentWeights` defaults at generation time.
+- Each component-weight cell is **operator-editable** post-generation; operator-supplied values override template defaults at run time per the parser overlay rule in `docs/parser_normalizer_contract.md` §9.
+- The tab is template-owned structural in its layout (which cells exist, where they sit) but operator-input in its values; that classification mirrors `docs/template_artifact_contract.md` §9 `surfaceOwnership` discipline applied to this new surface.
+- The per-day call-point cells (`MICU Call Point`, `MHD Call Point` rows) stay on the request-entry tab where they already live per `docs/sheet_generation_contract.md` §8 + the existing `pointRows` declaration in `docs/template_artifact_contract.md` §9. Both surfaces (component weights on the Scorer Config tab; per-day call-point cells on the request-entry tab) flow through the snapshot's `scoringConfigRecords` per `docs/snapshot_contract.md` §11A under the same uniform extraction discipline.
+- Validation expectations (visible vs background-only validation, locking posture, format constraints) are implementation-slice concerns deferred to the launcher implementation pass.
+
+Explicitly out of scope at contract level:
+- Concrete cell layout (rows, columns, labels, decoration). Layout choice is left to the launcher implementation slice; the contract pins **what cells must exist** (one per first-release component identifier), not where they sit.
+- Validation behavior on operator edits (numeric-only enforcement, sign-orientation hints in the cell, etc.) — these are implementation-slice UX concerns; the parser-side admission discipline per `docs/parser_normalizer_contract.md` §14 is the normative correctness layer.
+
+This section adds a new operator-facing structural surface to the existing M1 generation scope, but does not reopen any prior M1 generation decisions — the request-entry tab and lower-shell surfaces continue exactly as `docs/sheet_generation_contract.md` §5 / §6 / §8 / §9 declare them.
+
 ## 12. Operator-facing launcher surface (M1.1)
 
 ### 12.1 Purpose and status

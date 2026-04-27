@@ -18,11 +18,15 @@ Hard validity is **not** in scorer scope; the rule engine is the sole hard-valid
 ## 2) Contract identity and versioning
 Contract identity/version for binding:
 - `contractId: SCORER`
-- `contractVersion: 1`
+- `contractVersion: 2`
 
 Version bump rule (normative):
 - bump `contractVersion` only when scoring semantics, direction, component enumeration, or contract-level input/output shape changes.
 - do **not** bump for weight-value tuning, wording cleanup, formatting, added examples, or clarification that does not change behavior.
+
+### 2.1 Version history
+- **v1 (2026-04-23, PR #63):** initial scorer contract closure per `docs/decision_log.md` D-0025. `ScoringConfig` shape `{weights, curves?}`.
+- **v2 (2026-04-27, this PR):** `ScoringConfig` shape grows a required `pointRules: {[(slotType: string, dateKey: string)]: number}` field carrying per-`(slotType, dateKey)` call-point weights derived from operator-edited per-day call-point cells per `docs/template_artifact_contract.md` §9. `pointBalance*` components MUST consume `pointRules` per §11 (the M2 C4 T2 placeholder of "1 point per call" is superseded). The bump is a required-fields-add — v1-targeted callers that supply only `weights` are non-compliant against v2 — and therefore takes a `contractVersion` bump per the rule above. See `docs/decision_log.md` D-0037.
 
 ## 3) Status discipline used in this document
 Each normative statement is classified as one of:
@@ -104,12 +108,15 @@ Normative properties:
 - `ScoreResult` MUST be produced for every scored candidate. Omitting the component breakdown and returning only `totalScore` is a contract violation.
 
 ## 11) Scoring configuration shape
-Proposed in this checkpoint (normative):
+Proposed in this checkpoint (normative; updated under v2 per §2.1):
 
 ```
 scoringConfig {
   weights: {
     [componentName: string]: number
+  }
+  pointRules: {
+    [(slotType: string, dateKey: string)]: number
   }
   curves?: {
     crReward?: { /* curve-specific parameters */ }
@@ -120,9 +127,11 @@ scoringConfig {
 
 First-release rules:
 - `weights` MUST include an entry for every first-release component identifier enumerated in §4 / `docs/domain_model.md` §11.2. Missing entries are a configuration defect.
-- `weights` values are operator-tuneable at run-scope granularity. See §15.
-- Templates ship default weights; operator-supplied values override template defaults at run time.
-- `curves.crReward` parameters, when present, configure the diminishing-marginal-utility curve referenced in §12. First-release implementations MAY ship a fixed curve shape with limited tuneable parameters.
+- `weights` values are operator-tuneable at run-scope granularity per §15.
+- `pointRules` carries per-`(slotType, dateKey)` call-point weights derived from the operator-facing per-day call-point cells declared in `docs/template_artifact_contract.md` §9 `pointRows` (the cells M1-generated rosters carry as `MICU Call Point` / `MHD Call Point` rows per `docs/sheet_generation_contract.md` §8). `pointBalance*` components MUST consume `pointRules` as the per-call point weight rather than a "1 point per call" placeholder. Missing `(slotType, dateKey)` entries fall back to `1.0` per-call so the scorer remains sign-correct under partial overlay.
+- `pointRules` values are operator-tuneable at run-scope granularity per §15 — operator edits to the per-day call-point cells flow into the scorer through the same overlay path that `weights` does (sheet wins; template defaults backstop), per `docs/decision_log.md` D-0037.
+- Templates ship default weights AND default per-day call-point values (the latter via `pointRows.defaultRule` weekday/weekend mapping per `docs/template_artifact_contract.md` §9); operator-supplied values override both at run time.
+- `curves.crReward` parameters, when present, configure the diminishing-marginal-utility curve referenced in §12. First-release implementations MAY ship a fixed curve shape with limited tuneable parameters; operator-tuneable curve parameters remain `docs/future_work.md` FW-0007 deferred.
 
 ## 12) `crReward` diminishing-marginal-utility property
 Proposed in this checkpoint (normative):
@@ -157,13 +166,14 @@ Proposed in this checkpoint (normative):
 - Additional soft-effect classes are deferred.
 
 ## 15) Operator-tuneable weight surface (v1 parity)
-Proposed in this checkpoint (normative):
+Proposed in this checkpoint (normative; extended under v2 to cover per-day call-point weights alongside component weights):
 
-- Scorer component weights are operator-tuneable in first release via sheet inputs, matching v1 behavior.
-- Templates ship default weights; operator-supplied values extracted from the sheet override template defaults at run time.
-- Weight extraction happens at parser boundary; the extracted weights flow into the pipeline as part of `scoringConfig`, separate from the `normalizedModel` (so the model carries problem shape and the config carries ranking policy).
-- Operator-supplied weights MUST preserve per-component sign orientation: a reward component remains a reward, a penalty component remains a penalty, regardless of the numeric weight the operator supplies.
-- Blueprint §16's current "routine variation" wording is narrower than this reality and is scheduled for a clarifying patch consistent with this contract.
+- Scorer component weights are operator-tuneable in first release via sheet inputs, matching v1 behavior. Per-day call-point weights (the cells operators see and edit in the `MICU Call Point` / `MHD Call Point` rows per `docs/template_artifact_contract.md` §9 `pointRows`) are operator-tuneable through the same surface.
+- Templates ship default weights AND default per-day call-point values (the latter via `pointRows.defaultRule` weekday/weekend mapping per `docs/template_artifact_contract.md` §9); operator-supplied values extracted from the sheet override template defaults at run time, individually per cell (the template default applies on cells the operator did not edit).
+- Weight extraction happens at parser boundary per `docs/parser_normalizer_contract.md` §9 (the parser produces `scoringConfig` alongside `normalizedModel` on `CONSUMABLE` outputs); the extracted weights flow into the pipeline as part of `scoringConfig`, separate from the `normalizedModel` (so the model carries problem shape and the config carries ranking policy).
+- Operator-supplied weights MUST preserve per-component sign orientation: a reward component remains a reward, a penalty component remains a penalty, regardless of the numeric weight the operator supplies. Mis-signed operator-edited weights are detected at parse time per `docs/parser_normalizer_contract.md` §14 and surfaced as `ValidationIssue` entries on `ParserResult.issues` with severity ERROR (driving NON_CONSUMABLE).
+- Operator-facing surface for component weights is a separate Scorer Config tab generated by the launcher per `docs/sheet_generation_contract.md` (added under D-0037); per-day call-point cells stay on the request-entry sheet where they already live per M1 generation. Both surfaces extract through the snapshot via `scoringConfigRecords` per `docs/snapshot_contract.md`.
+- Blueprint §16's current "routine variation" wording is narrower than this reality and was patched per `docs/decision_log.md` D-0028 to acknowledge component weights and the solver's `crFloor.manualValue`; D-0037 widens the operator-tuneable surface further to include per-day call-point cells, but blueprint §16's clarifying language already covers the broader principle.
 
 ## 16) Pure-function normative shape; streaming as permitted optimization
 Proposed in this checkpoint (normative):
@@ -217,5 +227,10 @@ The following are explicitly deferred and not fixed by this document:
 - concrete weight defaults and `crReward` curve shape,
 - operator-tuneable curve parameters beyond weights,
 - per-unit-position fairness and cross-period scoring.
+
+### v2 follow-on (2026-04-27, this PR)
+- `ScoringConfig` shape grows a required `pointRules: {[(slotType, dateKey)]: number}` field per §11; `pointBalance*` components MUST consume `pointRules` rather than the M2 C4 T2 placeholder of "1 point per call". Driven by `docs/decision_log.md` D-0037 (operator-tuneable scoring config surface — sheet → snapshot → parser → scorer flow).
+- `contractVersion` bumped from `1` to `2` per §2.1; the bump is taken because `pointRules` is a required field (v1-targeted callers that supply only `weights` are non-compliant against v2), matching the selector v1 → v2 precedent (D-0032).
+- §15 (Operator-tuneable weight surface) extended to acknowledge per-day call-point cells flow through the same operator-tuneable surface as component weights; both extract through the snapshot at parser boundary per `docs/parser_normalizer_contract.md` §9 (which now declares `scoringConfig` as a `ParserResult` output, closing the producer-consumer seam OD-0002 / D-0037 surfaced).
 
 This document is a first-pass working draft checkpoint intended to unblock implementation planning without reopening broader architecture scope.
