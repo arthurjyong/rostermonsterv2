@@ -153,11 +153,32 @@ def test_score_result_carries_every_first_release_component() -> None:
     assert result.direction is ScoreDirection.HIGHER_IS_BETTER
 
 
+def test_scoring_config_requires_explicit_point_rules() -> None:
+    """Per Codex P2 fix on PR #82: `pointRules` is a required field with no
+    default. Constructing `ScoringConfig` without explicit `pointRules` MUST
+    raise at construction time so a producer (parser overlay) that forgets
+    to wire pointRules through fails fast rather than silently falling back
+    to 1.0-per-call scoring on the consumer side."""
+    raised = False
+    try:
+        ScoringConfig(weights={c: 0.0 for c in ALL_COMPONENTS})  # no pointRules
+    except TypeError:
+        # Python's dataclass missing-required-arg error.
+        raised = True
+    assert raised, (
+        "ScoringConfig must require pointRules to be specified explicitly "
+        "(no default_factory) per scorer v2 §11 + Codex P2 fix on PR #82"
+    )
+
+
 def test_missing_weight_raises() -> None:
     """Per §11, `weights` MUST cover every first-release component;
     omission is a configuration defect."""
     model = _model()
-    config = ScoringConfig(weights={COMPONENT_UNFILLED_PENALTY: -1.0})
+    config = ScoringConfig(
+        weights={COMPONENT_UNFILLED_PENALTY: -1.0},
+        pointRules={},
+    )
     raised = False
     try:
         score((), model, config)
@@ -180,7 +201,7 @@ def test_wrong_sign_weight_raises_per_scorer_10_and_15() -> None:
     weights_a[COMPONENT_UNFILLED_PENALTY] = +100.0
     raised_a = False
     try:
-        score((), model, ScoringConfig(weights=weights_a))
+        score((), model, ScoringConfig(weights=weights_a, pointRules={}))
     except ValueError:
         raised_a = True
     assert raised_a, "expected ValueError for positive unfilledPenalty weight"
@@ -190,7 +211,7 @@ def test_wrong_sign_weight_raises_per_scorer_10_and_15() -> None:
     weights_b[COMPONENT_CR_REWARD] = -1.0
     raised_b = False
     try:
-        score((), model, ScoringConfig(weights=weights_b))
+        score((), model, ScoringConfig(weights=weights_b, pointRules={}))
     except ValueError:
         raised_b = True
     assert raised_b, "expected ValueError for negative crReward weight"
@@ -200,7 +221,7 @@ def test_wrong_sign_weight_raises_per_scorer_10_and_15() -> None:
     weights_c = ScoringConfig.first_release_defaults().weights.copy()
     weights_c[COMPONENT_UNFILLED_PENALTY] = 0.0
     weights_c[COMPONENT_CR_REWARD] = 0.0
-    score((), model, ScoringConfig(weights=weights_c))  # must not raise
+    score((), model, ScoringConfig(weights=weights_c, pointRules={}))  # must not raise
 
 
 # --- Per-component positive tests ----------------------------------------
@@ -496,7 +517,7 @@ def test_cr_reward_strictly_diminishes_per_doctor() -> None:
     # we measure the curve in isolation.
     weights = {c: 0.0 for c in ALL_COMPONENTS}
     weights[COMPONENT_CR_REWARD] = 5.0
-    config = ScoringConfig(weights=weights)
+    config = ScoringConfig(weights=weights, pointRules={})
 
     rewards: list[float] = []
     for k in range(1, 6):

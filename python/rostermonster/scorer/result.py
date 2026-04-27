@@ -105,7 +105,12 @@ class ScoringConfig:
     """
 
     weights: dict[str, float]
-    pointRules: dict[tuple[str, str], float] = field(default_factory=dict)
+    pointRules: dict[tuple[str, str], float]
+    # `pointRules` is required (no default) per scorer v2 §11. An empty dict
+    # is the legitimate "no operator overrides yet" state, but callers MUST
+    # pass it explicitly so the case where a producer (parser overlay) failed
+    # to wire pointRules through fails fast at construction time rather than
+    # silently degrading to 1.0-per-call scoring (Codex P2 flag on PR #82).
 
     @staticmethod
     def first_release_defaults() -> "ScoringConfig":
