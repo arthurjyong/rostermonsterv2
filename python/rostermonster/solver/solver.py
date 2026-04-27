@@ -1,11 +1,16 @@
 """Pure-function solver entry per `docs/solver_contract.md`.
 
-Public entry: `solve(normalizedModel, seed, fillOrderPolicy, terminationBounds,
-preferenceSeeding) → CandidateSet | UnsatisfiedResult`.
+Public entry: `solve(normalizedModel, *, ruleEngine, seed, terminationBounds,
+preferenceSeeding=None, fillOrderPolicy=..., strategyId=...) → CandidateSet
+| UnsatisfiedResult`.
 
 First-release strategy is `SEEDED_RANDOM_BLIND` (§11.1, §12). The solver is
 scoring-blind end-to-end (§9, §11) — it imports nothing from
 `rostermonster.scorer` and never touches scoring config.
+
+`ruleEngine` is a caller-supplied handle per §9 input #2 — the solver does
+not bind to any single rule-engine implementation, so callers can swap in
+cached/indexed evaluators (or test doubles) behind the same surface.
 
 Determinism (§16): identical inputs produce byte-identical outputs within a
 single implementation on a single platform. Per-candidate seeds are derived
@@ -30,7 +35,7 @@ from rostermonster.solver.result import (
     UnfilledDemandEntry,
     UnsatisfiedResult,
 )
-from rostermonster.solver.strategy import run_seeded_random_blind
+from rostermonster.solver.strategy import RuleEngineFn, run_seeded_random_blind
 
 
 def _per_candidate_seed(rng: Random) -> int:
@@ -43,6 +48,7 @@ def _per_candidate_seed(rng: Random) -> int:
 def solve(
     normalizedModel: NormalizedModel,
     *,
+    ruleEngine: RuleEngineFn,
     seed: int,
     terminationBounds: TerminationBounds,
     preferenceSeeding: PreferenceSeedingConfig | None = None,
@@ -51,6 +57,13 @@ def solve(
 ) -> CandidateSet | UnsatisfiedResult:
     """Run the active solver strategy for `terminationBounds.maxCandidates`
     candidates per `docs/solver_contract.md`.
+
+    `ruleEngine` is a required input per §9 input #2 — a callable
+    `(NormalizedModel, RuleState, AssignmentUnit) → Decision` that adjudicates
+    hard validity of any proposed placement. Callers typically pass
+    `rostermonster.rule_engine.evaluate`, but the solver remains decoupled
+    from any specific implementation so test fixtures (and future
+    cached/indexed implementations) can be substituted at the boundary.
 
     Branch discipline (§10.3): exactly one of `CandidateSet` or
     `UnsatisfiedResult` is returned. `UnsatisfiedResult` is emitted as soon
@@ -91,6 +104,7 @@ def solve(
     for index in range(terminationBounds.maxCandidates):
         candidate_seed = _per_candidate_seed(run_rng)
         outcome = run_seeded_random_blind(
+            ruleEngine,
             normalizedModel,
             candidate_seed,
             cr_floor_x,

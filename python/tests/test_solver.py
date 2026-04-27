@@ -33,6 +33,7 @@ from rostermonster.domain import (  # noqa: E402
     SlotDemand,
     SlotTypeDefinition,
 )
+from rostermonster.rule_engine import evaluate as rule_engine_evaluate  # noqa: E402
 from rostermonster.snapshot import (  # noqa: E402
     DayLocator,
     DoctorLocator,
@@ -142,6 +143,16 @@ def _model(
     )
 
 
+def _solve(model, **kwargs):
+    """Test-suite shim that injects the standard rule-engine handle into
+    every `solve()` call. `ruleEngine` is a required input per solver §9
+    input #2 and addressed in PR #85 round-3 fixes — production callers
+    pass it explicitly; the test suite does the same via this helper to
+    keep individual tests focused on the behavior they exercise."""
+    kwargs.setdefault("ruleEngine", rule_engine_evaluate)
+    return solve(model, **kwargs)
+
+
 def _cr_request(doctor_id: str, day_index: int) -> Request:
     return Request(
         doctorId=doctor_id,
@@ -161,7 +172,7 @@ def test_solve_returns_candidate_set_on_simple_model() -> None:
     """Minimal model with sufficient doctor coverage → CandidateSet, never
     UnsatisfiedResult. `candidates` MUST be non-empty per §10.1."""
     model = _model()
-    result = solve(
+    result = _solve(
         model,
         seed=42,
         terminationBounds=TerminationBounds(maxCandidates=3),
@@ -184,7 +195,7 @@ def test_each_candidate_covers_full_demand() -> None:
     """Each TrialCandidate must carry one `AssignmentUnit` for every demand
     unit (full roster per §10.1)."""
     model = _model()
-    result = solve(
+    result = _solve(
         model,
         seed=7,
         terminationBounds=TerminationBounds(maxCandidates=2),
@@ -202,8 +213,8 @@ def test_byte_identical_under_fixed_inputs() -> None:
     """Per §16: identical inputs MUST produce identical outputs."""
     model = _model()
     bounds = TerminationBounds(maxCandidates=4)
-    r1 = solve(model, seed=12345, terminationBounds=bounds)
-    r2 = solve(model, seed=12345, terminationBounds=bounds)
+    r1 = _solve(model, seed=12345, terminationBounds=bounds)
+    r2 = _solve(model, seed=12345, terminationBounds=bounds)
     assert r1 == r2
 
 
@@ -222,10 +233,11 @@ def test_byte_identical_across_pythonhashseed_values() -> None:
 
     driver = (
         "import sys; sys.path.insert(0, %r);\n"
+        "from rostermonster.rule_engine import evaluate;\n"
         "from rostermonster.solver import solve, TerminationBounds;\n"
         "import test_solver;\n"
         "model = test_solver._model();\n"
-        "result = solve(model, seed=12345, terminationBounds=TerminationBounds(maxCandidates=3));\n"
+        "result = solve(model, ruleEngine=evaluate, seed=12345, terminationBounds=TerminationBounds(maxCandidates=3));\n"
         "for cand in result.candidates:\n"
         "    print(cand.candidateId, [(u.dateKey, u.slotType, u.unitIndex, u.doctorId) for u in cand.assignments]);\n"
     ) % str(ROOT)
@@ -262,8 +274,8 @@ def test_different_seeds_can_produce_different_outputs() -> None:
     should respond to seed variation in non-trivial models)."""
     model = _model()
     bounds = TerminationBounds(maxCandidates=3)
-    r1 = solve(model, seed=1, terminationBounds=bounds)
-    r2 = solve(model, seed=999, terminationBounds=bounds)
+    r1 = _solve(model, seed=1, terminationBounds=bounds)
+    r2 = _solve(model, seed=999, terminationBounds=bounds)
     assert isinstance(r1, CandidateSet)
     assert isinstance(r2, CandidateSet)
     # At least one candidate differs across seeds — not a normative property,
@@ -398,7 +410,7 @@ def test_x_zero_disables_phase_1() -> None:
     a model where every doctor has 0 CRs."""
     model = _model()
     # No requests → median = 0 → Phase 1 no-op.
-    result = solve(
+    result = _solve(
         model,
         seed=42,
         terminationBounds=TerminationBounds(maxCandidates=2),
@@ -418,7 +430,7 @@ def test_phase1_honors_cr_when_floor_high_enough() -> None:
     doctor on a call slot on the CR's date in the emitted candidate."""
     model = _model()
     model = replace(model, requests=(_cr_request("dr_icu", 2),))
-    result = solve(
+    result = _solve(
         model,
         seed=11,
         terminationBounds=TerminationBounds(maxCandidates=1),
@@ -451,7 +463,7 @@ def test_solver_emits_no_unfilled_units_in_normal_run() -> None:
     """On a feasibly-constrained model, Phase 2 fills all demand and no
     `doctorId=None` AssignmentUnits leak into emitted candidates."""
     model = _model()
-    result = solve(
+    result = _solve(
         model,
         seed=99,
         terminationBounds=TerminationBounds(maxCandidates=2),
@@ -474,7 +486,7 @@ def test_unsatisfied_result_when_demand_cannot_be_filled() -> None:
     # 1 doctor (ICU_ONLY) but model has both MICU_CALL and MHD_CALL demand;
     # no doctor is eligible for MHD_CALL → guaranteed unfillable.
     model = _model(doctors=1, standby=False)
-    result = solve(
+    result = _solve(
         model,
         seed=42,
         terminationBounds=TerminationBounds(maxCandidates=3),
@@ -493,6 +505,93 @@ def test_unsatisfied_result_when_demand_cannot_be_filled() -> None:
 # --- Fixed assignments are first-class -----------------------------------
 
 
+def test_unmatched_fixed_assignment_raises() -> None:
+    """Per Codex P1 round-3 finding on PR #85: a `FixedAssignment` whose
+    `(slotType, dateKey)` has no available demand unit is a parser-stage
+    admission defect that the solver MUST surface — silent drop would
+    omit an operator pin from the emitted CandidateSet, breaking the
+    fixed-assignment preservation guarantee in solver §10.1."""
+    model = _model(days=2)
+    # MICU_CALL on day 0 has requiredCount=1; pin two doctors there → the
+    # second cannot be seated and is an over-fixed admission defect.
+    fixed_a = FixedAssignment(
+        dateKey="2026-05-01",
+        slotType="MICU_CALL",
+        doctorId="dr_icu",
+        provenance=PrefilledAssignmentLocator(
+            surfaceId="MICU", rowOffset=0, dayIndex=0
+        ),
+    )
+    fixed_b = FixedAssignment(
+        dateKey="2026-05-01",
+        slotType="MICU_CALL",
+        doctorId="dr_both",
+        provenance=PrefilledAssignmentLocator(
+            surfaceId="MICU", rowOffset=1, dayIndex=0
+        ),
+    )
+    model = replace(model, fixedAssignments=(fixed_a, fixed_b))
+    raised = False
+    err_msg = ""
+    try:
+        _solve(
+            model,
+            seed=1,
+            terminationBounds=TerminationBounds(maxCandidates=1),
+        )
+    except ValueError as exc:
+        raised = True
+        err_msg = str(exc)
+    assert raised, (
+        "solver silently dropped an unmatchable FixedAssignment instead of "
+        "raising; fixed-assignment preservation per solver §10.1 broken"
+    )
+    assert "2026-05-01" in err_msg and "MICU_CALL" in err_msg, (
+        f"error message must name the offending fixed-assignment slot for "
+        f"diagnostic clarity; got {err_msg!r}"
+    )
+
+
+def test_solver_consumes_supplied_rule_engine_handle() -> None:
+    """Per Codex P2 round-3 finding on PR #85 + solver §9 input #2: the
+    `ruleEngine` is an explicit input to `solve()`. A caller-supplied
+    handle MUST be the only authority the solver consults for hard
+    validity. Substituting a stub that always rejects MUST cause the
+    solver to fail to fill any demand and return `UnsatisfiedResult`,
+    proving the input is honored end-to-end (and that no internal
+    rule-engine import shortcut bypasses the supplied handle)."""
+    from rostermonster.rule_engine import Decision, ViolationReason
+
+    def reject_all(model_arg, state_arg, proposed_arg) -> Decision:
+        return Decision.reject(
+            (
+                ViolationReason(
+                    code="BASELINE_ELIGIBILITY_FAIL",
+                    context={"reason": "stub-reject-all"},
+                ),
+            )
+        )
+
+    model = _model()
+    result = solve(
+        model,
+        ruleEngine=reject_all,
+        seed=42,
+        terminationBounds=TerminationBounds(maxCandidates=1),
+    )
+    assert isinstance(result, UnsatisfiedResult), (
+        "solver bypassed the caller-supplied rule-engine handle — got "
+        f"{type(result).__name__} instead of UnsatisfiedResult under a "
+        f"reject-everything stub"
+    )
+    # Sanity: every unfilled unit is reported.
+    assert result.unfilledDemand
+    # And the stub's rejection reason is the only thing tallied.
+    assert result.diagnostics.ruleEngineRejectionsByReason == {
+        "BASELINE_ELIGIBILITY_FAIL": result.diagnostics.placementAttempts
+    }
+
+
 def test_fixed_assignment_is_carried_into_candidate_assignments() -> None:
     """Per `docs/domain_model.md` §10.1 + solver §10.1: TrialCandidate
     assignments cover the full roster INCLUDING FixedAssignment-derived
@@ -507,7 +606,7 @@ def test_fixed_assignment_is_carried_into_candidate_assignments() -> None:
         ),
     )
     model = replace(model, fixedAssignments=(fixed,))
-    result = solve(
+    result = _solve(
         model,
         seed=1,
         terminationBounds=TerminationBounds(maxCandidates=2),
@@ -534,7 +633,7 @@ def test_diagnostics_records_seed_and_cr_floor() -> None:
     be recorded on `SearchDiagnostics`."""
     model = _model()
     model = replace(model, requests=(_cr_request("dr_icu", 0),))
-    result = solve(
+    result = _solve(
         model,
         seed=2026,
         terminationBounds=TerminationBounds(maxCandidates=1),
@@ -555,7 +654,7 @@ def test_diagnostics_records_rule_engine_rejections() -> None:
     doctor already placed on day k's first slot is rule-rejected when
     considered for day k's second slot under `SAME_DAY_ALREADY_HELD`."""
     model = _model()
-    result = solve(
+    result = _solve(
         model,
         seed=42,
         terminationBounds=TerminationBounds(maxCandidates=1),
@@ -580,7 +679,7 @@ def test_unknown_strategy_id_is_rejected() -> None:
     model = _model()
     raised = False
     try:
-        solve(
+        _solve(
             model,
             seed=1,
             terminationBounds=TerminationBounds(maxCandidates=1),
@@ -597,7 +696,7 @@ def test_unknown_fill_order_policy_is_rejected() -> None:
     model = _model()
     raised = False
     try:
-        solve(
+        _solve(
             model,
             seed=1,
             terminationBounds=TerminationBounds(maxCandidates=1),
@@ -613,7 +712,7 @@ def test_max_candidates_must_be_positive() -> None:
     model = _model()
     raised = False
     try:
-        solve(model, seed=1, terminationBounds=TerminationBounds(maxCandidates=0))
+        _solve(model, seed=1, terminationBounds=TerminationBounds(maxCandidates=0))
     except ValueError:
         raised = True
     assert raised

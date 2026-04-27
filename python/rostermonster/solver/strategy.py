@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from random import Random
+from typing import Callable
 
 from rostermonster.domain import (
     AssignmentUnit,
@@ -29,8 +30,13 @@ from rostermonster.rule_engine import (
     Decision,
     RuleState,
     ViolationReason,
-    evaluate,
 )
+
+# Type alias for the rule-engine handle the strategy consumes per
+# `docs/solver_contract.md` §9 (input #2). Callers supply the handle so the
+# solver remains decoupled from any single rule-engine implementation
+# (Codex P2 finding on PR #85 round 2).
+RuleEngineFn = Callable[[NormalizedModel, RuleState, AssignmentUnit], Decision]
 
 
 # --- Demand-unit bookkeeping -------------------------------------------------
@@ -70,9 +76,16 @@ def _seat_fixed_assignments(
     lowest-indexed available `unitIndex` per `(dateKey, slotType)`. Returns
     `(seated_units, residual_demand)`.
 
-    FixedAssignments without a matching unfilled demand cell are dropped
-    silently here — this is parser-stage admission territory per
-    `docs/parser_normalizer_contract.md` §14, not a solver responsibility.
+    A `FixedAssignment` whose `(dateKey, slotType)` has no available demand
+    unit (`requiredCount` exhausted, `requiredCount=0`, or no demand row at
+    all) is a configuration defect at the parser/normalizer boundary — the
+    parser_normalizer_contract.md §14 admission cases for prefilled
+    assignments are supposed to catch this — but the solver MUST surface it
+    rather than silently dropping the operator pin (D-0029 + solver
+    §10.1's "TrialCandidate carries the full roster INCLUDING fixed
+    assignments"). Silent drop would emit a `CandidateSet` that omits an
+    operator-pinned assignment, breaking the fixed-assignment preservation
+    guarantee.
     """
     by_slot_day: dict[tuple[str, str], list[_DemandUnit]] = defaultdict(list)
     for unit in demand:
@@ -93,7 +106,17 @@ def _seat_fixed_assignments(
             None,
         )
         if target is None:
-            continue
+            raise ValueError(
+                f"FixedAssignment for ({fixed.dateKey}, {fixed.slotType}, "
+                f"doctor={fixed.doctorId!r}) has no available demand unit — "
+                f"either the (slotType, dateKey) row is missing, "
+                f"`requiredCount` is 0, or earlier fixed assignments have "
+                f"already exhausted the available units. Solver cannot seat "
+                f"this fixed assignment without dropping the operator pin "
+                f"(violates docs/solver_contract.md §10.1 fixed-assignment "
+                f"preservation). This is a parser-stage admission defect "
+                f"(parser_normalizer_contract.md §14)."
+            )
         consumed.add((target.dateKey, target.slotType, target.unitIndex))
         seated.append(
             AssignmentUnit(
@@ -157,15 +180,18 @@ class _RejectionTally:
 
 
 def _try_place(
+    rule_engine: RuleEngineFn,
     model: NormalizedModel,
     state: RuleState,
     proposed: AssignmentUnit,
     tally: _RejectionTally,
 ) -> Decision:
     """Single-call rule-engine adjudication; rejections are tallied for
-    diagnostics. Every call counts as one placement attempt."""
+    diagnostics. Every call counts as one placement attempt. `rule_engine`
+    is the caller-supplied handle per solver §9 input #2 — the strategy
+    does NOT import a concrete rule-engine implementation."""
     tally.attempts += 1
-    decision = evaluate(model, state, proposed)
+    decision = rule_engine(model, state, proposed)
     if not decision.valid:
         tally.record(decision.reasons)
     return decision
@@ -185,6 +211,7 @@ def _doctor_cr_requests(model: NormalizedModel, doctor_id: str) -> list[Request]
 
 
 def _phase1_seed_cr(
+    rule_engine: RuleEngineFn,
     model: NormalizedModel,
     cr_floor_x: int,
     seated: list[AssignmentUnit],
@@ -246,7 +273,11 @@ def _phase1_seed_cr(
                     doctorId=doctor_id,
                 )
                 decision = _try_place(
-                    model, RuleState(assignments=tuple(state_units)), proposed, tally
+                    rule_engine,
+                    model,
+                    RuleState(assignments=tuple(state_units)),
+                    proposed,
+                    tally,
                 )
                 if decision.valid:
                     state_units.append(proposed)
@@ -263,6 +294,7 @@ def _phase1_seed_cr(
 
 
 def _phase2_fill(
+    rule_engine: RuleEngineFn,
     model: NormalizedModel,
     seated: list[AssignmentUnit],
     residual: list[_DemandUnit],
@@ -306,7 +338,7 @@ def _phase2_fill(
                     unitIndex=unit.unitIndex,
                     doctorId=doc_id,
                 )
-                decision = _try_place(model, current_state, proposed, tally)
+                decision = _try_place(rule_engine, model, current_state, proposed, tally)
                 if decision.valid:
                     valid.append(doc_id)
             scored.append((len(valid), unit, valid))
@@ -359,11 +391,15 @@ class _StrategyOutcome:
 
 
 def run_seeded_random_blind(
+    rule_engine: RuleEngineFn,
     model: NormalizedModel,
     seed: int,
     cr_floor_x: int,
 ) -> _StrategyOutcome:
     """One candidate construction under `SEEDED_RANDOM_BLIND` per §12.
+
+    `rule_engine` is the caller-supplied rule-engine handle per solver §9
+    input #2 — the solver does not bind to any single implementation.
 
     `seed` is the per-candidate seed (not the run-level seed) — the solver
     entry derives per-candidate seeds from the caller's run seed plus the
@@ -382,9 +418,11 @@ def run_seeded_random_blind(
     seated, residual = _seat_fixed_assignments(model, demand)
 
     state, residual = _phase1_seed_cr(
-        model, cr_floor_x, seated, residual, rng, tally
+        rule_engine, model, cr_floor_x, seated, residual, rng, tally
     )
-    state, unfillable = _phase2_fill(model, state, residual, rng, tally)
+    state, unfillable = _phase2_fill(
+        rule_engine, model, state, residual, rng, tally
+    )
 
     return _StrategyOutcome(
         assignments=tuple(state),

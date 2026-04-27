@@ -25,6 +25,7 @@ from rostermonster.solver.result import (
     UnsatisfiedResult,
 )
 from rostermonster.solver.solver import solve
+from rostermonster.solver.strategy import RuleEngineFn
 
 __all__ = [
     "solve",
@@ -38,6 +39,7 @@ __all__ = [
     "CrFloorMode",
     "PreferenceSeedingConfig",
     "TerminationBounds",
+    "RuleEngineFn",
     "STRATEGY_SEEDED_RANDOM_BLIND",
     "FILL_ORDER_POLICY_MOST_CONSTRAINED_FIRST",
 ]
