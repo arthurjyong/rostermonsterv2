@@ -86,11 +86,21 @@ def solve(
             f"set is exactly {{ {FILL_ORDER_POLICY_MOST_CONSTRAINED_FIRST!r} }} "
             f"per docs/solver_contract.md §12.3"
         )
-    if terminationBounds.maxCandidates <= 0:
+    max_candidates = terminationBounds.maxCandidates
+    # `bool` is a subclass of `int` in Python; reject it explicitly so
+    # `True`/`False` don't slip through as 1/0 — the §15 contract requires a
+    # positive integer, and a boolean configuration value is almost
+    # certainly a caller-side bug. Same discipline as `crFloor.manualValue`.
+    if isinstance(max_candidates, bool) or not isinstance(max_candidates, int):
         raise ValueError(
             f"terminationBounds.maxCandidates must be a positive integer "
             f"per docs/solver_contract.md §15; got "
-            f"{terminationBounds.maxCandidates!r}"
+            f"{type(max_candidates).__name__}={max_candidates!r}"
+        )
+    if max_candidates <= 0:
+        raise ValueError(
+            f"terminationBounds.maxCandidates must be a positive integer "
+            f"per docs/solver_contract.md §15; got {max_candidates!r}"
         )
 
     seeding = preferenceSeeding if preferenceSeeding is not None else PreferenceSeedingConfig()
@@ -160,7 +170,7 @@ def solve(
 
         candidates.append(
             TrialCandidate(
-                candidateId=f"c{index + 1:04d}",
+                candidateId=index + 1,
                 assignments=outcome.assignments,
             )
         )

@@ -181,8 +181,10 @@ def test_solve_returns_candidate_set_on_simple_model() -> None:
     assert len(result.candidates) == 3
     for cand in result.candidates:
         assert cand.assignments  # non-empty
-        # candidateId pattern.
-        assert cand.candidateId.startswith("c") and len(cand.candidateId) == 5
+    # candidateId is a 1-indexed run-monotonic integer per
+    # docs/selector_contract.md §16. Dense, no gaps, emission-order stable.
+    assert [cand.candidateId for cand in result.candidates] == [1, 2, 3]
+    assert all(isinstance(cand.candidateId, int) for cand in result.candidates)
     # Diagnostics shape.
     assert result.diagnostics.strategyId == "SEEDED_RANDOM_BLIND"
     assert result.diagnostics.fillOrderPolicy == "MOST_CONSTRAINED_FIRST"
@@ -716,6 +718,30 @@ def test_max_candidates_must_be_positive() -> None:
     except ValueError:
         raised = True
     assert raised
+
+
+def test_max_candidates_rejects_non_integer() -> None:
+    """Per §15 + Codex P2 round-3 finding on PR #85: `maxCandidates` MUST
+    be a positive INTEGER. Floats and bools (which are int subclasses in
+    Python) and strings are caller-side configuration bugs that should
+    fail fast at the boundary rather than mishandling silently
+    (`True` accepted as `1`, `1.5` failing later with a TypeError, etc.)."""
+    model = _model()
+    for bad_value in (1.5, 0.0, True, False, "2", "3.0"):
+        raised = False
+        try:
+            _solve(
+                model,
+                seed=1,
+                # Bypass the dataclass type hint to test runtime rejection.
+                terminationBounds=TerminationBounds(maxCandidates=bad_value),  # type: ignore[arg-type]
+            )
+        except ValueError:
+            raised = True
+        assert raised, (
+            f"_solve accepted non-integer maxCandidates {bad_value!r} "
+            f"(type {type(bad_value).__name__}); should fail per §15"
+        )
 
 
 # --- Scoring-blind property (architectural invariant) --------------------

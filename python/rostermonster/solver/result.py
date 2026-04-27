@@ -105,14 +105,17 @@ class TrialCandidate:
     downstream. The contract forbids the solver from populating any score
     field.
 
-    `candidateId` is a stable per-run identifier: `f"c{index:04d}"` where
-    `index` is the emit order under the run's seed (1-indexed for
-    operator-friendliness; `c0001` reads better than `c0000`). Used by the
-    selector for the `(runId, candidateId)` traceability anchor per
-    `docs/selector_contract.md`.
+    `candidateId` is a run-monotonic integer scoped to the run, 1-indexed in
+    solver-emission order per `docs/selector_contract.md` §16: candidate `1`
+    is the first emitted, candidate `N` is the last; values are dense (no
+    gaps) and stable under repeated invocations on identical inputs. The
+    integer form (vs. a zero-padded string like `"c0001"`) matches the
+    selector's `candidateId` ordering rule (§16) and avoids lexical-vs-
+    numeric ordering surprises once IDs exceed four digits (e.g. `c10000`
+    sorts lexically before `c9999` as strings).
     """
 
-    candidateId: str
+    candidateId: int
     assignments: tuple[AssignmentUnit, ...]
 
 
