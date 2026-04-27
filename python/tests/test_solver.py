@@ -720,6 +720,43 @@ def test_max_candidates_must_be_positive() -> None:
     assert raised
 
 
+def test_seed_rejects_non_integer_or_out_of_range() -> None:
+    """Per §9 input #3 + Codex P2 round-4 finding on PR #85: `seed` MUST
+    be a 64-bit signed integer. Python's `random.Random` accepts any
+    hashable seed (str, float, bool, arbitrary-width int) and silently
+    produces aliased/unexpected RNG streams; the solver MUST guard at the
+    boundary so contract-invalid inputs fail fast."""
+    model = _model()
+    bounds = TerminationBounds(maxCandidates=1)
+    bad_inputs: list = [
+        1.5,
+        0.0,
+        True,
+        False,
+        "42",
+        2**63,         # one past max signed int64
+        -(2**63) - 1,  # one before min signed int64
+    ]
+    for bad in bad_inputs:
+        raised = False
+        try:
+            _solve(
+                model,
+                seed=bad,  # type: ignore[arg-type]
+                terminationBounds=bounds,
+            )
+        except ValueError:
+            raised = True
+        assert raised, (
+            f"_solve accepted invalid seed {bad!r} "
+            f"(type {type(bad).__name__}); should fail per §9"
+        )
+
+    # Boundary values MUST be accepted (signed int64 endpoints).
+    _solve(model, seed=2**63 - 1, terminationBounds=bounds)
+    _solve(model, seed=-(2**63), terminationBounds=bounds)
+
+
 def test_max_candidates_rejects_non_integer() -> None:
     """Per §15 + Codex P2 round-3 finding on PR #85: `maxCandidates` MUST
     be a positive INTEGER. Floats and bools (which are int subclasses in

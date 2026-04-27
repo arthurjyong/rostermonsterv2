@@ -37,6 +37,10 @@ from rostermonster.solver.result import (
 )
 from rostermonster.solver.strategy import RuleEngineFn, run_seeded_random_blind
 
+# 64-bit signed integer bounds per `docs/solver_contract.md` §9 input #3.
+_INT64_MIN = -(2**63)
+_INT64_MAX = 2**63 - 1
+
 
 def _per_candidate_seed(rng: Random) -> int:
     """Derive one per-candidate seed from the run-level RNG. Using `getrandbits`
@@ -101,6 +105,24 @@ def solve(
         raise ValueError(
             f"terminationBounds.maxCandidates must be a positive integer "
             f"per docs/solver_contract.md §15; got {max_candidates!r}"
+        )
+
+    # `seed` is a 64-bit signed integer per §9. `random.Random` itself
+    # accepts non-int and arbitrary-width inputs, so contract-invalid inputs
+    # silently produce unexpected RNG streams unless we guard at the
+    # boundary. Same isinstance-with-bool-rejection discipline as
+    # `crFloor.manualValue` and `terminationBounds.maxCandidates`.
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError(
+            f"seed must be a 64-bit signed integer per "
+            f"docs/solver_contract.md §9; got "
+            f"{type(seed).__name__}={seed!r}"
+        )
+    if not (_INT64_MIN <= seed <= _INT64_MAX):
+        raise ValueError(
+            f"seed must fit in a 64-bit signed integer per "
+            f"docs/solver_contract.md §9 "
+            f"({_INT64_MIN} <= seed <= {_INT64_MAX}); got {seed!r}"
         )
 
     seeding = preferenceSeeding if preferenceSeeding is not None else PreferenceSeedingConfig()
