@@ -270,6 +270,28 @@ def test_byte_identical_across_pythonhashseed_values() -> None:
     )
 
 
+def test_negated_seed_produces_distinct_output() -> None:
+    """Per Codex P2 round-5 finding on PR #85: CPython's `Random.seed(int)`
+    normalizes via `abs(...)`, so `solve(seed=k)` and `solve(seed=-k)` would
+    drive the same RNG stream and emit identical rosters even though §9
+    accepts the full signed 64-bit range. The fix masks the signed seed into
+    an unsigned 64-bit bit pattern before RNG init, restoring the full
+    entropy of the contract-declared input space."""
+    model = _model()
+    bounds = TerminationBounds(maxCandidates=2)
+    r_pos = _solve(model, seed=12345, terminationBounds=bounds)
+    r_neg = _solve(model, seed=-12345, terminationBounds=bounds)
+    assert isinstance(r_pos, CandidateSet)
+    assert isinstance(r_neg, CandidateSet)
+    assert tuple(c.assignments for c in r_pos.candidates) != tuple(
+        c.assignments for c in r_neg.candidates
+    ), (
+        "solve(seed=12345) and solve(seed=-12345) emitted identical rosters "
+        "— signed-seed RNG aliasing is back; signed→unsigned mask was "
+        "removed or bypassed"
+    )
+
+
 def test_different_seeds_can_produce_different_outputs() -> None:
     """Determinism is per-seed; different seeds may produce different rosters
     (not strictly required by the contract, but a healthy implementation

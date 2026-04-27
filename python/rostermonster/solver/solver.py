@@ -40,6 +40,10 @@ from rostermonster.solver.strategy import RuleEngineFn, run_seeded_random_blind
 # 64-bit signed integer bounds per `docs/solver_contract.md` §9 input #3.
 _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
+# Mask used to fold the signed seed into a unique unsigned 64-bit bit
+# pattern before initializing `Random()`. CPython's `Random.seed(int)`
+# normalizes via `abs(...)`, which would otherwise alias `seed`/`-seed`.
+_UINT64_MASK = (1 << 64) - 1
 
 
 def _per_candidate_seed(rng: Random) -> int:
@@ -128,7 +132,13 @@ def solve(
     seeding = preferenceSeeding if preferenceSeeding is not None else PreferenceSeedingConfig()
     cr_floor_x = compute_cr_floor(normalizedModel, seeding.crFloor)
 
-    run_rng = Random(seed)
+    # CPython's `Random.seed(int)` uses `abs(seed)`, which collapses every
+    # `seed`/`-seed` pair into the same RNG stream — so contract-valid
+    # inputs `1` and `-1` would generate identical candidate trajectories
+    # despite the §9 surface accepting the full signed 64-bit range. Mask
+    # the signed value into its unsigned 64-bit bit pattern so the full
+    # input domain produces distinct streams.
+    run_rng = Random(seed & _UINT64_MASK)
     candidates: list[TrialCandidate] = []
     aggregate_attempts = 0
     aggregate_rejections: dict[str, int] = {}
