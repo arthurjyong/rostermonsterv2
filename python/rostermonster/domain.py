@@ -225,6 +225,28 @@ class DailyEffectState:
 
 
 @dataclass(frozen=True)
+class AssignmentUnit:
+    """Smallest retained assignment atom (domain_model.md §10.2).
+
+    `(dateKey, slotType, unitIndex, doctorId | None)`. `unitIndex` preserves
+    multiplicity when `requiredCount > 1` and supports multiple explicit
+    unfilled units; `doctorId = None` represents an explicit unfilled unit.
+
+    Per `docs/decision_log.md` D-0029: `AssignmentUnit` entries that share
+    `(dateKey, slotType)` are equivalent for doctor-admissibility hard rules
+    (`BASELINE_ELIGIBILITY_FAIL`, `SAME_DAY_HARD_BLOCK`, `SAME_DAY_ALREADY_HELD`,
+    `BACK_TO_BACK_CALL`) and for baseline workload weight, but the per-unit
+    occupancy rule `UNIT_ALREADY_FILLED` correctly branches on `unitIndex` by
+    construction.
+    """
+
+    dateKey: str
+    slotType: str
+    unitIndex: int
+    doctorId: str | None
+
+
+@dataclass(frozen=True)
 class NormalizedModel:
     """Top-level normalized model emitted on `CONSUMABLE` parser results.
 
