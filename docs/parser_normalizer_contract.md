@@ -111,21 +111,22 @@ Boundary rule:
 - parser may return `NON_CONSUMABLE` for malformed top-level input.
 
 ## 9) Parser outputs
-### Proposed in this checkpoint (first-release decision)
+### Proposed in this checkpoint (first-release decision; updated per `docs/decision_log.md` D-0037 to add `scoringConfig` output)
 Parser handoff uses one top-level object:
 - `ParserResult`
 
 Proposed top-level components:
 - `normalizedModel`
+- `scoringConfig`
 - `issues`
 - `consumability`
 
 Proposed first-release admission rule:
-- `consumability = CONSUMABLE`: `normalizedModel` is present and downstream-consumable.
-- `consumability = NON_CONSUMABLE`: `normalizedModel = null`; downstream receives no partial normalized handoff.
+- `consumability = CONSUMABLE`: `normalizedModel` is present and downstream-consumable; `scoringConfig` is present and carries the parser's overlay of operator-edited sheet values onto template defaults (sheet wins where both are present and parseable; template defaults backstop where the sheet cell is absent or malformed). `scoringConfig` shape matches `docs/scorer_contract.md` v2 §11 — `weights` (required), `pointRules` (required), `curves` (optional).
+- `consumability = NON_CONSUMABLE`: `normalizedModel = null` AND `scoringConfig = null`; downstream receives no partial normalized handoff and no partial scoring config. The same admission discipline applies to both (an operator-edited sheet whose snapshot fails admission cannot be trusted for scoring policy either).
 - for `NON_CONSUMABLE` request parses, any partially recognized subset detail may appear only in `ParserResult.issues[*].context` and must not be emitted as a normalized side payload.
 
-This `ParserResult` shape is adopted in this checkpoint and is not claimed as previously repo-settled.
+This `ParserResult` shape is adopted in this checkpoint and is not claimed as previously repo-settled. The `scoringConfig` field was added per `docs/decision_log.md` D-0037 to close the producer-consumer seam between this contract and `docs/scorer_contract.md` §15 — the scorer contract had declared since M2 C1 closure that operator-tuneable weights flow from the parser boundary as `scoringConfig`, but this contract had not previously declared `scoringConfig` as a parser output. The bidirectional contract-audit rule added to `docs/delivery_plan.md` §14 closes the audit-coverage gap that allowed this seam to remain open across multiple checkpoints.
 
 ## 10) Issue schema vs issue channel vs admission decision
 ### Repo-settled anchor
@@ -190,6 +191,12 @@ Implementation note (still compatible with this contract): internal code may mer
 - unresolved, invalid, or missing upstream eligibility declarations needed for deterministic instantiation (`eligibility[]` as `slotId` + `eligibleGroups`),
 - normalized model assembly cannot produce complete internally consistent downstream input,
 - parser cannot deterministically derive downstream-governing request facts under the declared request grammar.
+
+Scoring-config parser-stage non-consumability cases (added under `docs/decision_log.md` D-0037):
+- mis-signed operator-edited component weight (a penalty component supplied as positive, or a reward component supplied as negative — sign orientation is a property of the component, not the weight, per `docs/scorer_contract.md` §10 / §15),
+- malformed or non-numeric operator-edited cell value where `scoringConfigRecords` carries a populated cell (parser must not silently substitute a default; an unparseable cell is an admission-blocking defect, not a fall-back-to-default condition).
+
+For populated `scoringConfigRecords` cells, parser must apply the same "do not silently ignore meaningful cell content" discipline as for prefilled assignments: parser must either deterministically interpret the value (sheet wins per the overlay rule in §9) or emit parser-stage issues and return `NON_CONSUMABLE`.
 
 Prefilled-assignment parser-stage non-consumability cases (checkpoint 3):
 - prefilled doctor name not found in doctor-entry section names,

@@ -63,6 +63,7 @@ Use one top-level snapshot object with consistent naming style:
 - `dayRecords`
 - `requestRecords`
 - `prefilledAssignmentRecords`
+- `scoringConfigRecords` *(added under `docs/decision_log.md` D-0037)*
 
 Naming style should remain consistent as `...Records` collections.
 
@@ -102,6 +103,8 @@ Extraction summary is structural only (not a reporting object), and explicitly i
 - `dayRecordCount`
 - `requestRecordCount`
 - `prefilledAssignmentRecordCount`
+- `componentWeightRecordCount` *(added under `docs/decision_log.md` D-0037)*
+- `callPointRecordCount` *(added under D-0037)*
 
 ## 7. Doctor record contract (first-release scope)
 Doctor records stay raw and structural, not semantic.
@@ -202,6 +205,14 @@ Use stricter typed shape by record kind, with consistent naming (`doctorIndexInS
   - `surfaceKey = outputMapping`
   - `path = { surfaceId, rowOffset, dayIndex }`
 
+- **Component-weight record locator** *(added under `docs/decision_log.md` D-0037)*
+  - `surfaceKey = scorerConfigCells`
+  - `path = { componentId }`
+
+- **Call-point record locator** *(added under `docs/decision_log.md` D-0037)*
+  - `surfaceKey = callPointCells`
+  - `path = { callPointRowKey, dayIndex }`
+
 Notes:
 - `sectionKey` refers to template-declared logical section identity, not monthly operator input.
 - `sectionKey` is a logical mapping key for traceability and is not normalized doctor-group meaning by itself.
@@ -214,6 +225,8 @@ Notes:
   - `dayIndex` unique within `dayRecords`
   - (`sourceDoctorKey`, `dayIndex`) unique within `requestRecords`
   - (`surfaceId`, `rowOffset`, `dayIndex`) unique within `prefilledAssignmentRecords`
+  - `componentId` unique within `scoringConfigRecords.componentWeightRecords`
+  - (`callPointRowKey`, `dayIndex`) unique within `scoringConfigRecords.callPointRecords`
 
 ## 11. Prefilled assignment record contract (checkpoint 2 raw snapshot scope)
 `prefilledAssignmentRecords` preserve operator-populated lower roster/output-shell cell contents as raw input facts seen in declared parse surfaces.
@@ -248,6 +261,45 @@ Prefilled assignment records must not include:
 - fixed/locked assignment meaning
 - legality judgments
 - solver/scorer/writeback semantics
+
+## 11A. Scoring-config record contract (added under `docs/decision_log.md` D-0037)
+`scoringConfigRecords` carries the operator-edited cell values that drive the scorer's `ScoringConfig` per `docs/scorer_contract.md` v2 §11. Records are raw snapshot facts — no parser-stage interpretation at snapshot layer. Two record kinds in first release:
+
+### `componentWeightRecords[]`
+One record per first-release component identifier (per `docs/domain_model.md` §11.2) carrying the operator-edited weight value from the launcher-generated Scorer Config tab declared in `docs/sheet_generation_contract.md`.
+
+Mandatory `componentWeightRecord` fields:
+- `componentId` — one of the nine first-release component identifiers (`unfilledPenalty`, `pointBalanceWithinSection`, `pointBalanceGlobal`, `spacingPenalty`, `preLeavePenalty`, `crReward`, `dualEligibleIcuBonus`, `standbyAdjacencyPenalty`, `standbyCountFairnessPenalty`),
+- `rawValue` — exact raw cell text from the Scorer Config tab (no trimming or normalization at snapshot layer; parser interprets per `docs/parser_normalizer_contract.md` §9 / §14),
+- `sourceLocator` (see §10),
+- `physicalSourceRef` (see §12).
+
+`componentWeightRecord` rules:
+- one record per component identifier when the operator has any value in the corresponding cell (blank cells produce records with empty `rawValue`, matching `requestRecords` blank-cell discipline per §9),
+- records must be uniquely identifiable by `componentId`,
+- records do not carry sign-orientation classification (parser knows from `docs/scorer_contract.md` §10 / §15 which components are penalties vs rewards).
+
+### `callPointRecords[]`
+One record per `(callPointRowKey, dayIndex)` pair carrying the operator-editable per-day call-point cell value from the request-entry sheet. The row identities are template-declared per `docs/template_artifact_contract.md` §9 (`pointRows.rowKey`); for ICU/HD first release these are `MICU_CALL_POINT` and `MHD_CALL_POINT`.
+
+Mandatory `callPointRecord` fields:
+- `callPointRowKey` — template-declared row key (e.g., `MICU_CALL_POINT`),
+- `dayIndex` — column-axis day index (links to `dayRecords` by `dayIndex`),
+- `rawValue` — exact raw cell text (no trimming or normalization at snapshot layer),
+- `sourceLocator` (see §10),
+- `physicalSourceRef` (see §12).
+
+`callPointRecord` rules:
+- include one record for each template-declared `(pointRowKey, dayIndex)` pair across the period (blank cells emit records with empty `rawValue`, same discipline as `requestRecords` per §9),
+- records must be uniquely identifiable by `(callPointRowKey, dayIndex)`,
+- records link to `dayRecords` by `dayIndex` and to template-declared point rows by `callPointRowKey`.
+
+### Scoring-config record forbidden content
+Scoring-config records must not include:
+- parsed numeric values,
+- sign-orientation classification (penalty vs reward — that's parser-stage knowledge),
+- normalized `ScoringConfig` shapes (parser builds those during overlay onto template defaults),
+- legality / direction-guard validation outcomes.
 
 ## 12. `physicalSourceRef` contract (settled direction)
 `physicalSourceRef` is the concrete sheet-facing extraction trace and remains separate from `sourceLocator`.
