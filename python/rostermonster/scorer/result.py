@@ -77,17 +77,27 @@ class ScoreDirection(str, Enum):
 
 @dataclass(frozen=True)
 class ScoringConfig:
-    """Scoring configuration carrying component weights per scorer §11.
+    """Scoring configuration carrying component weights and per-day call-point
+    weights per scorer v2 §11 (`docs/scorer_contract.md` v2; bumped from v1
+    under `docs/decision_log.md` D-0037).
 
     `weights` MUST include an entry for every first-release component
     identifier per §11; missing entries are a configuration defect.
 
+    `pointRules` carries per-`(slotType, dateKey)` call-point weights derived
+    from the operator-facing per-day call-point cells declared in
+    `docs/template_artifact_contract.md` §9 `pointRows`. `pointBalance*`
+    components MUST consume `pointRules` rather than a "1 point per call"
+    placeholder. Missing `(slotType, dateKey)` entries fall back to `1.0`
+    per-call so the scorer remains sign-correct under partial overlay (the
+    parser's overlay path is sheet-wins / template-defaults-backstop per
+    `docs/parser_normalizer_contract.md` §9; an empty `pointRules` dict
+    represents "no operator overrides yet" and is contract-compliant).
+
     First-release `crReward` curve is fixed at the harmonic shape (kth
     honored CR per doctor contributes `weights[crReward] / k`) — strict-
     monotonic-decrease holds per §12. Operator-tuneable curve parameters
-    are explicitly deferred per scorer §19 to FW-0007; first release
-    surfaces only the per-component weights as the operator-tuneable
-    surface per §15.
+    are explicitly deferred per scorer §19 to FW-0007.
 
     First-release default weights are sign-correct (rewards positive,
     penalties negative) placeholders; the v1 reference-pass tuning lands
@@ -95,12 +105,20 @@ class ScoringConfig:
     """
 
     weights: dict[str, float]
+    pointRules: dict[tuple[str, str], float]
+    # `pointRules` is required (no default) per scorer v2 §11. An empty dict
+    # is the legitimate "no operator overrides yet" state, but callers MUST
+    # pass it explicitly so the case where a producer (parser overlay) failed
+    # to wire pointRules through fails fast at construction time rather than
+    # silently degrading to 1.0-per-call scoring (Codex P2 flag on PR #82).
 
     @staticmethod
     def first_release_defaults() -> "ScoringConfig":
         """First-release placeholder defaults. Sign-correct (rewards positive,
         penalties negative) and magnitude-reasonable for proving the pipeline
-        works end-to-end. v1 reference-pass tuning lands per FW-0014."""
+        works end-to-end. `pointRules` defaults to empty (no operator
+        overrides; pointBalance falls back to 1.0 per-call). v1 magnitude
+        tuning lands per FW-0014."""
         return ScoringConfig(
             weights={
                 COMPONENT_UNFILLED_PENALTY: -100.0,
@@ -113,6 +131,7 @@ class ScoringConfig:
                 COMPONENT_STANDBY_ADJACENCY_PENALTY: -3.0,
                 COMPONENT_STANDBY_COUNT_FAIRNESS_PENALTY: -1.0,
             },
+            pointRules={},
         )
 
 
