@@ -7,16 +7,15 @@ surface, local-first Python for compute-heavy core).
 ## Status
 
 Active milestone: **M2** (`Minimal local compute pipeline`).
-M2 C3 (`Parser/normalizer implementation closure`) **closed 2026-04-27** —
-all four tasks Done (T1 parser side, T2 normalizer side, T3 real-data
-hand-test against the ICU/HD May 2026 dev-copy, T4 delivery-plan closure
-transition). 24/24 tests pass.
+Active checkpoint: **M2 C4** (`Minimal rule/scorer/solver integration`) —
+implements the three remaining compute-pipeline stages (rule engine,
+scorer, solver) against the now-shipped parser/normalizer
+(`rostermonster.parser`). Selector implementation deferred to a later
+checkpoint paired with retention/output mechanics.
 
-Next M2 checkpoint to be scoped separately. Candidates per
-`docs/delivery_plan.md` §5 / §7 ordering: minimal rule/scorer/solver
-integration, local run artifact basics, snapshot-extraction Apps Script
-implementation (per `docs/decision_log.md` D-0036, pinned to late-M2
-before M3 activation).
+Task progress: T1 (rule engine) → T2 (scorer) → T3 (solver) →
+T4 (integration smoke test) → T5 (delivery-plan closure).
+M2 C3 closed 2026-04-27 with 24/24 tests passing.
 
 Subsequent M2 checkpoints will extend this package with rule engine, scorer,
 solver, and selector implementations against the now-settled contract
