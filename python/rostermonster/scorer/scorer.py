@@ -72,6 +72,12 @@ def score(
        `unfilledPenalty` weight would make unfilled assignments INCREASE
        totalScore — so we reject at config validation rather than silently
        allowing the inversion.
+    3. §11 (D-0038) — `scoringConfig.pointRules` covers the full cross-product
+       of `(call-slot slotType, dateKey)` from the model. Missing entries are
+       a producer-side defect (parser overlay must supply complete coverage
+       per `docs/parser_normalizer_contract.md` §9). Validation surfaces all
+       missing keys in one error rather than failing per-key inside
+       `pointBalance*` components.
 
     Then invokes each component in canonical order and sums the signed
     contributions into `totalScore` via `ScoreResult.from_components`,
@@ -103,6 +109,22 @@ def score(
             "scoringConfig.weights violates per-component sign orientation "
             "per docs/scorer_contract.md §10 / §15: "
             + "; ".join(sign_errors)
+        )
+
+    expected_point_rule_keys = {
+        (st.slotType, day.dateKey)
+        for st in normalizedModel.slotTypes
+        if st.slotKind == "CALL"
+        for day in normalizedModel.period.days
+    }
+    missing_point_rules = sorted(
+        expected_point_rule_keys - scoringConfig.pointRules.keys()
+    )
+    if missing_point_rules:
+        raise ValueError(
+            f"scoringConfig.pointRules missing required (slotType, dateKey) "
+            f"entries per docs/scorer_contract.md §11 (D-0038 producer "
+            f"coverage): {missing_point_rules}"
         )
 
     components: dict[str, float] = {}

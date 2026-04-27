@@ -10,7 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from rostermonster.domain import NormalizedModel
 
 # First-release component identifiers per docs/domain_model.md §11.2 +
 # docs/scorer_contract.md §4. Every ScoreResult MUST include all nine of
@@ -88,11 +91,14 @@ class ScoringConfig:
     from the operator-facing per-day call-point cells declared in
     `docs/template_artifact_contract.md` §9 `pointRows`. `pointBalance*`
     components MUST consume `pointRules` rather than a "1 point per call"
-    placeholder. Missing `(slotType, dateKey)` entries fall back to `1.0`
-    per-call so the scorer remains sign-correct under partial overlay (the
-    parser's overlay path is sheet-wins / template-defaults-backstop per
-    `docs/parser_normalizer_contract.md` §9; an empty `pointRules` dict
-    represents "no operator overrides yet" and is contract-compliant).
+    placeholder. Coverage is total: `pointRules` MUST contain an entry for
+    every `(slotType, dateKey)` pair where `slotType` is a call-slot per
+    `slotTypes[].slotKind == "CALL"` and `dateKey` ranges over the period's
+    `dayRecords`. Missing keys cause `score()` to raise — there is no silent
+    fallback to `1.0` (D-0038 reverses the original D-0037 sub-decision 5
+    silent-fallback rule; producer obligation lives on the parser overlay
+    path per `docs/parser_normalizer_contract.md` §9, where sheet-cell overlay
+    plus template-default backstop together cover the cross-product).
 
     First-release `crReward` curve is fixed at the harmonic shape (kth
     honored CR per doctor contributes `weights[crReward] / k`) — strict-
@@ -106,19 +112,27 @@ class ScoringConfig:
 
     weights: dict[str, float]
     pointRules: dict[tuple[str, str], float]
-    # `pointRules` is required (no default) per scorer v2 §11. An empty dict
-    # is the legitimate "no operator overrides yet" state, but callers MUST
-    # pass it explicitly so the case where a producer (parser overlay) failed
-    # to wire pointRules through fails fast at construction time rather than
-    # silently degrading to 1.0-per-call scoring (Codex P2 flag on PR #82).
+    # `pointRules` is required (no default) per scorer v2 §11. Per D-0038, it
+    # MUST cover the full cross-product of call-slot slotTypes × period days;
+    # missing keys raise at score() time. The construction-time required-field
+    # rule (D-0037 sub-decision 9 / PR #82) and the per-key fail-loud rule
+    # (D-0038) are architectural mates: producers cannot omit the field, and
+    # they cannot omit individual keys either.
 
     @staticmethod
-    def first_release_defaults() -> "ScoringConfig":
+    def first_release_defaults(model: "NormalizedModel") -> "ScoringConfig":
         """First-release placeholder defaults. Sign-correct (rewards positive,
         penalties negative) and magnitude-reasonable for proving the pipeline
-        works end-to-end. `pointRules` defaults to empty (no operator
-        overrides; pointBalance falls back to 1.0 per-call). v1 magnitude
-        tuning lands per FW-0014."""
+        works end-to-end. v1 magnitude tuning lands per FW-0014.
+
+        `pointRules` is built as a uniform-1.0 cross-product over the model's
+        call-slots × period days (test/fixture-grade coverage). The production
+        parser overlay produces non-uniform values from `pointRows.defaultRule`
+        weekday/weekend mapping (1.0 / 1.75 / 2.0 / 1.5) overlaid with sheet
+        cells per `docs/parser_normalizer_contract.md` §9; this factory is for
+        ad-hoc test fixtures and degenerate "no operator overrides + uniform
+        defaults" callers, NOT a model of the production overlay.
+        """
         return ScoringConfig(
             weights={
                 COMPONENT_UNFILLED_PENALTY: -100.0,
@@ -131,8 +145,30 @@ class ScoringConfig:
                 COMPONENT_STANDBY_ADJACENCY_PENALTY: -3.0,
                 COMPONENT_STANDBY_COUNT_FAIRNESS_PENALTY: -1.0,
             },
-            pointRules={},
+            pointRules=uniform_point_rules(model),
         )
+
+
+def uniform_point_rules(
+    model: "NormalizedModel", weight: float = 1.0
+) -> dict[tuple[str, str], float]:
+    """Build a `pointRules` map that assigns `weight` to every
+    `(call-slot slotType, dateKey)` pair from the model's cross-product.
+
+    Intended for test fixtures and ad-hoc callers needing a complete
+    `pointRules` that satisfies D-0038 producer-coverage. NOT a model of the
+    production parser overlay — that path computes per-day defaults from
+    `pointRows.defaultRule` (weekday/weekend mapping per
+    `docs/template_artifact_contract.md` §9) and overlays sheet cells on top.
+    """
+    call_slot_types = [
+        st.slotType for st in model.slotTypes if st.slotKind == "CALL"
+    ]
+    return {
+        (slot_type, day.dateKey): weight
+        for slot_type in call_slot_types
+        for day in model.period.days
+    }
 
 
 @dataclass(frozen=True)

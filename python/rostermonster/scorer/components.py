@@ -89,14 +89,15 @@ def _call_points_per_doctor(
 ) -> dict[str, float]:
     """Per-doctor weighted call-point load per scorer v2 §11. Each call-slot
     `AssignmentUnit` contributes `point_rules[(slotType, dateKey)]` to its
-    doctor's running total; missing entries fall back to `1.0` per-call so
-    partial-overlay configurations remain sign-correct (D-0037)."""
+    doctor's running total. `point_rules` is assumed complete over the
+    `(call-slot, dateKey)` cross-product (validated once at `score()` entry
+    per scorer §11 D-0038) — direct dict access raises if a producer-side
+    defect lets a missing key reach this point."""
     points: dict[str, float] = defaultdict(float)
     for a in allocation:
         if a.doctorId is None or a.slotType not in call_slots:
             continue
-        weight = point_rules.get((a.slotType, a.dateKey), 1.0)
-        points[a.doctorId] += weight
+        points[a.doctorId] += point_rules[(a.slotType, a.dateKey)]
     return points
 
 

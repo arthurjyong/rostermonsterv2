@@ -132,6 +132,8 @@ Proposed first-release admission rule:
 
 `pointRules` covers only call-slot slotTypes (those with `slotKind == "CALL"` per `docs/template_artifact_contract.md` §5); standby and other non-call slots are not in `pointRules`, and `pointBalance*` components in `docs/scorer_contract.md` count only call-slot assignments per their existing scope.
 
+**Producer-coverage requirement (added under `docs/decision_log.md` D-0038, revising D-0037 sub-decision 5).** `scoringConfig.pointRules` MUST cover the full cross-product of `(slotType, dateKey)` where `slotType` ranges over `slotTypes[]` filtered by `slotKind == "CALL"` and `dateKey` ranges over the period's `dayRecords`. Coverage is total — every call-slot × period-day pair has an entry. The parser builds completeness from sheet-derived populated cells plus template-derived defaults (the §9 overlay rule above): sheet cells overlay where present and parseable; template defaults backstop where the sheet cell is absent or blank; together the two sources span the cross-product. A `scoringConfig.pointRules` map that fails to cover the cross-product is admission-blocking per §14 and forces `NON_CONSUMABLE`, the same discipline that already applies to mis-signed component weights. The downstream scorer per `docs/scorer_contract.md` §11 raises on missing `(slotType, dateKey)` keys at score time — there is no silent fallback to `1.0`. Producer-coverage at parser admission and consumer fail-loud at score time together close the architectural gap that the original D-0037 sub-decision 5 silent-fallback rule had left open.
+
 This `ParserResult` shape is adopted in this checkpoint and is not claimed as previously repo-settled. The `scoringConfig` field was added per `docs/decision_log.md` D-0037 to close the producer-consumer seam between this contract and `docs/scorer_contract.md` §15 — the scorer contract had declared since M2 C1 closure that operator-tuneable weights flow from the parser boundary as `scoringConfig`, but this contract had not previously declared `scoringConfig` as a parser output. The bidirectional contract-audit rule added to `docs/delivery_plan.md` §14 closes the audit-coverage gap that allowed this seam to remain open across multiple checkpoints.
 
 ## 10) Issue schema vs issue channel vs admission decision
@@ -198,9 +200,10 @@ Implementation note (still compatible with this contract): internal code may mer
 - normalized model assembly cannot produce complete internally consistent downstream input,
 - parser cannot deterministically derive downstream-governing request facts under the declared request grammar.
 
-Scoring-config parser-stage non-consumability cases (added under `docs/decision_log.md` D-0037):
+Scoring-config parser-stage non-consumability cases (added under `docs/decision_log.md` D-0037; coverage requirement added under D-0038):
 - mis-signed operator-edited component weight (a penalty component supplied as positive, or a reward component supplied as negative — sign orientation is a property of the component, not the weight, per `docs/scorer_contract.md` §10 / §15),
-- malformed or non-numeric operator-edited cell value where `scoringConfigRecords` carries a populated cell (parser must not silently substitute a default; an unparseable cell is an admission-blocking defect, not a fall-back-to-default condition).
+- malformed or non-numeric operator-edited cell value where `scoringConfigRecords` carries a populated cell (parser must not silently substitute a default; an unparseable cell is an admission-blocking defect, not a fall-back-to-default condition),
+- incomplete `scoringConfig.pointRules` coverage — any `(slotType, dateKey)` pair from the cross-product of call-slot `slotTypes` and the period's `dateKeys` not present as a `pointRules` entry is admission-blocking per the producer-coverage requirement in §9 (D-0038 reverses the original D-0037 sub-decision 5 silent-fallback rule; producer obligation is total coverage from sheet-cell overlay plus template-default backstop combined).
 
 For populated `scoringConfigRecords` cells, parser must apply the same "do not silently ignore meaningful cell content" discipline as for prefilled assignments: parser must either deterministically interpret the value (sheet wins per the overlay rule in §9) or emit parser-stage issues and return `NON_CONSUMABLE`.
 
