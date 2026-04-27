@@ -114,9 +114,17 @@ def _seat_fixed_assignments(
 # --- Eligibility lookups -----------------------------------------------------
 
 
-def _eligibility_index(model: NormalizedModel) -> dict[str, frozenset[str]]:
-    """`slotType → frozenset(eligibleGroups)` index built once per solve."""
-    return {er.slotType: frozenset(er.eligibleGroups) for er in model.eligibility}
+def _eligibility_index(model: NormalizedModel) -> dict[str, tuple[str, ...]]:
+    """`slotType → tuple(eligibleGroups)` index built once per solve.
+
+    Order is the model's declared `EligibilityRule.eligibleGroups` order
+    (deterministic, parser-emitted). Tuple — not frozenset — because Phase 2
+    iterates the eligible groups to build `candidate_doctors`, and a
+    `frozenset` would leak `PYTHONHASHSEED` randomization into the seeded
+    tie-break and break byte-identical determinism across processes (§16).
+    Tuple membership is O(n), but eligibility tuples are tiny in practice.
+    """
+    return {er.slotType: tuple(er.eligibleGroups) for er in model.eligibility}
 
 
 def _doctors_by_id(model: NormalizedModel) -> dict[str, str]:
@@ -225,7 +233,7 @@ def _phase1_seed_cr(
                 for u in remaining
                 if u.dateKey == cr.dateKey
                 and u.slotType in call_slots
-                and group in eligibility.get(u.slotType, frozenset())
+                and group in eligibility.get(u.slotType, ())
             ]
             if not slot_options:
                 continue
@@ -285,7 +293,7 @@ def _phase2_fill(
     while remaining:
         scored: list[tuple[int, _DemandUnit, list[str]]] = []
         for unit in remaining:
-            eligible_groups = eligibility.get(unit.slotType, frozenset())
+            eligible_groups = eligibility.get(unit.slotType, ())
             candidate_doctors: list[str] = []
             for group in eligible_groups:
                 candidate_doctors.extend(doctor_ids_by_group.get(group, []))

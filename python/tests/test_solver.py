@@ -207,6 +207,55 @@ def test_byte_identical_under_fixed_inputs() -> None:
     assert r1 == r2
 
 
+def test_byte_identical_across_pythonhashseed_values() -> None:
+    """Regression test for the Codex P1 finding on PR #85: the strategy
+    MUST iterate `eligibleGroups` in a stable order (model-declared, not
+    `frozenset`) so determinism holds across Python processes with
+    differing `PYTHONHASHSEED`. Without the fix, two subprocesses with
+    different hash seeds can emit different rosters under identical inputs,
+    violating §16.
+
+    Verified by running a tiny driver script under two distinct
+    `PYTHONHASHSEED` env values and comparing the serialized result."""
+    import os
+    import subprocess
+
+    driver = (
+        "import sys; sys.path.insert(0, %r);\n"
+        "from rostermonster.solver import solve, TerminationBounds;\n"
+        "import test_solver;\n"
+        "model = test_solver._model();\n"
+        "result = solve(model, seed=12345, terminationBounds=TerminationBounds(maxCandidates=3));\n"
+        "for cand in result.candidates:\n"
+        "    print(cand.candidateId, [(u.dateKey, u.slotType, u.unitIndex, u.doctorId) for u in cand.assignments]);\n"
+    ) % str(ROOT)
+
+    def run_with_seed(hash_seed: str) -> str:
+        env = os.environ.copy()
+        env["PYTHONHASHSEED"] = hash_seed
+        # Need test_solver importable as a module from cwd.
+        env["PYTHONPATH"] = (
+            str(Path(__file__).resolve().parent) + os.pathsep + str(ROOT)
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", driver],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return out.stdout
+
+    out_a = run_with_seed("0")
+    out_b = run_with_seed("42")
+    out_c = run_with_seed("99999")
+    assert out_a == out_b == out_c, (
+        f"solver output diverged across PYTHONHASHSEED values "
+        f"(determinism §16 broken):\nseed=0:\n{out_a}\nseed=42:\n{out_b}\n"
+        f"seed=99999:\n{out_c}"
+    )
+
+
 def test_different_seeds_can_produce_different_outputs() -> None:
     """Determinism is per-seed; different seeds may produce different rosters
     (not strictly required by the contract, but a healthy implementation
