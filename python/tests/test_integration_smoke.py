@@ -1,16 +1,15 @@
-"""M2 C4 T4 — integration smoke test (parser → solver → scorer end-to-end).
+"""Integration smoke test — full M2 pipeline end-to-end.
 
 Exercises the full M2 compute pipeline against the real ICU/HD May 2026
 snapshot fixture committed under `python/tests/data/`:
 
     Snapshot → parse() → CONSUMABLE NormalizedModel
             → solve() → CandidateSet
-            → score() per candidate → ranked roster
+            → score() per candidate → ScoredCandidateSet
+            → select() → FinalResultEnvelope (winner + optional sidecars)
 
-Assertions cover the §10.1 success-branch invariants the solver promises
-and the additional integration checks `docs/delivery_plan.md` §8 T4
-specifies — non-empty CandidateSet, byte-identical re-runs under fixed
-seed, zero rule-engine hard-rule violations across emitted candidates.
+Originally introduced under M2 C4 T4 (parser → solver → scorer); extended
+under M2 C5 to cover the selector stage and sidecar emission.
 
 Pytest-compatible. Standalone runnable via
 `python3 python/tests/test_integration_smoke.py`.
@@ -18,7 +17,10 @@ Pytest-compatible. Standalone runnable via
 
 from __future__ import annotations
 
+import csv
+import json
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,6 +35,17 @@ from rostermonster.scorer import (  # noqa: E402
     ScoreDirection,
     ScoringConfig,
     score,
+)
+from rostermonster.selector import (  # noqa: E402
+    FULL_FILE_NAME,
+    SUMMARY_FILE_NAME,
+    AllocationResult,
+    FinalResultEnvelope,
+    RetentionMode,
+    RunEnvelope,
+    ScoredCandidateSet,
+    ScoredTrialCandidate,
+    select,
 )
 from rostermonster.solver import (  # noqa: E402
     CandidateSet,
@@ -223,6 +236,158 @@ def test_candidates_can_be_sorted_by_total_score() -> None:
     scored.sort(key=lambda pair: pair[1].totalScore, reverse=True)
     for i in range(1, len(scored)):
         assert scored[i - 1][1].totalScore >= scored[i][1].totalScore
+
+
+# --- M2 C5: selector stage --------------------------------------------------
+
+
+def _envelope_for(seed: int, run_id: str = "smoke-run-0001") -> RunEnvelope:
+    """Stable run envelope for the integration smoke. All fields fixed
+    so byte-identical determinism (`docs/selector_contract.md` §18) can
+    be asserted across re-runs of the entire pipeline."""
+    return RunEnvelope(
+        runId=run_id,
+        snapshotRef="icu_hd_may_2026_snapshot.json",
+        configRef="first_release_defaults",
+        seed=seed,
+        fillOrderPolicy="MOST_CONSTRAINED_FIRST",
+        crFloorMode="SMART_MEDIAN",
+        crFloorComputed=0,  # placeholder; smoke test doesn't assert on this
+        generationTimestamp="2026-04-28T00:00:00Z",
+        sourceSpreadsheetId="dev-copy-fixture",
+        sourceTabName="ICU/HD May 2026",
+    )
+
+
+def _full_pipeline_to_envelope(
+    *,
+    seed: int,
+    max_candidates: int,
+    retention: RetentionMode,
+    sidecar_dir: Path | None,
+) -> FinalResultEnvelope:
+    """Run parser → solver → scorer → selector and return the envelope."""
+    model = _parsed_model()
+    config = ScoringConfig.first_release_defaults(model)
+    solver_result = solve(
+        model,
+        ruleEngine=rule_engine_evaluate,
+        seed=seed,
+        terminationBounds=TerminationBounds(maxCandidates=max_candidates),
+    )
+    assert isinstance(solver_result, CandidateSet)
+    scored = ScoredCandidateSet(
+        candidates=tuple(
+            ScoredTrialCandidate(
+                candidate=cand,
+                score=score(cand.assignments, model, config),
+            )
+            for cand in solver_result.candidates
+        ),
+        diagnostics=solver_result.diagnostics,
+    )
+    return select(
+        scored,
+        retentionMode=retention,
+        runEnvelope=_envelope_for(seed),
+        sidecarTargetDir=sidecar_dir,
+    )
+
+
+def test_selector_picks_a_winner_on_real_data() -> None:
+    """End-to-end success branch: parser → solver → scorer → selector
+    on the real ICU/HD May 2026 fixture produces an `AllocationResult`
+    with a non-empty `winnerAssignment` and full `winnerScore` component
+    breakdown per `docs/selector_contract.md` §10.1 + §13.1."""
+    env = _full_pipeline_to_envelope(
+        seed=_RUN_SEED,
+        max_candidates=3,
+        retention=RetentionMode.BEST_ONLY,
+        sidecar_dir=None,
+    )
+    assert isinstance(env.result, AllocationResult)
+    assert env.result.winnerAssignment, "winning candidate has no assignments"
+    for component in ALL_COMPONENTS:
+        assert component in env.result.winnerScore.components
+    assert env.result.winnerScore.direction is ScoreDirection.HIGHER_IS_BETTER
+    # BEST_ONLY: no sidecar paths.
+    assert env.result.candidatesSummaryPath is None
+    assert env.result.candidatesFullPath is None
+
+
+def test_full_retention_emits_sidecars_with_all_candidates() -> None:
+    """End-to-end FULL retention: both sidecar files are written, the
+    CSV row count matches `maxCandidates`, and the JSON candidate list
+    matches by candidateId per `docs/selector_contract.md` §14."""
+    with tempfile.TemporaryDirectory() as td:
+        target = Path(td)
+        env = _full_pipeline_to_envelope(
+            seed=_RUN_SEED,
+            max_candidates=4,
+            retention=RetentionMode.FULL,
+            sidecar_dir=target,
+        )
+        assert isinstance(env.result, AllocationResult)
+        assert env.result.candidatesSummaryPath is not None
+        assert env.result.candidatesFullPath is not None
+
+        body_lines = (target / SUMMARY_FILE_NAME).read_text().splitlines()[1:]
+        rows = list(csv.reader(body_lines))
+        # rows[0] = header, rows[1..] = data; expect 4 data rows.
+        assert len(rows) == 5
+        # candidateId column should be 1..4 in emission order.
+        assert [int(r[0]) for r in rows[1:]] == [1, 2, 3, 4]
+
+        payload = json.loads((target / FULL_FILE_NAME).read_text())
+        assert payload["runId"] == "smoke-run-0001"
+        assert len(payload["candidates"]) == 4
+        assert [c["candidateId"] for c in payload["candidates"]] == [1, 2, 3, 4]
+
+
+def test_selector_byte_identical_re_runs_on_real_data() -> None:
+    """End-to-end determinism: the full pipeline + selector + sidecar
+    files are byte-identical across re-runs on identical inputs per
+    `docs/selector_contract.md` §18 + `docs/solver_contract.md` §16.
+
+    Compares content semantics, not the resolved sidecar paths — those
+    legitimately differ when each re-run writes into its own temp
+    directory (the path string is execution-layer-owned per §14.3, not
+    a determinism property)."""
+    with tempfile.TemporaryDirectory() as td_a, tempfile.TemporaryDirectory() as td_b:
+        target_a = Path(td_a)
+        target_b = Path(td_b)
+        env_a = _full_pipeline_to_envelope(
+            seed=_RUN_SEED,
+            max_candidates=3,
+            retention=RetentionMode.FULL,
+            sidecar_dir=target_a,
+        )
+        env_b = _full_pipeline_to_envelope(
+            seed=_RUN_SEED,
+            max_candidates=3,
+            retention=RetentionMode.FULL,
+            sidecar_dir=target_b,
+        )
+        assert isinstance(env_a.result, AllocationResult)
+        assert isinstance(env_b.result, AllocationResult)
+        # Compare the determinism-relevant fields directly. `candidatesSummaryPath`
+        # / `candidatesFullPath` legitimately vary across runs because the
+        # caller picked different target directories.
+        assert env_a.result.winnerAssignment == env_b.result.winnerAssignment
+        assert env_a.result.winnerScore == env_b.result.winnerScore
+        assert env_a.result.searchDiagnostics == env_b.result.searchDiagnostics
+        assert env_a.result.trialBatches == env_b.result.trialBatches
+        assert env_a.runEnvelope == env_b.runEnvelope
+        assert env_a.retentionMode == env_b.retentionMode
+        assert env_a.selectorStrategyId == env_b.selectorStrategyId
+        # Sidecar file *contents* are byte-identical even though their
+        # paths differ.
+        assert (target_a / SUMMARY_FILE_NAME).read_bytes() == (
+            target_b / SUMMARY_FILE_NAME
+        ).read_bytes()
+        assert (target_a / FULL_FILE_NAME).read_bytes() == (
+            target_b / FULL_FILE_NAME
+        ).read_bytes()
 
 
 # --- standalone runner ----------------------------------------------------
