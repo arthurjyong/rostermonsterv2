@@ -19,6 +19,7 @@ Admission cases per §14:
 
 from __future__ import annotations
 
+import math
 from datetime import date
 
 from rostermonster.domain import (
@@ -59,6 +60,7 @@ ISSUE_SCORING_CALL_POINT_ROW_KEY_UNKNOWN = "SCORING_CALL_POINT_ROW_KEY_UNKNOWN"
 ISSUE_SCORING_CALL_POINT_MALFORMED = "SCORING_CALL_POINT_MALFORMED"
 ISSUE_SCORING_POINT_RULES_INCOMPLETE = "SCORING_POINT_RULES_INCOMPLETE"
 ISSUE_SCORING_POINT_ROW_SLOT_TYPE_DUPLICATE = "SCORING_POINT_ROW_SLOT_TYPE_DUPLICATE"
+ISSUE_SCORING_POINT_ROW_KEY_DUPLICATE = "SCORING_POINT_ROW_KEY_DUPLICATE"
 
 
 def _is_blank(raw: str) -> bool:
@@ -199,6 +201,10 @@ def _overlay_component_weights(
             weights[component] = default
             continue
         # Operator-edited cell present and non-blank — parse + sign-check.
+        # `float()` accepts non-finite literals like "inf", "-inf", "nan",
+        # and overflowed numerics like "1e309". Treat those as malformed —
+        # they propagate to `score()` as non-finite totals and dominate
+        # candidate ordering instead of producing meaningful scoring.
         try:
             value = float(record.rawValue.strip())
         except ValueError:
@@ -215,6 +221,25 @@ def _overlay_component_weights(
                     context={
                         "componentId": component,
                         "rawValue": record.rawValue,
+                    },
+                )
+            )
+            continue
+        if not math.isfinite(value):
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_SCORING_COMPONENT_WEIGHT_MALFORMED,
+                    message=(
+                        f"componentWeightRecord for {component!r} has "
+                        f"non-finite rawValue {record.rawValue!r} (parsed "
+                        f"as {value!r}); finite numeric required per "
+                        f"docs/parser_normalizer_contract.md §14"
+                    ),
+                    context={
+                        "componentId": component,
+                        "rawValue": record.rawValue,
+                        "parsedValue": value,
                     },
                 )
             )
@@ -262,11 +287,32 @@ def _overlay_point_rules(
     # would let populated callPointRecords for the overwritten row look
     # structurally valid while never being applied (template_artifact §9
     # binds at most one pointRow per call slot).
-    point_row_by_key: dict[str, PointRowDefinition] = {
-        pr.rowKey: pr for pr in template.pointRows
-    }
+    # Build the rowKey → pointRow map and the slotType → rowKey map together
+    # in one pass; reject duplicate `rowKey` AND duplicate `slotType` bindings
+    # rather than letting a dict comprehension silently overwrite earlier
+    # entries (per template_artifact §9: each rowKey identifies a single
+    # point row, and each call slot has at most one pointRow).
+    point_row_by_key: dict[str, PointRowDefinition] = {}
     row_key_by_slot_type: dict[str, str] = {}
     for pr in template.pointRows:
+        if pr.rowKey in point_row_by_key:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_SCORING_POINT_ROW_KEY_DUPLICATE,
+                    message=(
+                        f"template.pointRows declares rowKey {pr.rowKey!r} "
+                        f"twice; per docs/template_artifact_contract.md §9 "
+                        f"each rowKey identifies a single point row"
+                    ),
+                    context={
+                        "rowKey": pr.rowKey,
+                        "firstSlotType": point_row_by_key[pr.rowKey].slotType,
+                        "duplicateSlotType": pr.slotType,
+                    },
+                )
+            )
+            continue
         if pr.slotType in row_key_by_slot_type:
             issues.append(
                 ValidationIssue(
@@ -288,6 +334,7 @@ def _overlay_point_rules(
                 )
             )
             continue
+        point_row_by_key[pr.rowKey] = pr
         row_key_by_slot_type[pr.slotType] = pr.rowKey
 
     # Day index → dateKey from the model period (parser's already-built
@@ -408,6 +455,29 @@ def _overlay_point_rules(
                             "callPointRowKey": row_key,
                             "dayIndex": day.dayIndex,
                             "rawValue": record.rawValue,
+                        },
+                    )
+                )
+                continue
+            # Non-finite values would propagate to `pointBalance*` components
+            # and produce non-finite totals — admission-blocking same as
+            # non-numeric content.
+            if not math.isfinite(value):
+                issues.append(
+                    ValidationIssue(
+                        severity=IssueSeverity.ERROR,
+                        code=ISSUE_SCORING_CALL_POINT_MALFORMED,
+                        message=(
+                            f"callPointRecord for ({row_key}, {day.dayIndex}) "
+                            f"has non-finite rawValue {record.rawValue!r} "
+                            f"(parsed as {value!r}); finite numeric required "
+                            f"per docs/parser_normalizer_contract.md §14"
+                        ),
+                        context={
+                            "callPointRowKey": row_key,
+                            "dayIndex": day.dayIndex,
+                            "rawValue": record.rawValue,
+                            "parsedValue": value,
                         },
                     )
                 )

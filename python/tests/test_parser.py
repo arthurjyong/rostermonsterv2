@@ -65,6 +65,7 @@ from rostermonster.parser.scoring_overlay import (  # noqa: E402
     ISSUE_SCORING_CALL_POINT_MALFORMED,
     ISSUE_SCORING_COMPONENT_WEIGHT_MALFORMED,
     ISSUE_SCORING_COMPONENT_WEIGHT_MIS_SIGNED,
+    ISSUE_SCORING_POINT_ROW_KEY_DUPLICATE,
     ISSUE_SCORING_POINT_ROW_SLOT_TYPE_DUPLICATE,
 )
 from rostermonster.snapshot import (  # noqa: E402
@@ -894,6 +895,90 @@ def test_non_iso_raw_date_is_non_consumable() -> None:
     result = parse(snapshot, template)
     assert result.consumability is Consumability.NON_CONSUMABLE
     assert ISSUE_DAY_RAW_DATE_NOT_ISO in _issue_codes(result)
+
+
+def test_non_finite_operator_weight_is_non_consumable() -> None:
+    """Per Codex P1 round-2 finding on PR #88: `float()` accepts non-finite
+    literals like 'inf', '-inf', 'nan', and overflowed numerics like
+    '1e309'. Sign-orientation only checks the operator, so a non-finite
+    weight would propagate to `score()` as non-finite totals and dominate
+    candidate ordering. Surface as malformed instead."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    for raw in ("inf", "-inf", "nan", "1e309"):
+        bad_snapshot = replace(
+            snapshot,
+            scoringConfigRecords=ScoringConfigRecords(
+                componentWeightRecords=(
+                    ComponentWeightRecord(
+                        componentId="crReward",
+                        rawValue=raw,
+                        sourceLocator=ComponentWeightLocator(componentId="crReward"),
+                        physicalSourceRef=_phys_ref(),
+                    ),
+                ),
+            ),
+        )
+        result = parse(bad_snapshot, template)
+        assert result.consumability is Consumability.NON_CONSUMABLE, (
+            f"non-finite weight rawValue {raw!r} should be NON_CONSUMABLE; "
+            f"got {result.consumability!r}"
+        )
+        assert ISSUE_SCORING_COMPONENT_WEIGHT_MALFORMED in _issue_codes(result)
+
+
+def test_non_finite_call_point_cell_is_non_consumable() -> None:
+    """Per Codex P1 round-2 finding on PR #88: same finite-numeric
+    requirement applies to call-point cells. A non-finite pointRules
+    entry would make `pointBalance*` components (and totals) non-finite."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    for raw in ("inf", "nan", "1e309"):
+        bad_snapshot = replace(
+            snapshot,
+            scoringConfigRecords=ScoringConfigRecords(
+                callPointRecords=(
+                    CallPointRecord(
+                        callPointRowKey="MICU_CALL_POINT",
+                        dayIndex=0,
+                        rawValue=raw,
+                        sourceLocator=CallPointLocator(
+                            callPointRowKey="MICU_CALL_POINT", dayIndex=0
+                        ),
+                        physicalSourceRef=_phys_ref(),
+                    ),
+                ),
+            ),
+        )
+        result = parse(bad_snapshot, template)
+        assert result.consumability is Consumability.NON_CONSUMABLE, (
+            f"non-finite call-point rawValue {raw!r} should be "
+            f"NON_CONSUMABLE; got {result.consumability!r}"
+        )
+        assert ISSUE_SCORING_CALL_POINT_MALFORMED in _issue_codes(result)
+
+
+def test_duplicate_point_row_key_is_non_consumable() -> None:
+    """Per Codex P2 round-2 finding on PR #88: duplicate `pointRows[].rowKey`
+    declarations would silently overwrite earlier entries; one row's
+    defaults/overrides could be applied to multiple slot bindings without
+    any admission error. Surface as NON_CONSUMABLE."""
+    from rostermonster.template_artifact import PointRowDefinition
+
+    template = icu_hd_template_artifact()
+    # Add a second pointRow that uses the same rowKey but different slotType
+    # to isolate the rowKey-duplicate path (vs slotType-duplicate path).
+    duplicate_row = PointRowDefinition(
+        rowKey=template.pointRows[0].rowKey,  # MICU_CALL_POINT
+        slotType="MHD_CALL",
+        label="Bogus duplicate row",
+        defaultRule=template.pointRows[0].defaultRule,
+    )
+    template = replace(template, pointRows=template.pointRows + (duplicate_row,))
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_POINT_ROW_KEY_DUPLICATE in _issue_codes(result)
 
 
 def test_duplicate_point_row_slot_type_is_non_consumable() -> None:
