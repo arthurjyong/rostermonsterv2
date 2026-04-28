@@ -30,6 +30,13 @@ function generateIntoNewSpreadsheet(config) {
   applyValidations_(sheet, layoutInfo);
   applyProtections_(sheet, layoutInfo);
 
+  // Generate the paired Scorer Config tab per
+  // `docs/sheet_generation_contract.md` §11A (D-0037). Operator-editable
+  // weight cells pre-populated from template.scoring.componentWeights;
+  // tab name shares the request-entry tab's version suffix so the future
+  // snapshot extractor can match the two by suffix.
+  var scorerConfigInfo = buildScorerConfigTab_(ss, sheet.getName(), template);
+
   var shareResult = tryAutoShareAnyoneWithLink_(ss.getId());
 
   return {
@@ -38,6 +45,7 @@ function generateIntoNewSpreadsheet(config) {
     spreadsheetUrl: ss.getUrl(),
     spreadsheetName: ss.getName(),
     sheetName: sheet.getName(),
+    scorerConfigSheetName: scorerConfigInfo.tabName,
     periodStartDate: normalized.periodStartDate,
     periodEndDate: normalized.periodEndDate,
     doctorCountByGroup: normalized.doctorCountByGroup,
@@ -73,12 +81,19 @@ function generateIntoExistingSpreadsheet(config) {
   applyValidations_(sheet, layoutInfo);
   applyProtections_(sheet, layoutInfo);
 
+  // Same Scorer Config tab generation as the new-spreadsheet path. The
+  // tab name shares the version suffix of THIS request-entry tab, so
+  // multi-period spreadsheets keep each (request-entry, scorer-config)
+  // pair grouped by suffix.
+  var scorerConfigInfo = buildScorerConfigTab_(ss, sheet.getName(), template);
+
   return {
     mode: 'EXISTING_SPREADSHEET',
     spreadsheetId: ss.getId(),
     spreadsheetUrl: ss.getUrl(),
     spreadsheetName: ss.getName(),
     sheetName: sheet.getName(),
+    scorerConfigSheetName: scorerConfigInfo.tabName,
     periodStartDate: normalized.periodStartDate,
     periodEndDate: normalized.periodEndDate,
     doctorCountByGroup: normalized.doctorCountByGroup,
