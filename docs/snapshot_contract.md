@@ -263,7 +263,7 @@ Prefilled assignment records must not include:
 - solver/scorer/writeback semantics
 
 ## 11A. Scoring-config record contract (added under `docs/decision_log.md` D-0037)
-`scoringConfigRecords` carries the operator-edited cell values that drive the scorer's `ScoringConfig` per `docs/scorer_contract.md` v2 §11. Records are raw snapshot facts — no parser-stage interpretation at snapshot layer. Two record kinds in first release:
+`scoringConfigRecords` carries the operator-edited cell values that drive the scorer's `ScoringConfig` per `docs/scorer_contract.md` v3 §11. Records are raw snapshot facts — no parser-stage interpretation at snapshot layer. Two record kinds in first release:
 
 ### `componentWeightRecords[]`
 One record per first-release component identifier (per `docs/domain_model.md` §11.2) carrying the operator-edited weight value from the launcher-generated Scorer Config tab declared in `docs/sheet_generation_contract.md`.
