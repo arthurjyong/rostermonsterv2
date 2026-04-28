@@ -63,10 +63,13 @@ from rostermonster.parser.request_semantics import (  # noqa: E402
 )
 from rostermonster.parser.scoring_overlay import (  # noqa: E402
     ISSUE_SCORING_CALL_POINT_MALFORMED,
+    ISSUE_SCORING_COMPONENT_WEIGHT_DEFAULT_NOT_FINITE,
     ISSUE_SCORING_COMPONENT_WEIGHT_MALFORMED,
     ISSUE_SCORING_COMPONENT_WEIGHT_MIS_SIGNED,
+    ISSUE_SCORING_POINT_ROW_DEFAULT_NOT_FINITE,
     ISSUE_SCORING_POINT_ROW_KEY_DUPLICATE,
     ISSUE_SCORING_POINT_ROW_SLOT_TYPE_DUPLICATE,
+    ISSUE_SCORING_POINT_ROW_SLOT_TYPE_INVALID,
 )
 from rostermonster.snapshot import (  # noqa: E402
     CallPointLocator,
@@ -997,6 +1000,99 @@ def test_duplicate_point_row_slot_type_is_non_consumable() -> None:
     result = parse(snapshot, template)
     assert result.consumability is Consumability.NON_CONSUMABLE
     assert ISSUE_SCORING_POINT_ROW_SLOT_TYPE_DUPLICATE in _issue_codes(result)
+
+
+def test_non_finite_template_default_weight_is_non_consumable() -> None:
+    """Per Codex P1 round-3 finding on PR #88: if `template.componentWeights`
+    contains a non-finite default (e.g. `inf`/`-inf`), the overlay used to
+    propagate it onto `ScoringConfig.weights` after only checking the sign.
+    Surface as NON_CONSUMABLE — same propagation hazard as operator-side
+    non-finite cells."""
+    template = icu_hd_template_artifact()
+    bad_weights = dict(template.componentWeights)
+    bad_weights["unfilledPenalty"] = float("-inf")
+    template = replace(template, componentWeights=bad_weights)
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_COMPONENT_WEIGHT_DEFAULT_NOT_FINITE in _issue_codes(result)
+
+
+def test_point_row_with_unknown_slot_type_is_non_consumable() -> None:
+    """Per Codex P1 round-3 finding on PR #88 + template_artifact §9: every
+    `pointRows[].slotType` MUST reference a known slots[].slotId with
+    slotKind == 'CALL'. A pointRow bound to an unknown / non-CALL slot
+    would never appear in the model's call-slot cross-product, so populated
+    `callPointRecords` for that row would be silently ignored. Surface as
+    NON_CONSUMABLE per parser_normalizer §14 'interpret or fail'."""
+    from rostermonster.template_artifact import PointRowDefinition
+
+    template = icu_hd_template_artifact()
+    bogus_row = PointRowDefinition(
+        rowKey="BOGUS_POINT",
+        slotType="UNKNOWN_SLOT",
+        label="Bogus row",
+        defaultRule=template.pointRows[0].defaultRule,
+    )
+    template = replace(template, pointRows=template.pointRows + (bogus_row,))
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_POINT_ROW_SLOT_TYPE_INVALID in _issue_codes(result)
+
+
+def test_point_row_with_non_call_slot_type_is_non_consumable() -> None:
+    """Per template_artifact §9 + §12 (D-0037): pointRow.slotType MUST
+    reference a CALL slot. A pointRow bound to a STANDBY (or other
+    non-CALL) slot is template-validity defect."""
+    from rostermonster.template_artifact import PointRowDefinition
+
+    template = icu_hd_template_artifact()
+    standby_row = PointRowDefinition(
+        rowKey="MICU_STANDBY_POINT",
+        slotType="MICU_STANDBY",  # known slot but slotKind == 'STANDBY', not 'CALL'
+        label="MICU Standby Point",
+        defaultRule=template.pointRows[0].defaultRule,
+    )
+    template = replace(template, pointRows=template.pointRows + (standby_row,))
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_POINT_ROW_SLOT_TYPE_INVALID in _issue_codes(result)
+
+
+def test_non_finite_point_row_default_rule_is_non_consumable() -> None:
+    """Per Codex P1 round-3 finding on PR #88: if `pointRow.defaultRule`
+    contains a non-finite numeric, the blank-cell backstop would write it
+    into `pointRules` and `pointBalance*` components would produce
+    non-finite scoring. Surface at admission rather than letting it
+    propagate."""
+    from rostermonster.template_artifact import (
+        PointRowDefaultRule,
+        PointRowDefinition,
+    )
+
+    template = icu_hd_template_artifact()
+    bad_rule = PointRowDefaultRule(
+        weekdayToWeekday=1.0,
+        weekdayToWeekendOrPublicHoliday=float("nan"),  # ← non-finite
+        weekendOrPublicHolidayToWeekendOrPublicHoliday=2.0,
+        weekendOrPublicHolidayToWeekday=1.5,
+    )
+    bad_row = PointRowDefinition(
+        rowKey="MICU_CALL_POINT_BAD",
+        slotType=template.pointRows[0].slotType,  # MICU_CALL — but rowKey distinct
+        label="Bogus rule row",
+        defaultRule=bad_rule,
+    )
+    # Replace the existing MICU_CALL pointRow so slotType-dup doesn't fire
+    # first; we want to isolate the non-finite-defaultRule path.
+    new_rows = (bad_row,) + template.pointRows[1:]
+    template = replace(template, pointRows=new_rows)
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_POINT_ROW_DEFAULT_NOT_FINITE in _issue_codes(result)
 
 
 # --- standalone runner -----------------------------------------------------

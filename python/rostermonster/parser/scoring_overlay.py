@@ -54,6 +54,9 @@ ISSUE_SCORING_COMPONENT_WEIGHT_DEFAULT_MIS_SIGNED = (
 ISSUE_SCORING_COMPONENT_WEIGHT_DEFAULT_MISSING = (
     "SCORING_COMPONENT_WEIGHT_DEFAULT_MISSING"
 )
+ISSUE_SCORING_COMPONENT_WEIGHT_DEFAULT_NOT_FINITE = (
+    "SCORING_COMPONENT_WEIGHT_DEFAULT_NOT_FINITE"
+)
 ISSUE_SCORING_CALL_POINT_DUPLICATE = "SCORING_CALL_POINT_DUPLICATE"
 ISSUE_SCORING_CALL_POINT_DAY_REF_BROKEN = "SCORING_CALL_POINT_DAY_REF_BROKEN"
 ISSUE_SCORING_CALL_POINT_ROW_KEY_UNKNOWN = "SCORING_CALL_POINT_ROW_KEY_UNKNOWN"
@@ -61,6 +64,8 @@ ISSUE_SCORING_CALL_POINT_MALFORMED = "SCORING_CALL_POINT_MALFORMED"
 ISSUE_SCORING_POINT_RULES_INCOMPLETE = "SCORING_POINT_RULES_INCOMPLETE"
 ISSUE_SCORING_POINT_ROW_SLOT_TYPE_DUPLICATE = "SCORING_POINT_ROW_SLOT_TYPE_DUPLICATE"
 ISSUE_SCORING_POINT_ROW_KEY_DUPLICATE = "SCORING_POINT_ROW_KEY_DUPLICATE"
+ISSUE_SCORING_POINT_ROW_SLOT_TYPE_INVALID = "SCORING_POINT_ROW_SLOT_TYPE_INVALID"
+ISSUE_SCORING_POINT_ROW_DEFAULT_NOT_FINITE = "SCORING_POINT_ROW_DEFAULT_NOT_FINITE"
 
 
 def _is_blank(raw: str) -> bool:
@@ -180,6 +185,25 @@ def _overlay_component_weights(
                     )
                 )
                 continue
+            if not math.isfinite(default):
+                # Template-shipped default is non-finite — admission-blocking
+                # (template-validity defect; same propagation hazard as the
+                # operator-side non-finite check above — would yield
+                # non-finite scoring totals/orderings).
+                issues.append(
+                    ValidationIssue(
+                        severity=IssueSeverity.ERROR,
+                        code=ISSUE_SCORING_COMPONENT_WEIGHT_DEFAULT_NOT_FINITE,
+                        message=(
+                            f"template default for {component!r} is "
+                            f"non-finite ({default!r}); finite numeric "
+                            f"required per "
+                            f"docs/template_artifact_contract.md §11"
+                        ),
+                        context={"componentId": component, "value": default},
+                    )
+                )
+                continue
             if not _check_sign(component, default):
                 # Template-shipped default is itself mis-signed — distinct
                 # from operator mis-sign, but still admission-blocking
@@ -287,11 +311,24 @@ def _overlay_point_rules(
     # would let populated callPointRecords for the overwritten row look
     # structurally valid while never being applied (template_artifact §9
     # binds at most one pointRow per call slot).
+    # Pre-compute the call-slot vocabulary from the model so pointRows.slotType
+    # bindings can be validated against it. A pointRow whose slotType is not
+    # a known call slot is a template-validity defect — populated
+    # callPointRecords for that row would be silently ignored at cross-product
+    # time without an explicit issue (parser_normalizer §14 "interpret or
+    # fail" rule for meaningful populated cells).
+    call_slot_set = {
+        st.slotType for st in model.slotTypes if st.slotKind == "CALL"
+    }
+
     # Build the rowKey → pointRow map and the slotType → rowKey map together
     # in one pass; reject duplicate `rowKey` AND duplicate `slotType` bindings
     # rather than letting a dict comprehension silently overwrite earlier
     # entries (per template_artifact §9: each rowKey identifies a single
-    # point row, and each call slot has at most one pointRow).
+    # point row, and each call slot has at most one pointRow). Also validate
+    # each pointRow's slotType binding (must be a known call slot) and
+    # `defaultRule` finiteness (non-finite defaults would propagate into
+    # `pointRules` via the blank-cell backstop and break scoring).
     point_row_by_key: dict[str, PointRowDefinition] = {}
     row_key_by_slot_type: dict[str, str] = {}
     for pr in template.pointRows:
@@ -313,6 +350,27 @@ def _overlay_point_rules(
                 )
             )
             continue
+        if pr.slotType not in call_slot_set:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_SCORING_POINT_ROW_SLOT_TYPE_INVALID,
+                    message=(
+                        f"template.pointRows[rowKey={pr.rowKey!r}] binds "
+                        f"slotType {pr.slotType!r} which is not a known "
+                        f"call slot in the model; per "
+                        f"docs/template_artifact_contract.md §9 each "
+                        f"pointRow.slotType MUST reference a slots[].slotId "
+                        f"with slotKind == 'CALL'"
+                    ),
+                    context={
+                        "rowKey": pr.rowKey,
+                        "slotType": pr.slotType,
+                        "callSlots": sorted(call_slot_set),
+                    },
+                )
+            )
+            continue
         if pr.slotType in row_key_by_slot_type:
             issues.append(
                 ValidationIssue(
@@ -330,6 +388,39 @@ def _overlay_point_rules(
                         "slotType": pr.slotType,
                         "firstRowKey": row_key_by_slot_type[pr.slotType],
                         "duplicateRowKey": pr.rowKey,
+                    },
+                )
+            )
+            continue
+        # All four defaultRule fields must be finite — non-finite defaults
+        # would propagate into pointRules via the blank-cell backstop and
+        # produce non-finite scoring totals (variance computations crash on
+        # NaN). Same admission discipline as operator-side non-finite cells.
+        rule = pr.defaultRule
+        rule_field_pairs = (
+            ("weekdayToWeekday", rule.weekdayToWeekday),
+            ("weekdayToWeekendOrPublicHoliday", rule.weekdayToWeekendOrPublicHoliday),
+            (
+                "weekendOrPublicHolidayToWeekendOrPublicHoliday",
+                rule.weekendOrPublicHolidayToWeekendOrPublicHoliday,
+            ),
+            ("weekendOrPublicHolidayToWeekday", rule.weekendOrPublicHolidayToWeekday),
+        )
+        non_finite_fields = [name for name, val in rule_field_pairs if not math.isfinite(val)]
+        if non_finite_fields:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_SCORING_POINT_ROW_DEFAULT_NOT_FINITE,
+                    message=(
+                        f"template.pointRows[rowKey={pr.rowKey!r}].defaultRule "
+                        f"contains non-finite value(s) in "
+                        f"{non_finite_fields!r}; finite numerics required per "
+                        f"docs/template_artifact_contract.md §9"
+                    ),
+                    context={
+                        "rowKey": pr.rowKey,
+                        "nonFiniteFields": non_finite_fields,
                     },
                 )
             )
