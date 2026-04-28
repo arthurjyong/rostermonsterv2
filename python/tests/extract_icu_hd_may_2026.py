@@ -308,6 +308,17 @@ def extract(xlsx_path: Path) -> dict:
         "dayRecords": day_records,
         "requestRecords": request_records,
         "prefilledAssignmentRecords": prefilled_records,
+        # `scoringConfigRecords` added under D-0037 (snapshot_contract.md
+        # §11A). The dev-copy xlsx has no Scorer Config tab and no
+        # operator-edited per-day call-point cells (D-0037's sheet-side
+        # generation is pinned to the late-M2 Apps Script extractor per
+        # D-0036), so this test-only bridge emits empty record lists. The
+        # parser overlay backstops to template defaults at parse time per
+        # parser_normalizer_contract.md §9.
+        "scoringConfigRecords": {
+            "componentWeightRecords": [],
+            "callPointRecords": [],
+        },
     }
 
 

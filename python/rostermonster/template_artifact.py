@@ -11,7 +11,7 @@ parser admission does not depend on them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -92,12 +92,50 @@ class OutputSurface:
 
 
 @dataclass(frozen=True)
+class PointRowDefaultRule:
+    """`pointRows[].defaultRule` shape (template_artifact_contract.md §9).
+
+    Four numeric fields covering the four day-transition cases; the parser
+    overlay picks the right field per day-of-week per
+    `docs/parser_normalizer_contract.md` §9 backstop rule (used when the
+    operator has not edited the corresponding per-day cell). For ICU/HD
+    first release the values are `1.0 / 1.75 / 2.0 / 1.5`.
+    """
+
+    weekdayToWeekday: float
+    weekdayToWeekendOrPublicHoliday: float
+    weekendOrPublicHolidayToWeekendOrPublicHoliday: float
+    weekendOrPublicHolidayToWeekday: float
+
+
+@dataclass(frozen=True)
+class PointRowDefinition:
+    """One `inputSheetLayout.pointRows[]` record
+    (template_artifact_contract.md §9).
+
+    `slotType` binding added under `docs/decision_log.md` D-0037 — anchors
+    the parser overlay's `(callPointRowKey, dayIndex) → (slotType, dateKey)`
+    mapping per `docs/parser_normalizer_contract.md` §9. MUST reference a
+    `slots[].slotId` whose `slotKind == "CALL"`. Standby and other non-call
+    slots have no point row.
+    """
+
+    rowKey: str
+    slotType: str
+    label: str
+    defaultRule: PointRowDefaultRule
+
+
+@dataclass(frozen=True)
 class TemplateArtifact:
     """Parser-consumable template artifact (template_artifact_contract.md §4).
 
     Full artifact shape includes additional generation-only fields not modeled
-    here (point rows, legend, visible labels, anchor cells, etc.). Parser
-    admission does not consume those.
+    here (legend, visible labels, anchor cells, etc.). The parser-relevant
+    additions made under D-0037 — `pointRows` (for the call-point overlay
+    backstop) and `componentWeights` (for the component-weight overlay
+    backstop) — ARE modeled here because the parser consumes them at overlay
+    time per `docs/parser_normalizer_contract.md` §9.
     """
 
     identity: TemplateIdentity
@@ -107,3 +145,5 @@ class TemplateArtifact:
     requestSemanticsBinding: RequestSemanticsBinding
     inputSheetSections: tuple[InputSheetSection, ...]
     outputSurfaces: tuple[OutputSurface, ...]
+    pointRows: tuple[PointRowDefinition, ...] = field(default_factory=tuple)
+    componentWeights: dict[str, float] = field(default_factory=dict)
