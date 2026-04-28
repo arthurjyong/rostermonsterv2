@@ -181,8 +181,17 @@ function buildScorerConfigTab_(ss, requestEntryTabName, template) {
   // Attach DeveloperMetadata to each data row carrying the canonical
   // componentId. Snapshot extractor (M2 C8) reads this as the stable
   // lookup key, decoupled from cell content / row order / label wording.
+  //
+  // The Sheets API only allows DeveloperMetadata at sheet / row / column /
+  // spreadsheet scope — not arbitrary cell ranges. A range constructed
+  // with explicit numRows/numCols (even when it covers the whole row
+  // width post-trim) is treated as an "arbitrary range" and rejected
+  // with "Adding developer metadata to arbitrary ranges is not currently
+  // supported." Use A1 row notation ("4:4") so the range is recognized
+  // as row-scoped.
   for (var j = 0; j < componentCount; j++) {
-    var rowRange = sheet.getRange(firstDataRow + j, 1, 1, 3);
+    var rowNum = firstDataRow + j;
+    var rowRange = sheet.getRange(rowNum + ':' + rowNum);
     rowRange.addDeveloperMetadata(
       'rosterMonster:componentId',
       SCORER_CONFIG_ALL_COMPONENTS_[j]
