@@ -555,15 +555,15 @@
   2. **Decay shape.** Per-pair penalty contribution is `weight / 2^(gap - 2)` for `gap ∈ {2, 3, 4, 5, 6}`. At `gap = 2` the contribution is the full per-pair weight; each additional day halves it. Concrete progression at `weight = -2`: gap 2 contributes `-2.0`, gap 3 contributes `-1.0`, gap 4 contributes `-0.5`, gap 5 contributes `-0.25`, gap 6 contributes `-0.125`, gap ≥ 7 contributes `0.0`. Total `spacingPenalty.score` = sum across all same-doctor call pairs in the allocation.
 
   3. **Property pinning in `docs/scorer_contract.md` §12A** (new section, parallel to §12's `crReward` strict-monotonic-decrease pattern). The contract pins:
-     - **Strict monotonic decrease** across the soft window: contribution at `gap = k` is strictly less in absolute value than contribution at `gap = k - 1`, for `k ∈ {3, 4, 5, 6}`.
-     - **Zero past cutoff**: contribution at `gap ≥ 7` is exactly zero.
-     - **Fixed first-release shape**: geometric / halving (`base / 2^(gap - 2)`); `MAX_SOFT_GAP_DAYS = 6`. Operator-tuneable curve parameters remain `docs/future_work.md` FW-0007 deferred (same discipline as `crReward`'s curve shape).
+     - **Strict monotonic decrease** across the soft window when `weights[spacingPenalty] < 0`: contribution at `gap = k` is strictly less in absolute magnitude than contribution at `gap = k - 1`, for `k ∈ {3, 4, 5, 6}`. When `weights[spacingPenalty] = 0` (legitimate disable-the-component state per §10 / §15 — penalty weights MAY be zero), every contribution is zero and the strict-decrease property is vacuously satisfied.
+     - **Zero past cutoff**: contribution at `gap ≥ 7` is exactly zero (cutoff is part of the curve definition; independent of weight).
+     - **Fixed first-release shape**: geometric / halving (`weight / 2^(gap - 2)`); `MAX_SOFT_GAP_DAYS = 6`. Operator-tuneable curve parameters remain `docs/future_work.md` FW-0007 deferred (same discipline as `crReward`'s curve shape).
 
   4. **Constant rename in `python/rostermonster/scorer/components.py`.** Replace `_SPACING_MIN_GAP_DAYS = 3` with two constants: `_SPACING_BASE_GAP_DAYS = 2` (the gap at which contribution equals the full weight) and `_SPACING_MAX_SOFT_GAP_DAYS = 6` (the largest gap with non-zero contribution). The new names match v1's vocabulary and make the curve shape readable at the call site.
 
   5. **Test additions in `python/tests/test_scorer.py`.** Existing spacing tests are updated for the new curve. New `test_spacing_penalty_strictly_decreases_per_gap_step` property test mirrors `test_cr_reward_strictly_diminishes_per_doctor` from §12 — property-style, varies the gap directly, asserts strict-decrease across the soft window. New `test_spacing_penalty_is_zero_past_max_gap` pins the gap = 7 cutoff explicitly.
 
-  6. **No `contractVersion` bump.** Per the §2.1 bump rule, fixed-shape pinning of an existing component identifier is a behavioral tightening, not a public-shape change. The `ScoringConfig.weights[spacingPenalty]` field stays the same; only the per-pair contribution formula tightens. v2-targeted callers continue to compose `ScoringConfig` the same way.
+  6. **`contractVersion` bump v2 → v3.** Per the §2 version bump rule ("bump `contractVersion` only when scoring semantics, direction, component enumeration, or contract-level input/output shape changes"), this decision changes scoring SEMANTICS for valid configs: the same `ScoringConfig` produces different `spacingPenalty.score` under v3 vs v2 because gaps in `[3, 6]` now contribute non-zero where they previously contributed zero. v2-targeted ranking behavior is therefore not preserved, and consumers relying on the `contractVersion` signal for behavioral compatibility need the bump. This is the discriminator vs D-0038's "no bump" precedent — D-0038 tightened ADMISSION (the set of valid configs shrank, but valid-and-still-valid configs produced the same scores), whereas D-0039 tightens COMPUTATION (same valid config → different score). The `ScoringConfig` public shape itself is unchanged — `weights[spacingPenalty]` stays a single scalar.
 
   7. **No new operator-facing surface.** The Scorer Config tab description for `spacingPenalty` will be updated in the same change round (or shortly after) to describe the curve shape rather than the binary behavior, but that is a producer-side wording polish and does not require contract scope.
 
@@ -580,7 +580,7 @@
   - `python/tests/test_scorer.py`: existing spacing tests updated; new strict-decrease property test + gap-7-zero test added.
   - `python/tests/test_integration_smoke.py`: scoring values shift (new curve), but byte-identical determinism per re-run holds. No structural changes needed.
   - `apps_script/m1_sheet_generator/src/ScorerConfigTab.gs`: spacingPenalty description in `SCORER_CONFIG_COMPONENT_DESCRIPTIONS_` updated to reflect the curve shape (in a follow-up UX iteration; not strictly required for contract conformance).
-  - **No `contractVersion` bump** on scorer; the public `ScoringConfig` shape is unchanged.
+  - **`contractVersion` bumped from `2` to `3`** on scorer per the §2 version bump rule (scoring-semantics change for valid configs). Public `ScoringConfig` shape itself is unchanged. v3 follow-on subsection added to §22.
 
 - **Follow-up actions:**
   1. If pilot-operator feedback surfaces specific curve-shape preferences (e.g., "we want gap = 6 to count more than 1/16th of gap = 2"), revisit via FW-0007 (operator-tuneable scoring-curve parameters) rather than redefining the hard-pinned shape.
