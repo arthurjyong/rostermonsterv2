@@ -37,12 +37,6 @@ function generateIntoNewSpreadsheet(config) {
   // snapshot extractor can match the two by suffix.
   var scorerConfigInfo = buildScorerConfigTab_(ss, sheet.getName(), template);
 
-  // Persist the call-point row metadata for the FW-0024 onEdit trigger
-  // (auto-repopulate empty call-point cells on the request-entry tab).
-  // Stored against the request-entry sheet name so the trigger can look
-  // up the right metadata from the edited sheet.
-  saveCallPointMetadata_(sheet.getName(), template, layoutInfo);
-
   var shareResult = tryAutoShareAnyoneWithLink_(ss.getId());
 
   return {
@@ -87,12 +81,11 @@ function generateIntoExistingSpreadsheet(config) {
   applyValidations_(sheet, layoutInfo);
   applyProtections_(sheet, layoutInfo);
 
-  // Same Scorer Config tab generation + FW-0024 metadata as the new-
-  // spreadsheet path. The Scorer Config tab name shares the version
-  // suffix of THIS request-entry tab, so multi-period spreadsheets keep
-  // each (request-entry, scorer-config) pair grouped by suffix.
+  // Same Scorer Config tab generation as the new-spreadsheet path. The
+  // tab name shares the version suffix of THIS request-entry tab, so
+  // multi-period spreadsheets keep each (request-entry, scorer-config)
+  // pair grouped by suffix.
   var scorerConfigInfo = buildScorerConfigTab_(ss, sheet.getName(), template);
-  saveCallPointMetadata_(sheet.getName(), template, layoutInfo);
 
   return {
     mode: 'EXISTING_SPREADSHEET',
