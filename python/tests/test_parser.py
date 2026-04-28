@@ -39,6 +39,7 @@ from rostermonster.parser import (  # noqa: E402
 )
 from rostermonster.parser.admission import (  # noqa: E402
     ISSUE_DAY_INDEX_NON_CONTIGUOUS,
+    ISSUE_DAY_RAW_DATE_NOT_ISO,
     ISSUE_DOCTOR_KEY_DUPLICATE,
     ISSUE_DOCTOR_SECTION_UNKNOWN,
     ISSUE_HANDOFF_DAILY_EFFECT_DATE_ORPHAN,
@@ -60,11 +61,26 @@ from rostermonster.parser.request_semantics import (  # noqa: E402
     ISSUE_REQUEST_MALFORMED_GRAMMAR,
     ISSUE_REQUEST_UNKNOWN_TOKEN,
 )
+from rostermonster.parser.scoring_overlay import (  # noqa: E402
+    ISSUE_SCORING_CALL_POINT_MALFORMED,
+    ISSUE_SCORING_COMPONENT_WEIGHT_DEFAULT_NOT_FINITE,
+    ISSUE_SCORING_COMPONENT_WEIGHT_MALFORMED,
+    ISSUE_SCORING_COMPONENT_WEIGHT_MIS_SIGNED,
+    ISSUE_SCORING_POINT_ROW_DEFAULT_NOT_FINITE,
+    ISSUE_SCORING_POINT_ROW_KEY_DUPLICATE,
+    ISSUE_SCORING_POINT_ROW_SLOT_TYPE_DUPLICATE,
+    ISSUE_SCORING_POINT_ROW_SLOT_TYPE_INVALID,
+)
 from rostermonster.snapshot import (  # noqa: E402
+    CallPointLocator,
+    CallPointRecord,
+    ComponentWeightLocator,
+    ComponentWeightRecord,
     DayLocator,
     DoctorLocator,
     PrefilledAssignmentLocator,
     RequestLocator,
+    ScoringConfigRecords,
 )
 from tests.fixtures import (  # noqa: E402
     icu_hd_snapshot,
@@ -630,6 +646,453 @@ def test_prefill_doctor_two_slots_same_day_is_non_consumable() -> None:
     result = parse(snapshot, template)
     assert result.consumability is Consumability.NON_CONSUMABLE
     assert ISSUE_PREFILLED_DOCTOR_TWO_SLOTS_SAME_DAY in _issue_codes(result)
+
+
+# --- scoring-config overlay (D-0037 / D-0038) ------------------------------
+
+
+def _phys_ref():
+    """Lazy import so overlay tests can construct snapshot records without
+    pulling in the full fixtures module's `_physical_ref` private helper."""
+    from rostermonster.snapshot import PhysicalSourceRef
+
+    return PhysicalSourceRef(
+        sheetName="CGH ICU/HD Call",
+        sheetGid="0",
+        a1Refs=("Z1",),
+    )
+
+
+def test_scoring_config_uses_template_defaults_when_no_operator_overrides() -> None:
+    """Per `parser_normalizer_contract.md` §9 backstop rule: when the
+    snapshot's `scoringConfigRecords` is empty (operator hasn't edited the
+    Scorer Config tab), the parser overlay fills `ScoringConfig` purely
+    from template defaults. Per D-0038 the resulting `pointRules` MUST
+    cover the full (call-slot × period day) cross-product."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+
+    assert result.consumability is Consumability.CONSUMABLE
+    cfg = result.scoringConfig
+    assert cfg is not None, "CONSUMABLE result MUST carry a scoringConfig per §9"
+
+    # weights map matches template defaults.
+    for component, default in template.componentWeights.items():
+        assert cfg.weights[component] == default
+
+    # pointRules cover the full cross-product (D-0038 producer coverage).
+    call_slot_types = {
+        st.slotType for st in result.normalizedModel.slotTypes if st.slotKind == "CALL"
+    }
+    expected_keys = {
+        (slot_type, day.dateKey)
+        for slot_type in call_slot_types
+        for day in result.normalizedModel.period.days
+    }
+    assert set(cfg.pointRules.keys()) == expected_keys, (
+        "pointRules must cover the full call-slot × day cross-product per "
+        "D-0038; missing or extra keys"
+    )
+
+
+def test_scoring_config_weekday_weekend_defaults_match_template_rule() -> None:
+    """Per `template_artifact_contract.md` §9: pointRow defaultRule values
+    are 1.0 / 1.75 / 2.0 / 1.5 keyed by `(this_day, next_day)` weekday-vs-
+    weekend classification. Verify the parser overlay applies them
+    correctly using calendar dates."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    cfg = result.scoringConfig
+    assert cfg is not None
+    # icu_hd_snapshot() uses dateKeys 2026-05-01 (Fri), 02 (Sat), 03 (Sun),
+    # 04 (Mon), 05 (Tue). Expected weights for MICU_CALL:
+    #   Fri → Sat = weekday → weekend       → 1.75
+    #   Sat → Sun = weekend → weekend       → 2.0
+    #   Sun → Mon = weekend → weekday       → 1.5
+    #   Mon → Tue = weekday → weekday       → 1.0
+    #   Tue → Wed = weekday → weekday       → 1.0
+    expected = {
+        ("MICU_CALL", "2026-05-01"): 1.75,
+        ("MICU_CALL", "2026-05-02"): 2.0,
+        ("MICU_CALL", "2026-05-03"): 1.5,
+        ("MICU_CALL", "2026-05-04"): 1.0,
+        ("MICU_CALL", "2026-05-05"): 1.0,
+    }
+    for key, want in expected.items():
+        assert cfg.pointRules[key] == want, (
+            f"expected pointRules[{key}] = {want} per template defaultRule "
+            f"weekday/weekend mapping; got {cfg.pointRules[key]}"
+        )
+
+
+def test_operator_component_weight_override_flows_through_overlay() -> None:
+    """Per §9 sheet-wins rule: a populated, parseable, sign-correct
+    operator weight cell MUST override the template default."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    snapshot = replace(
+        snapshot,
+        scoringConfigRecords=ScoringConfigRecords(
+            componentWeightRecords=(
+                ComponentWeightRecord(
+                    componentId="crReward",
+                    rawValue="7.5",
+                    sourceLocator=ComponentWeightLocator(componentId="crReward"),
+                    physicalSourceRef=_phys_ref(),
+                ),
+            ),
+        ),
+    )
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.CONSUMABLE
+    assert result.scoringConfig.weights["crReward"] == 7.5
+    # Other components still use template defaults.
+    assert result.scoringConfig.weights["unfilledPenalty"] == -100.0
+
+
+def test_blank_operator_weight_falls_back_to_template_default() -> None:
+    """Per §9: a record with empty / whitespace-only `rawValue` is treated
+    as "absent" and falls back to template default — distinct from a
+    populated-but-malformed cell, which is admission-blocking."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    snapshot = replace(
+        snapshot,
+        scoringConfigRecords=ScoringConfigRecords(
+            componentWeightRecords=(
+                ComponentWeightRecord(
+                    componentId="crReward",
+                    rawValue="   ",  # whitespace-only → blank
+                    sourceLocator=ComponentWeightLocator(componentId="crReward"),
+                    physicalSourceRef=_phys_ref(),
+                ),
+            ),
+        ),
+    )
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.CONSUMABLE
+    assert result.scoringConfig.weights["crReward"] == template.componentWeights["crReward"]
+
+
+def test_mis_signed_operator_weight_is_non_consumable() -> None:
+    """Per parser_normalizer §14: an operator-edited penalty given a
+    positive value (or reward given a negative value) violates the
+    component's sign orientation per scorer §10 / §15 and is admission-
+    blocking. Penalty must be ≤ 0; reward must be ≥ 0."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    snapshot = replace(
+        snapshot,
+        scoringConfigRecords=ScoringConfigRecords(
+            componentWeightRecords=(
+                ComponentWeightRecord(
+                    componentId="unfilledPenalty",
+                    rawValue="42",  # penalty given POSITIVE → mis-signed
+                    sourceLocator=ComponentWeightLocator(componentId="unfilledPenalty"),
+                    physicalSourceRef=_phys_ref(),
+                ),
+            ),
+        ),
+    )
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_COMPONENT_WEIGHT_MIS_SIGNED in _issue_codes(result)
+
+
+def test_malformed_operator_weight_is_non_consumable() -> None:
+    """Per §14: a populated but non-numeric `rawValue` is admission-
+    blocking (parser must not silently substitute a default)."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    snapshot = replace(
+        snapshot,
+        scoringConfigRecords=ScoringConfigRecords(
+            componentWeightRecords=(
+                ComponentWeightRecord(
+                    componentId="crReward",
+                    rawValue="not-a-number",
+                    sourceLocator=ComponentWeightLocator(componentId="crReward"),
+                    physicalSourceRef=_phys_ref(),
+                ),
+            ),
+        ),
+    )
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_COMPONENT_WEIGHT_MALFORMED in _issue_codes(result)
+
+
+def test_operator_per_day_call_point_override_flows_through_overlay() -> None:
+    """Per §9: a populated callPointRecord overrides the template default
+    for that specific (callPointRowKey, dayIndex). Result is reflected in
+    `pointRules[(slotType, dateKey)]` via the slotType binding declared
+    in template_artifact §9."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    snapshot = replace(
+        snapshot,
+        scoringConfigRecords=ScoringConfigRecords(
+            callPointRecords=(
+                CallPointRecord(
+                    callPointRowKey="MICU_CALL_POINT",
+                    dayIndex=0,  # 2026-05-01 (Fri) — template default 1.75
+                    rawValue="3.0",
+                    sourceLocator=CallPointLocator(
+                        callPointRowKey="MICU_CALL_POINT", dayIndex=0
+                    ),
+                    physicalSourceRef=_phys_ref(),
+                ),
+            ),
+        ),
+    )
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.CONSUMABLE
+    # Operator override applied via slotType binding (MICU_CALL_POINT → MICU_CALL).
+    assert result.scoringConfig.pointRules[("MICU_CALL", "2026-05-01")] == 3.0
+    # Other days still use template defaults (Sat = 2.0).
+    assert result.scoringConfig.pointRules[("MICU_CALL", "2026-05-02")] == 2.0
+
+
+def test_malformed_call_point_cell_is_non_consumable() -> None:
+    """Per §14: a populated but non-numeric callPoint `rawValue` is
+    admission-blocking (parser must not silently substitute a default)."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    snapshot = replace(
+        snapshot,
+        scoringConfigRecords=ScoringConfigRecords(
+            callPointRecords=(
+                CallPointRecord(
+                    callPointRowKey="MICU_CALL_POINT",
+                    dayIndex=0,
+                    rawValue="oops",
+                    sourceLocator=CallPointLocator(
+                        callPointRowKey="MICU_CALL_POINT", dayIndex=0
+                    ),
+                    physicalSourceRef=_phys_ref(),
+                ),
+            ),
+        ),
+    )
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_CALL_POINT_MALFORMED in _issue_codes(result)
+
+
+def test_non_iso_raw_date_is_non_consumable() -> None:
+    """Per Codex P1 round-1 finding on PR #88 + D-0033: snapshot adapter
+    normalizes dates to ISO 8601; if a malformed raw date reaches the
+    parser, downstream consumers (rule engine `_shift_iso_date`, scoring
+    overlay `_default_point_for_day`) would crash with `ValueError`. The
+    parser MUST validate ISO format at admission and surface non-ISO
+    values as NON_CONSUMABLE through the normal admission channel."""
+    snapshot = icu_hd_snapshot()
+    template = icu_hd_template_artifact()
+    # Replace one day's rawDateText with a garbage string. Other days
+    # remain valid so we isolate the ISO-validation behavior.
+    bad_days = list(snapshot.dayRecords)
+    bad_days[0] = replace(bad_days[0], rawDateText="not-a-date")
+    snapshot = replace(snapshot, dayRecords=tuple(bad_days))
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_DAY_RAW_DATE_NOT_ISO in _issue_codes(result)
+
+
+def test_non_finite_operator_weight_is_non_consumable() -> None:
+    """Per Codex P1 round-2 finding on PR #88: `float()` accepts non-finite
+    literals like 'inf', '-inf', 'nan', and overflowed numerics like
+    '1e309'. Sign-orientation only checks the operator, so a non-finite
+    weight would propagate to `score()` as non-finite totals and dominate
+    candidate ordering. Surface as malformed instead."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    for raw in ("inf", "-inf", "nan", "1e309"):
+        bad_snapshot = replace(
+            snapshot,
+            scoringConfigRecords=ScoringConfigRecords(
+                componentWeightRecords=(
+                    ComponentWeightRecord(
+                        componentId="crReward",
+                        rawValue=raw,
+                        sourceLocator=ComponentWeightLocator(componentId="crReward"),
+                        physicalSourceRef=_phys_ref(),
+                    ),
+                ),
+            ),
+        )
+        result = parse(bad_snapshot, template)
+        assert result.consumability is Consumability.NON_CONSUMABLE, (
+            f"non-finite weight rawValue {raw!r} should be NON_CONSUMABLE; "
+            f"got {result.consumability!r}"
+        )
+        assert ISSUE_SCORING_COMPONENT_WEIGHT_MALFORMED in _issue_codes(result)
+
+
+def test_non_finite_call_point_cell_is_non_consumable() -> None:
+    """Per Codex P1 round-2 finding on PR #88: same finite-numeric
+    requirement applies to call-point cells. A non-finite pointRules
+    entry would make `pointBalance*` components (and totals) non-finite."""
+    template = icu_hd_template_artifact()
+    snapshot = icu_hd_snapshot()
+    for raw in ("inf", "nan", "1e309"):
+        bad_snapshot = replace(
+            snapshot,
+            scoringConfigRecords=ScoringConfigRecords(
+                callPointRecords=(
+                    CallPointRecord(
+                        callPointRowKey="MICU_CALL_POINT",
+                        dayIndex=0,
+                        rawValue=raw,
+                        sourceLocator=CallPointLocator(
+                            callPointRowKey="MICU_CALL_POINT", dayIndex=0
+                        ),
+                        physicalSourceRef=_phys_ref(),
+                    ),
+                ),
+            ),
+        )
+        result = parse(bad_snapshot, template)
+        assert result.consumability is Consumability.NON_CONSUMABLE, (
+            f"non-finite call-point rawValue {raw!r} should be "
+            f"NON_CONSUMABLE; got {result.consumability!r}"
+        )
+        assert ISSUE_SCORING_CALL_POINT_MALFORMED in _issue_codes(result)
+
+
+def test_duplicate_point_row_key_is_non_consumable() -> None:
+    """Per Codex P2 round-2 finding on PR #88: duplicate `pointRows[].rowKey`
+    declarations would silently overwrite earlier entries; one row's
+    defaults/overrides could be applied to multiple slot bindings without
+    any admission error. Surface as NON_CONSUMABLE."""
+    from rostermonster.template_artifact import PointRowDefinition
+
+    template = icu_hd_template_artifact()
+    # Add a second pointRow that uses the same rowKey but different slotType
+    # to isolate the rowKey-duplicate path (vs slotType-duplicate path).
+    duplicate_row = PointRowDefinition(
+        rowKey=template.pointRows[0].rowKey,  # MICU_CALL_POINT
+        slotType="MHD_CALL",
+        label="Bogus duplicate row",
+        defaultRule=template.pointRows[0].defaultRule,
+    )
+    template = replace(template, pointRows=template.pointRows + (duplicate_row,))
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_POINT_ROW_KEY_DUPLICATE in _issue_codes(result)
+
+
+def test_duplicate_point_row_slot_type_is_non_consumable() -> None:
+    """Per Codex P2 round-1 finding on PR #88 + template_artifact §9: each
+    call slot has at most one pointRow. Duplicate `pointRows[].slotType`
+    bindings would silently overwrite earlier rows in the slotType→rowKey
+    mapping; populated `callPointRecords` for the overwritten row would
+    look structurally valid but never be applied. Surface as
+    NON_CONSUMABLE rather than silently-wrong scoring."""
+    template = icu_hd_template_artifact()
+    # Add a second pointRow that binds to the same slotType as MICU_CALL_POINT.
+    duplicate_row = template.pointRows[0]  # MICU_CALL_POINT
+    extra = replace(duplicate_row, rowKey="MICU_CALL_POINT_ALIAS")
+    template = replace(template, pointRows=template.pointRows + (extra,))
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_POINT_ROW_SLOT_TYPE_DUPLICATE in _issue_codes(result)
+
+
+def test_non_finite_template_default_weight_is_non_consumable() -> None:
+    """Per Codex P1 round-3 finding on PR #88: if `template.componentWeights`
+    contains a non-finite default (e.g. `inf`/`-inf`), the overlay used to
+    propagate it onto `ScoringConfig.weights` after only checking the sign.
+    Surface as NON_CONSUMABLE — same propagation hazard as operator-side
+    non-finite cells."""
+    template = icu_hd_template_artifact()
+    bad_weights = dict(template.componentWeights)
+    bad_weights["unfilledPenalty"] = float("-inf")
+    template = replace(template, componentWeights=bad_weights)
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_COMPONENT_WEIGHT_DEFAULT_NOT_FINITE in _issue_codes(result)
+
+
+def test_point_row_with_unknown_slot_type_is_non_consumable() -> None:
+    """Per Codex P1 round-3 finding on PR #88 + template_artifact §9: every
+    `pointRows[].slotType` MUST reference a known slots[].slotId with
+    slotKind == 'CALL'. A pointRow bound to an unknown / non-CALL slot
+    would never appear in the model's call-slot cross-product, so populated
+    `callPointRecords` for that row would be silently ignored. Surface as
+    NON_CONSUMABLE per parser_normalizer §14 'interpret or fail'."""
+    from rostermonster.template_artifact import PointRowDefinition
+
+    template = icu_hd_template_artifact()
+    bogus_row = PointRowDefinition(
+        rowKey="BOGUS_POINT",
+        slotType="UNKNOWN_SLOT",
+        label="Bogus row",
+        defaultRule=template.pointRows[0].defaultRule,
+    )
+    template = replace(template, pointRows=template.pointRows + (bogus_row,))
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_POINT_ROW_SLOT_TYPE_INVALID in _issue_codes(result)
+
+
+def test_point_row_with_non_call_slot_type_is_non_consumable() -> None:
+    """Per template_artifact §9 + §12 (D-0037): pointRow.slotType MUST
+    reference a CALL slot. A pointRow bound to a STANDBY (or other
+    non-CALL) slot is template-validity defect."""
+    from rostermonster.template_artifact import PointRowDefinition
+
+    template = icu_hd_template_artifact()
+    standby_row = PointRowDefinition(
+        rowKey="MICU_STANDBY_POINT",
+        slotType="MICU_STANDBY",  # known slot but slotKind == 'STANDBY', not 'CALL'
+        label="MICU Standby Point",
+        defaultRule=template.pointRows[0].defaultRule,
+    )
+    template = replace(template, pointRows=template.pointRows + (standby_row,))
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_POINT_ROW_SLOT_TYPE_INVALID in _issue_codes(result)
+
+
+def test_non_finite_point_row_default_rule_is_non_consumable() -> None:
+    """Per Codex P1 round-3 finding on PR #88: if `pointRow.defaultRule`
+    contains a non-finite numeric, the blank-cell backstop would write it
+    into `pointRules` and `pointBalance*` components would produce
+    non-finite scoring. Surface at admission rather than letting it
+    propagate."""
+    from rostermonster.template_artifact import (
+        PointRowDefaultRule,
+        PointRowDefinition,
+    )
+
+    template = icu_hd_template_artifact()
+    bad_rule = PointRowDefaultRule(
+        weekdayToWeekday=1.0,
+        weekdayToWeekendOrPublicHoliday=float("nan"),  # ← non-finite
+        weekendOrPublicHolidayToWeekendOrPublicHoliday=2.0,
+        weekendOrPublicHolidayToWeekday=1.5,
+    )
+    bad_row = PointRowDefinition(
+        rowKey="MICU_CALL_POINT_BAD",
+        slotType=template.pointRows[0].slotType,  # MICU_CALL — but rowKey distinct
+        label="Bogus rule row",
+        defaultRule=bad_rule,
+    )
+    # Replace the existing MICU_CALL pointRow so slotType-dup doesn't fire
+    # first; we want to isolate the non-finite-defaultRule path.
+    new_rows = (bad_row,) + template.pointRows[1:]
+    template = replace(template, pointRows=new_rows)
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_POINT_ROW_DEFAULT_NOT_FINITE in _issue_codes(result)
 
 
 # --- standalone runner -----------------------------------------------------

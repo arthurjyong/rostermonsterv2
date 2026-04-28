@@ -56,6 +56,25 @@ class PrefilledAssignmentLocator:
 
 
 @dataclass(frozen=True)
+class ComponentWeightLocator:
+    """`surfaceKey=scorerConfigCells` locator (snapshot_contract.md §10,
+    added under `docs/decision_log.md` D-0037)."""
+
+    componentId: str
+    surfaceKey: str = "scorerConfigCells"
+
+
+@dataclass(frozen=True)
+class CallPointLocator:
+    """`surfaceKey=callPointCells` locator (snapshot_contract.md §10,
+    added under `docs/decision_log.md` D-0037)."""
+
+    callPointRowKey: str
+    dayIndex: int
+    surfaceKey: str = "callPointCells"
+
+
+@dataclass(frozen=True)
 class DoctorRecord:
     """Raw doctor record (snapshot_contract.md §7)."""
 
@@ -100,6 +119,60 @@ class PrefilledAssignmentRecord:
 
 
 @dataclass(frozen=True)
+class ComponentWeightRecord:
+    """Raw component-weight record (snapshot_contract.md §11A, added under
+    `docs/decision_log.md` D-0037).
+
+    Carries the operator-edited weight value from the launcher-generated
+    Scorer Config tab. Records are raw snapshot facts — no parser-stage
+    interpretation at snapshot layer. Blank cells produce records with empty
+    `rawValue`, matching `requestRecords` blank-cell discipline per §9.
+    Records do not carry sign-orientation classification (parser knows the
+    component-to-sign mapping from `docs/scorer_contract.md` §10 / §15).
+    """
+
+    componentId: str
+    rawValue: str
+    sourceLocator: ComponentWeightLocator
+    physicalSourceRef: PhysicalSourceRef
+
+
+@dataclass(frozen=True)
+class CallPointRecord:
+    """Raw per-day call-point record (snapshot_contract.md §11A, added under
+    `docs/decision_log.md` D-0037).
+
+    Carries the operator-editable per-day call-point cell value from the
+    request-entry sheet. The row identities are template-declared per
+    `docs/template_artifact_contract.md` §9 (`pointRows.rowKey`); for
+    ICU/HD first release these are `MICU_CALL_POINT` and `MHD_CALL_POINT`.
+    Blank cells emit records with empty `rawValue`, same discipline as
+    `requestRecords` per §9.
+    """
+
+    callPointRowKey: str
+    dayIndex: int
+    rawValue: str
+    sourceLocator: CallPointLocator
+    physicalSourceRef: PhysicalSourceRef
+
+
+@dataclass(frozen=True)
+class ScoringConfigRecords:
+    """`scoringConfigRecords` top-level component on `Snapshot`
+    (snapshot_contract.md §5 + §11A, added under `docs/decision_log.md`
+    D-0037).
+
+    Wraps the two record kinds so adding a third later (e.g. curve
+    parameters under FW-0007) is an additive shape change inside this
+    component rather than a new top-level Snapshot field.
+    """
+
+    componentWeightRecords: tuple[ComponentWeightRecord, ...] = field(default_factory=tuple)
+    callPointRecords: tuple[CallPointRecord, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
 class PeriodRef:
     """Period identity (snapshot_contract.md §6)."""
 
@@ -133,7 +206,16 @@ class SnapshotMetadata:
 
 @dataclass(frozen=True)
 class Snapshot:
-    """Top-level snapshot (snapshot_contract.md §5)."""
+    """Top-level snapshot (snapshot_contract.md §5).
+
+    `scoringConfigRecords` defaults to empty (no operator overrides yet);
+    a snapshot extracted from a request sheet that has not been touched on
+    the Scorer Config tab is a legitimate first-release input — the parser
+    overlay will fill `ScoringConfig` from template defaults at parse time
+    per `docs/parser_normalizer_contract.md` §9 backstop rule. Per D-0038
+    the parser overlay still emits a complete `ScoringConfig.pointRules`
+    cross-product even when the snapshot's `scoringConfigRecords` is empty.
+    """
 
     metadata: SnapshotMetadata
     doctorRecords: tuple[DoctorRecord, ...]
@@ -141,4 +223,7 @@ class Snapshot:
     requestRecords: tuple[RequestRecord, ...]
     prefilledAssignmentRecords: tuple[PrefilledAssignmentRecord, ...] = field(
         default_factory=tuple
+    )
+    scoringConfigRecords: ScoringConfigRecords = field(
+        default_factory=ScoringConfigRecords
     )

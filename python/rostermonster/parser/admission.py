@@ -41,8 +41,11 @@ from rostermonster.domain import (
     SlotTypeDefinition,
     ValidationIssue,
 )
+from datetime import date
+
 from rostermonster.parser.request_semantics import parse_request_text
 from rostermonster.parser.result import ParserResult
+from rostermonster.parser.scoring_overlay import build_scoring_config
 from rostermonster.snapshot import Snapshot
 from rostermonster.template_artifact import TemplateArtifact
 
@@ -57,6 +60,7 @@ ISSUE_DAY_INDEX_DUPLICATE = "DAY_INDEX_DUPLICATE"
 ISSUE_DAY_INDEX_NON_CONTIGUOUS = "DAY_INDEX_NON_CONTIGUOUS"
 ISSUE_DAY_RAW_DATE_EMPTY = "DAY_RAW_DATE_EMPTY"
 ISSUE_DAY_RAW_DATE_DUPLICATE = "DAY_RAW_DATE_DUPLICATE"
+ISSUE_DAY_RAW_DATE_NOT_ISO = "DAY_RAW_DATE_NOT_ISO"
 ISSUE_REQUEST_LOCATOR_DUPLICATE = "REQUEST_LOCATOR_DUPLICATE"
 ISSUE_REQUEST_DOCTOR_REF_BROKEN = "REQUEST_DOCTOR_REF_BROKEN"
 ISSUE_REQUEST_DAY_REF_BROKEN = "REQUEST_DAY_REF_BROKEN"
@@ -241,6 +245,32 @@ def _validate_structural(
                         "rawDateText": date_key,
                         "firstDayIndex": seen_dates[date_key],
                         "duplicateDayIndex": day.dayIndex,
+                    },
+                )
+            )
+            continue
+        # Per D-0033: snapshot adapter normalizes dates to ISO 8601; parser
+        # uses `rawDateText.strip()` directly as `dateKey`. A non-ISO value
+        # would crash downstream consumers (rule engine `_shift_iso_date`,
+        # scoring overlay `_default_point_for_day`) with a `ValueError`
+        # instead of being surfaced through the normal admission channel.
+        # Validate at the boundary so downstream code can rely on it.
+        try:
+            date.fromisoformat(date_key)
+        except ValueError:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_DAY_RAW_DATE_NOT_ISO,
+                    message=(
+                        f"dayRecord at dayIndex={day.dayIndex} has rawDateText "
+                        f"{date_key!r} that is not ISO 8601 per "
+                        f"`docs/decision_log.md` D-0033; downstream parsers "
+                        f"and rule-engine cannot interpret it."
+                    ),
+                    context={
+                        "dayIndex": day.dayIndex,
+                        "rawDateText": date_key,
                     },
                 )
             )
@@ -898,8 +928,23 @@ def parse(snapshot: Snapshot, template_artifact: TemplateArtifact) -> ParserResu
             tuple(accumulated) + tuple(consistency_issues)
         )
 
+    # Scoring-config overlay per `docs/parser_normalizer_contract.md` §9
+    # (D-0037). Sheet wins / template defaults backstop. Mis-signed weights,
+    # malformed numeric cells, and incomplete pointRules coverage (D-0038)
+    # are all admission-blocking — same NON_CONSUMABLE discipline as the
+    # earlier admission stages, with both `normalizedModel` and
+    # `scoringConfig` forced to None on failure per §9.
+    scoring_config, scoring_issues = build_scoring_config(
+        snapshot, template_artifact, normalized_model
+    )
+    if scoring_issues:
+        return ParserResult.non_consumable(
+            tuple(accumulated) + tuple(scoring_issues)
+        )
+
     return ParserResult.consumable(
         normalizedModel=normalized_model,
+        scoringConfig=scoring_config,
         issues=tuple(accumulated),
     )
 
