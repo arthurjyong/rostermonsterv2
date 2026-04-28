@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import replace
+from datetime import date, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -61,15 +62,17 @@ from rostermonster.snapshot import (  # noqa: E402
 
 
 def _model() -> NormalizedModel:
-    """Small ICU/HD-shaped model: 3 docs (ICU_ONLY, ICU_HD, HD_ONLY), 5 days,
-    4 slot types. Tests opt in to requests / DailyEffectState as needed."""
+    """Small ICU/HD-shaped model: 3 docs (ICU_ONLY, ICU_HD, HD_ONLY), 14 days,
+    4 slot types. Window is 14 days so spacing tests can probe gaps up to the
+    `MAX_SOFT_GAP_DAYS = 6` cutoff and one day past it. Tests opt in to
+    requests / DailyEffectState as needed."""
     days = tuple(
         RosterDay(
             dateKey=f"2026-05-{i + 1:02d}",
             dayIndex=i,
             provenance=DayLocator(dayIndex=i),
         )
-        for i in range(5)
+        for i in range(14)
     )
     period = RosterPeriod(periodId="2026-05", periodLabel="May 2026", days=days)
     doctors = (
@@ -343,8 +346,8 @@ def test_dual_eligible_icu_bonus_zero_for_icu_only_doctor() -> None:
 
 
 def test_spacing_penalty_fires_on_close_call_pair() -> None:
-    """Two calls for the same doctor 2 days apart — fall under the 3-day
-    minimum-gap threshold → one spacingPenalty unit fires."""
+    """Two calls 2 days apart at default weight -2 → full per-pair contribution
+    `weight / 2^(gap-2) = -2 / 2^0 = -2.0` per scorer §12A."""
     model = _model()
     config = ScoringConfig.first_release_defaults(model)
     alloc = (
@@ -352,19 +355,74 @@ def test_spacing_penalty_fires_on_close_call_pair() -> None:
         _unit("dr_both", "MHD_CALL", "2026-05-03"),
     )
     result = score(alloc, model, config)
-    assert result.components[COMPONENT_SPACING_PENALTY] < 0
+    assert result.components[COMPONENT_SPACING_PENALTY] == -2.0
 
 
-def test_spacing_penalty_zero_when_calls_far_apart() -> None:
-    """Two calls 4 days apart → no spacing penalty (≥ 3-day threshold)."""
+def test_spacing_penalty_zero_past_soft_cutoff() -> None:
+    """Two calls 7 days apart → zero contribution per scorer §12A `MAX_SOFT_GAP_DAYS = 6`
+    cutoff (the 7-day cutoff embeds the once-per-week call cadence)."""
     model = _model()
     config = ScoringConfig.first_release_defaults(model)
     alloc = (
         _unit("dr_both", "MICU_CALL", "2026-05-01"),
-        _unit("dr_both", "MHD_CALL", "2026-05-05"),
+        _unit("dr_both", "MHD_CALL", "2026-05-08"),
     )
     result = score(alloc, model, config)
     assert result.components[COMPONENT_SPACING_PENALTY] == 0.0
+
+
+def test_spacing_penalty_geometric_decay_progression() -> None:
+    """Per scorer §12A: at default weight -2, gaps 2..6 must produce the
+    halving sequence -2.0, -1.0, -0.5, -0.25, -0.125."""
+    model = _model()
+    config = ScoringConfig.first_release_defaults(model)
+    expected = {2: -2.0, 3: -1.0, 4: -0.5, 5: -0.25, 6: -0.125}
+    for gap, want in expected.items():
+        end_date = (date.fromisoformat("2026-05-01") + timedelta(days=gap)).isoformat()
+        alloc = (
+            _unit("dr_both", "MICU_CALL", "2026-05-01"),
+            _unit("dr_both", "MHD_CALL", end_date),
+        )
+        result = score(alloc, model, config)
+        got = result.components[COMPONENT_SPACING_PENALTY]
+        assert got == want, f"gap={gap}: expected {want}, got {got}"
+
+
+def test_spacing_penalty_strict_monotonic_decrease_property() -> None:
+    """Scorer §12A property test: at any negative weight, contribution
+    magnitude at gap=k MUST be strictly less than at gap=k-1, for k ∈ {3..6}."""
+    model = _model()
+    base_config = ScoringConfig.first_release_defaults(model)
+    for w in (-1.0, -2.0, -7.5):
+        config = replace(base_config, weights={**base_config.weights, COMPONENT_SPACING_PENALTY: w})
+        contributions: list[float] = []
+        for gap in range(2, 7):
+            end_date = (date.fromisoformat("2026-05-01") + timedelta(days=gap)).isoformat()
+            alloc = (
+                _unit("dr_both", "MICU_CALL", "2026-05-01"),
+                _unit("dr_both", "MHD_CALL", end_date),
+            )
+            contributions.append(score(alloc, model, config).components[COMPONENT_SPACING_PENALTY])
+        for i in range(1, len(contributions)):
+            assert abs(contributions[i]) < abs(contributions[i - 1]), (
+                f"weight={w} gap={i + 2}: |{contributions[i]}| not < |{contributions[i - 1]}|"
+            )
+
+
+def test_spacing_penalty_zero_when_weight_disabled() -> None:
+    """Scorer §12A: weight = 0 → contribution exactly zero for every gap
+    (operator-disable path)."""
+    model = _model()
+    base_config = ScoringConfig.first_release_defaults(model)
+    config = replace(base_config, weights={**base_config.weights, COMPONENT_SPACING_PENALTY: 0.0})
+    for gap in range(2, 7):
+        end_date = (date.fromisoformat("2026-05-01") + timedelta(days=gap)).isoformat()
+        alloc = (
+            _unit("dr_both", "MICU_CALL", "2026-05-01"),
+            _unit("dr_both", "MHD_CALL", end_date),
+        )
+        result = score(alloc, model, config)
+        assert result.components[COMPONENT_SPACING_PENALTY] == 0.0
 
 
 def test_standby_adjacency_penalty_fires() -> None:
