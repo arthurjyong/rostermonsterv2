@@ -12,8 +12,10 @@ First-release simplifications (out-of-scope details documented inline):
   per `docs/template_artifact_contract.md` §9 `pointRows.defaultRule`,
   because the parser-consumable template artifact subset does not
   currently carry point-row data. Likely surfaces as an OD entry.
-- `spacingPenalty` uses a fixed minimum-gap threshold (3 days); operator-
-  tuneable spacing parameters are FW-0007 territory.
+- `spacingPenalty` uses the v3 geometric-decay shape pinned in
+  `docs/scorer_contract.md` §12A (per D-0039): per-pair contribution
+  `weight / 2^(gap - 2)` for gap ∈ {2..6}, zero for gap ≥ 7. Operator-
+  tuneable curve parameters are FW-0007 territory.
 - `dualEligibleIcuBonus` rewards ICU_HD doctors taking MICU slots (the
   operator-flexible direction); the v1 magnitude tuning lands per FW-0014.
 """
@@ -43,10 +45,11 @@ from rostermonster.scorer.result import (
     ScoringConfig,
 )
 
-# First-release `spacingPenalty` minimum-gap threshold. Two call placements
-# for the same doctor closer than this many days each contribute one penalty
-# unit; tunable threshold lives behind FW-0007.
-_SPACING_MIN_GAP_DAYS = 3
+# First-release `spacingPenalty` cutoff per scorer §12A. Same-doctor call
+# pairs with gap ≤ MAX_SOFT_GAP_DAYS contribute on the geometric-decay
+# curve; gaps ≥ MAX_SOFT_GAP_DAYS + 1 contribute zero (the 7-day cutoff
+# embeds the once-per-week call cadence). Curve tunability is FW-0007.
+_MAX_SOFT_GAP_DAYS = 6
 
 
 def _shift_iso_date(iso: str, days: int) -> str:
@@ -157,18 +160,19 @@ def spacing_penalty(
     model: NormalizedModel,
     config: ScoringConfig,
 ) -> float:
-    """Penalty for any pair of call placements for the same doctor within
-    `_SPACING_MIN_GAP_DAYS` days of each other. Note: the rule engine
-    already rejects strict back-to-back call (gap < 2 days) per
-    `BACK_TO_BACK_CALL`; this component soft-penalizes the next-tightest
-    cluster (gap < `_SPACING_MIN_GAP_DAYS`) so spacing improves beyond the
-    hard-rule floor."""
+    """Geometric-decay spacing penalty per scorer §12A (D-0039). For each
+    same-doctor call pair, contribute `weight / 2^(gap - 2)` when gap ∈
+    {2..MAX_SOFT_GAP_DAYS}, zero past cutoff. Sums per-pair contributions
+    across ALL same-doctor call-pair combinations (not just consecutive
+    pairs) to satisfy §12A's "across all combinations" wording. The rule
+    engine already rejects gap < 2 via `BACK_TO_BACK_CALL`; gap = 0 (same
+    day) and gap = 1 will not appear in valid allocations but the curve
+    formula is undefined there, so they are skipped defensively."""
     weight = config.weights[COMPONENT_SPACING_PENALTY]
     if weight == 0:
         return 0.0
     call_slots = _call_slot_types(model)
 
-    # Collect call dates per doctor (as `date` objects for arithmetic).
     by_doctor: dict[str, list[date]] = defaultdict(list)
     for a in allocation:
         if a.doctorId is not None and a.slotType in call_slots:
@@ -177,14 +181,15 @@ def spacing_penalty(
             except ValueError:
                 continue
 
-    n_violations = 0
+    total = 0.0
     for dates_list in by_doctor.values():
         dates_sorted = sorted(dates_list)
-        for i in range(len(dates_sorted) - 1):
-            gap = (dates_sorted[i + 1] - dates_sorted[i]).days
-            if gap < _SPACING_MIN_GAP_DAYS:
-                n_violations += 1
-    return n_violations * weight
+        for i in range(len(dates_sorted)):
+            for j in range(i + 1, len(dates_sorted)):
+                gap = (dates_sorted[j] - dates_sorted[i]).days
+                if 2 <= gap <= _MAX_SOFT_GAP_DAYS:
+                    total += weight / (2 ** (gap - 2))
+    return total
 
 
 # --- 5. preLeavePenalty --------------------------------------------------
