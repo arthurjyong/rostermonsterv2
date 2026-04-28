@@ -173,7 +173,7 @@ This contract intentionally does not redefine:
 - low-level external API integration mechanics.
 
 ## 11A. Scorer Config tab (added under `docs/decision_log.md` D-0037)
-The launcher generates a separate **Scorer Config tab** in the source spreadsheet alongside the request-entry tab. The tab carries the operator-tuneable scoring component weight cells declared in `docs/scorer_contract.md` v2 §11 + §15 — one cell per first-release component identifier in `docs/domain_model.md` §11.2 (nine cells: `unfilledPenalty`, `pointBalanceWithinSection`, `pointBalanceGlobal`, `spacingPenalty`, `preLeavePenalty`, `crReward`, `dualEligibleIcuBonus`, `standbyAdjacencyPenalty`, `standbyCountFairnessPenalty`).
+The launcher generates a separate **Scorer Config tab** in the source spreadsheet alongside the request-entry tab. The tab carries the operator-tuneable scoring component weight cells declared in `docs/scorer_contract.md` v3 §11 + §15 — one cell per first-release component identifier in `docs/domain_model.md` §11.2 (nine cells: `unfilledPenalty`, `pointBalanceWithinSection`, `pointBalanceGlobal`, `spacingPenalty`, `preLeavePenalty`, `crReward`, `dualEligibleIcuBonus`, `standbyAdjacencyPenalty`, `standbyCountFairnessPenalty`).
 
 Settled constraints:
 - Tab is generated alongside the request-entry tab in the same source spreadsheet (single-spreadsheet-multi-tab shape).
