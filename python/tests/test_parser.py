@@ -39,6 +39,7 @@ from rostermonster.parser import (  # noqa: E402
 )
 from rostermonster.parser.admission import (  # noqa: E402
     ISSUE_DAY_INDEX_NON_CONTIGUOUS,
+    ISSUE_DAY_RAW_DATE_NOT_ISO,
     ISSUE_DOCTOR_KEY_DUPLICATE,
     ISSUE_DOCTOR_SECTION_UNKNOWN,
     ISSUE_HANDOFF_DAILY_EFFECT_DATE_ORPHAN,
@@ -64,6 +65,7 @@ from rostermonster.parser.scoring_overlay import (  # noqa: E402
     ISSUE_SCORING_CALL_POINT_MALFORMED,
     ISSUE_SCORING_COMPONENT_WEIGHT_MALFORMED,
     ISSUE_SCORING_COMPONENT_WEIGHT_MIS_SIGNED,
+    ISSUE_SCORING_POINT_ROW_SLOT_TYPE_DUPLICATE,
 )
 from rostermonster.snapshot import (  # noqa: E402
     CallPointLocator,
@@ -873,6 +875,43 @@ def test_malformed_call_point_cell_is_non_consumable() -> None:
     result = parse(snapshot, template)
     assert result.consumability is Consumability.NON_CONSUMABLE
     assert ISSUE_SCORING_CALL_POINT_MALFORMED in _issue_codes(result)
+
+
+def test_non_iso_raw_date_is_non_consumable() -> None:
+    """Per Codex P1 round-1 finding on PR #88 + D-0033: snapshot adapter
+    normalizes dates to ISO 8601; if a malformed raw date reaches the
+    parser, downstream consumers (rule engine `_shift_iso_date`, scoring
+    overlay `_default_point_for_day`) would crash with `ValueError`. The
+    parser MUST validate ISO format at admission and surface non-ISO
+    values as NON_CONSUMABLE through the normal admission channel."""
+    snapshot = icu_hd_snapshot()
+    template = icu_hd_template_artifact()
+    # Replace one day's rawDateText with a garbage string. Other days
+    # remain valid so we isolate the ISO-validation behavior.
+    bad_days = list(snapshot.dayRecords)
+    bad_days[0] = replace(bad_days[0], rawDateText="not-a-date")
+    snapshot = replace(snapshot, dayRecords=tuple(bad_days))
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_DAY_RAW_DATE_NOT_ISO in _issue_codes(result)
+
+
+def test_duplicate_point_row_slot_type_is_non_consumable() -> None:
+    """Per Codex P2 round-1 finding on PR #88 + template_artifact §9: each
+    call slot has at most one pointRow. Duplicate `pointRows[].slotType`
+    bindings would silently overwrite earlier rows in the slotType→rowKey
+    mapping; populated `callPointRecords` for the overwritten row would
+    look structurally valid but never be applied. Surface as
+    NON_CONSUMABLE rather than silently-wrong scoring."""
+    template = icu_hd_template_artifact()
+    # Add a second pointRow that binds to the same slotType as MICU_CALL_POINT.
+    duplicate_row = template.pointRows[0]  # MICU_CALL_POINT
+    extra = replace(duplicate_row, rowKey="MICU_CALL_POINT_ALIAS")
+    template = replace(template, pointRows=template.pointRows + (extra,))
+    snapshot = icu_hd_snapshot()
+    result = parse(snapshot, template)
+    assert result.consumability is Consumability.NON_CONSUMABLE
+    assert ISSUE_SCORING_POINT_ROW_SLOT_TYPE_DUPLICATE in _issue_codes(result)
 
 
 # --- standalone runner -----------------------------------------------------

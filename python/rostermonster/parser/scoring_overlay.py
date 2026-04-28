@@ -58,6 +58,7 @@ ISSUE_SCORING_CALL_POINT_DAY_REF_BROKEN = "SCORING_CALL_POINT_DAY_REF_BROKEN"
 ISSUE_SCORING_CALL_POINT_ROW_KEY_UNKNOWN = "SCORING_CALL_POINT_ROW_KEY_UNKNOWN"
 ISSUE_SCORING_CALL_POINT_MALFORMED = "SCORING_CALL_POINT_MALFORMED"
 ISSUE_SCORING_POINT_RULES_INCOMPLETE = "SCORING_POINT_RULES_INCOMPLETE"
+ISSUE_SCORING_POINT_ROW_SLOT_TYPE_DUPLICATE = "SCORING_POINT_ROW_SLOT_TYPE_DUPLICATE"
 
 
 def _is_blank(raw: str) -> bool:
@@ -257,15 +258,37 @@ def _overlay_point_rules(
     # Index point rows by rowKey; build the slotType → rowKey reverse
     # mapping the parser uses to translate snapshot callPointRecords (keyed
     # by callPointRowKey) into ScoringConfig.pointRules (keyed by slotType).
+    # Reject duplicate slotType bindings — silently overwriting earlier rows
+    # would let populated callPointRecords for the overwritten row look
+    # structurally valid while never being applied (template_artifact §9
+    # binds at most one pointRow per call slot).
     point_row_by_key: dict[str, PointRowDefinition] = {
         pr.rowKey: pr for pr in template.pointRows
     }
-    slot_type_by_row_key: dict[str, str] = {
-        pr.rowKey: pr.slotType for pr in template.pointRows
-    }
-    row_key_by_slot_type: dict[str, str] = {
-        pr.slotType: pr.rowKey for pr in template.pointRows
-    }
+    row_key_by_slot_type: dict[str, str] = {}
+    for pr in template.pointRows:
+        if pr.slotType in row_key_by_slot_type:
+            issues.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code=ISSUE_SCORING_POINT_ROW_SLOT_TYPE_DUPLICATE,
+                    message=(
+                        f"template.pointRows binds slotType {pr.slotType!r} "
+                        f"to multiple rowKeys "
+                        f"({row_key_by_slot_type[pr.slotType]!r}, "
+                        f"{pr.rowKey!r}); per "
+                        f"docs/template_artifact_contract.md §9 each call "
+                        f"slot has at most one pointRow"
+                    ),
+                    context={
+                        "slotType": pr.slotType,
+                        "firstRowKey": row_key_by_slot_type[pr.slotType],
+                        "duplicateRowKey": pr.rowKey,
+                    },
+                )
+            )
+            continue
+        row_key_by_slot_type[pr.slotType] = pr.rowKey
 
     # Day index → dateKey from the model period (parser's already-built
     # day-axis lookup).
