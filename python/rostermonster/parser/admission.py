@@ -43,6 +43,7 @@ from rostermonster.domain import (
 )
 from rostermonster.parser.request_semantics import parse_request_text
 from rostermonster.parser.result import ParserResult
+from rostermonster.parser.scoring_overlay import build_scoring_config
 from rostermonster.snapshot import Snapshot
 from rostermonster.template_artifact import TemplateArtifact
 
@@ -898,8 +899,23 @@ def parse(snapshot: Snapshot, template_artifact: TemplateArtifact) -> ParserResu
             tuple(accumulated) + tuple(consistency_issues)
         )
 
+    # Scoring-config overlay per `docs/parser_normalizer_contract.md` §9
+    # (D-0037). Sheet wins / template defaults backstop. Mis-signed weights,
+    # malformed numeric cells, and incomplete pointRules coverage (D-0038)
+    # are all admission-blocking — same NON_CONSUMABLE discipline as the
+    # earlier admission stages, with both `normalizedModel` and
+    # `scoringConfig` forced to None on failure per §9.
+    scoring_config, scoring_issues = build_scoring_config(
+        snapshot, template_artifact, normalized_model
+    )
+    if scoring_issues:
+        return ParserResult.non_consumable(
+            tuple(accumulated) + tuple(scoring_issues)
+        )
+
     return ParserResult.consumable(
         normalizedModel=normalized_model,
+        scoringConfig=scoring_config,
         issues=tuple(accumulated),
     )
 

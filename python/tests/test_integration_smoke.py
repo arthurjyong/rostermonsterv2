@@ -344,6 +344,38 @@ def test_full_retention_emits_sidecars_with_all_candidates() -> None:
         assert [c["candidateId"] for c in payload["candidates"]] == [1, 2, 3, 4]
 
 
+def test_pipeline_uses_parser_supplied_scoring_config_end_to_end() -> None:
+    """Per `docs/parser_normalizer_contract.md` §9 (D-0037): the parser
+    emits a `ScoringConfig` on CONSUMABLE results, overlaying snapshot
+    operator edits onto template defaults. Verify the scorer accepts the
+    parser-supplied config and produces a complete `ScoreResult` —
+    proving the parser → scorer handoff for scoring config is wired
+    end-to-end on real ICU/HD May 2026 data."""
+    template = icu_hd_template_artifact()
+    snapshot = _load_real_snapshot()
+    parsed = parse(snapshot, template)
+    assert parsed.consumability is Consumability.CONSUMABLE
+    assert parsed.scoringConfig is not None
+
+    model = parsed.normalizedModel
+    parser_config = parsed.scoringConfig
+    solver_result = solve(
+        model,
+        ruleEngine=rule_engine_evaluate,
+        seed=_RUN_SEED,
+        terminationBounds=TerminationBounds(maxCandidates=2),
+    )
+    assert isinstance(solver_result, CandidateSet)
+    for cand in solver_result.candidates:
+        score_result = score(cand.assignments, model, parser_config)
+        for component in ALL_COMPONENTS:
+            assert component in score_result.components, (
+                f"score result built from parser-supplied scoringConfig "
+                f"missing component {component!r}"
+            )
+        assert score_result.direction is ScoreDirection.HIGHER_IS_BETTER
+
+
 def test_selector_byte_identical_re_runs_on_real_data() -> None:
     """End-to-end determinism: the full pipeline + selector + sidecar
     files are byte-identical across re-runs on identical inputs per

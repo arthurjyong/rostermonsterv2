@@ -33,6 +33,10 @@ from rostermonster.parser.admission import (  # noqa: E402
     ISSUE_DOCTOR_SECTION_UNKNOWN,
 )
 from rostermonster.snapshot import (  # noqa: E402
+    CallPointLocator,
+    CallPointRecord,
+    ComponentWeightLocator,
+    ComponentWeightRecord,
     DayLocator,
     DayRecord,
     DoctorLocator,
@@ -44,6 +48,7 @@ from rostermonster.snapshot import (  # noqa: E402
     PrefilledAssignmentRecord,
     RequestLocator,
     RequestRecord,
+    ScoringConfigRecords,
     Snapshot,
     SnapshotMetadata,
 )
@@ -118,6 +123,43 @@ def _prefilled_record(d: dict) -> PrefilledAssignmentRecord:
     )
 
 
+def _component_weight_record(d: dict) -> ComponentWeightRecord:
+    loc = d["sourceLocator"]
+    return ComponentWeightRecord(
+        componentId=d["componentId"],
+        rawValue=d["rawValue"],
+        sourceLocator=ComponentWeightLocator(componentId=loc["componentId"]),
+        physicalSourceRef=_physical_ref(d["physicalSourceRef"]),
+    )
+
+
+def _call_point_record(d: dict) -> CallPointRecord:
+    loc = d["sourceLocator"]
+    return CallPointRecord(
+        callPointRowKey=d["callPointRowKey"],
+        dayIndex=d["dayIndex"],
+        rawValue=d["rawValue"],
+        sourceLocator=CallPointLocator(
+            callPointRowKey=loc["callPointRowKey"],
+            dayIndex=loc["dayIndex"],
+        ),
+        physicalSourceRef=_physical_ref(d["physicalSourceRef"]),
+    )
+
+
+def _scoring_config_records(raw: dict) -> ScoringConfigRecords:
+    block = raw.get("scoringConfigRecords") or {}
+    return ScoringConfigRecords(
+        componentWeightRecords=tuple(
+            _component_weight_record(r)
+            for r in block.get("componentWeightRecords", [])
+        ),
+        callPointRecords=tuple(
+            _call_point_record(r) for r in block.get("callPointRecords", [])
+        ),
+    )
+
+
 def _load_real_snapshot() -> Snapshot:
     raw = json.loads(FIXTURE_PATH.read_text())
     md = raw["metadata"]
@@ -148,6 +190,7 @@ def _load_real_snapshot() -> Snapshot:
         prefilledAssignmentRecords=tuple(
             _prefilled_record(d) for d in raw["prefilledAssignmentRecords"]
         ),
+        scoringConfigRecords=_scoring_config_records(raw),
     )
 
 
@@ -236,6 +279,28 @@ def test_real_icu_hd_may_2026_is_consumable() -> None:
     assert any(
         MachineEffect.sameDayHardBlock in de.effects for de in nm.dailyEffects
     ), "expected at least one sameDayHardBlock somewhere in daily effects"
+
+    # `scoringConfig` is populated on CONSUMABLE per parser_normalizer §9
+    # (D-0037). The dev-copy has no Scorer Config tab and no operator-edited
+    # call-point cells, so weights match template defaults and pointRules
+    # come from per-day weekday/weekend defaultRule. Cross-product is total
+    # per D-0038.
+    cfg = result.scoringConfig
+    assert cfg is not None, "CONSUMABLE result MUST carry scoringConfig per §9"
+    for component, default in template.componentWeights.items():
+        assert cfg.weights[component] == default
+    call_slot_types = {
+        st.slotType for st in nm.slotTypes if st.slotKind == "CALL"
+    }
+    expected_keys = {
+        (slot_type, day.dateKey)
+        for slot_type in call_slot_types
+        for day in nm.period.days
+    }
+    assert set(cfg.pointRules.keys()) == expected_keys, (
+        "pointRules must cover the full call-slot × day cross-product per "
+        "D-0038 producer-coverage requirement"
+    )
 
 
 # --- Negative case --------------------------------------------------------

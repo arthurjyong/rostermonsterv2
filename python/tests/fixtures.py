@@ -30,6 +30,8 @@ from rostermonster.template_artifact import (
     EligibilityRecord,
     InputSheetSection,
     OutputSurface,
+    PointRowDefaultRule,
+    PointRowDefinition,
     RequestSemanticsBinding,
     SlotDefinition,
     TemplateArtifact,
@@ -115,6 +117,46 @@ def icu_hd_template_artifact() -> TemplateArtifact:
                 ),
             ),
         ),
+        # `pointRows` and `componentWeights` added under D-0037 — the parser
+        # consumes both at scoring-overlay time per
+        # `docs/parser_normalizer_contract.md` §9. Default values are the
+        # ICU/HD first-release weights documented in
+        # `docs/template_artifact_contract.md` §9 + §11; fixture aligns 1:1.
+        pointRows=(
+            PointRowDefinition(
+                rowKey="MICU_CALL_POINT",
+                slotType="MICU_CALL",
+                label="MICU Call Point",
+                defaultRule=PointRowDefaultRule(
+                    weekdayToWeekday=1.0,
+                    weekdayToWeekendOrPublicHoliday=1.75,
+                    weekendOrPublicHolidayToWeekendOrPublicHoliday=2.0,
+                    weekendOrPublicHolidayToWeekday=1.5,
+                ),
+            ),
+            PointRowDefinition(
+                rowKey="MHD_CALL_POINT",
+                slotType="MHD_CALL",
+                label="MHD Call Point",
+                defaultRule=PointRowDefaultRule(
+                    weekdayToWeekday=1.0,
+                    weekdayToWeekendOrPublicHoliday=1.75,
+                    weekendOrPublicHolidayToWeekendOrPublicHoliday=2.0,
+                    weekendOrPublicHolidayToWeekday=1.5,
+                ),
+            ),
+        ),
+        componentWeights={
+            "unfilledPenalty": -100.0,
+            "pointBalanceWithinSection": -1.0,
+            "pointBalanceGlobal": -1.0,
+            "spacingPenalty": -2.0,
+            "preLeavePenalty": -10.0,
+            "crReward": 5.0,
+            "dualEligibleIcuBonus": 0.5,
+            "standbyAdjacencyPenalty": -3.0,
+            "standbyCountFairnessPenalty": -1.0,
+        },
     )
 
 
