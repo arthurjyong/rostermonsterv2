@@ -9,12 +9,15 @@
 // late-M2 per D-0036 — can match the two tabs by suffix).
 //
 // Layout (operator-facing):
-//   row 1:    "Scorer Config" title (merged A1:C1, bold, large)
-//   row 3:    column headers "Component" | "Weight" | "Notes"
+//   row 1:    "Scorer Config" title (merged A1:D1, bold, large)
+//   row 3:    column headers "Component" | "Weight" | "Description" | "Suggested Range"
 //   rows 4-N: one row per first-release scorer component
 //             (col A: friendly label; col B: numeric weight cell —
 //             operator-editable, pre-populated from
-//             template.scoring.componentWeights; col C: sign-orientation hint)
+//             template.scoring.componentWeights, with data validation
+//             enforcing sign orientation; col C: 1-2 sentence description
+//             of what the component scores; col D: suggested numeric range
+//             with the sign discipline embedded)
 //
 // Each data row carries `DeveloperMetadata` with key
 // `rosterMonster:componentId` and the canonical component identifier
@@ -24,12 +27,13 @@
 // label wording. Friendly labels can be reworded in future template
 // versions without breaking extraction.
 //
-// Cell C-column layout per row carries the sign-orientation hint:
-//   "Penalty (must be ≤ 0)"  — for components in PENALTY_COMPONENTS
-//   "Reward (must be ≥ 0)"   — for components in REWARD_COMPONENTS
-// per `docs/scorer_contract.md` §10 / §15. The parser-side admission
-// discipline (`docs/parser_normalizer_contract.md` §14) is the
-// authoritative correctness layer; this hint is operator UX only.
+// Per-cell data validation enforces sign orientation at type-time:
+//   - PENALTY_COMPONENTS rows: Number ≤ 0, setAllowInvalid(false)
+//   - REWARD_COMPONENTS rows: Number ≥ 0, setAllowInvalid(false)
+// per `docs/scorer_contract.md` §10 / §15. Operator typing a wrong-sign
+// value gets an immediate Sheets popup; the parser-side admission
+// discipline (`docs/parser_normalizer_contract.md` §14) remains the
+// authoritative correctness layer at parse time.
 
 // Sign-orientation classifications mirror scorer_contract §10 / §15 +
 // the Python implementation's `PENALTY_COMPONENTS` / `REWARD_COMPONENTS`
@@ -63,6 +67,63 @@ var SCORER_CONFIG_COMPONENT_LABELS_ = {
   standbyCountFairnessPenalty: 'Standby-count fairness penalty',
 };
 
+// 1-2 sentence operator-facing descriptions per component. Aim is the
+// operator who has never read the contracts can still understand what
+// they're tuning. Sign discipline is in the Suggested Range column to
+// keep this column descriptive rather than prescriptive.
+var SCORER_CONFIG_COMPONENT_DESCRIPTIONS_ = {
+  unfilledPenalty:
+    'Fires once for every required slot that ends up without a doctor. ' +
+    'Discourages rosters that leave any slots empty.',
+  pointBalanceWithinSection:
+    'Penalises uneven call-point load within each doctor group ' +
+    '(ICU-only, ICU+HD, HD-only). Encourages fairness inside each ' +
+    'cohort independently.',
+  pointBalanceGlobal:
+    'Penalises uneven call-point load across ALL doctors regardless ' +
+    'of group. Cross-group fairness counterweight to the within-section ' +
+    'measure.',
+  spacingPenalty:
+    'Fires when the same doctor has two call placements within the ' +
+    '3-day minimum-gap window. Spreads call burden across the period.',
+  preLeavePenalty:
+    'Fires when a doctor is on call the day before a leave/absence ' +
+    '(annual leave, EMCC PM-off, etc).',
+  crReward:
+    'Rewards rosters that honour call requests (CRs). Diminishes per ' +
+    'doctor (1st CR weighted full, 2nd half, 3rd third…) to spread ' +
+    'honored CRs across the team.',
+  dualEligibleIcuBonus:
+    'Bonus when an ICU+HD eligible (R3) doctor takes a MICU call. ' +
+    'Encourages prioritising R3 doctors for MICU calls to prepare ' +
+    'them for future registrar calls.',
+  standbyAdjacencyPenalty:
+    'Fires when the same doctor has standby on day N and call on ' +
+    'day N+1 (or vice versa). Prevents "standby-then-call" double duty.',
+  standbyCountFairnessPenalty:
+    'Penalises uneven standby-count distribution across doctors. ' +
+    'Standby-load fairness counterpart to the call-point fairness measures.',
+};
+
+// Sign-orientation constraints per component per
+// `docs/scorer_contract.md` §10 / §15. We deliberately do NOT publish
+// "typical magnitude" guidance here — the v1 reference-pass tuning
+// (FW-0014) hasn't completed and any numeric ranges shipped now would
+// be uncalibrated guesswork. Operators get the sign rule (which the
+// data-validation rule enforces at type-time) and decide magnitudes
+// from pilot experience.
+var SCORER_CONFIG_COMPONENT_SIGN_RULES_ = {
+  unfilledPenalty: 'Must be ≤ 0',
+  pointBalanceWithinSection: 'Must be ≤ 0',
+  pointBalanceGlobal: 'Must be ≤ 0',
+  spacingPenalty: 'Must be ≤ 0',
+  preLeavePenalty: 'Must be ≤ 0',
+  crReward: 'Must be ≥ 0',
+  dualEligibleIcuBonus: 'Must be ≥ 0',
+  standbyAdjacencyPenalty: 'Must be ≤ 0',
+  standbyCountFairnessPenalty: 'Must be ≤ 0',
+};
+
 // Canonical iteration order for the 9 first-release components — matches
 // `docs/domain_model.md` §11.2 + ALL_COMPONENTS in
 // `python/rostermonster/scorer/result.py` so the row order on the tab
@@ -87,16 +148,36 @@ function buildScorerConfigTabName_(versionedRequestTabName) {
   return 'Scorer Config ' + versionedRequestTabName;
 }
 
-function _scorerConfigSignNotes_(componentId) {
+function _scorerConfigBuildDataValidation_(componentId) {
+  // Sign-orientation enforcement at type-time per
+  // `docs/scorer_contract.md` §10 / §15. setAllowInvalid(false) makes
+  // Sheets reject the input with a popup rather than warn-and-allow.
+  // Help text shows in the popup so the operator immediately understands
+  // why their value was rejected.
   if (SCORER_CONFIG_PENALTY_COMPONENTS_.indexOf(componentId) >= 0) {
-    return 'Penalty (must be ≤ 0)';
+    return SpreadsheetApp.newDataValidation()
+      .requireNumberLessThanOrEqualTo(0)
+      .setHelpText(
+        SCORER_CONFIG_COMPONENT_LABELS_[componentId] +
+        ' is a penalty component — its weight MUST be ≤ 0 ' +
+        '(non-positive contribution to total score).'
+      )
+      .setAllowInvalid(false)
+      .build();
   }
   if (SCORER_CONFIG_REWARD_COMPONENTS_.indexOf(componentId) >= 0) {
-    return 'Reward (must be ≥ 0)';
+    return SpreadsheetApp.newDataValidation()
+      .requireNumberGreaterThanOrEqualTo(0)
+      .setHelpText(
+        SCORER_CONFIG_COMPONENT_LABELS_[componentId] +
+        ' is a reward component — its weight MUST be ≥ 0 ' +
+        '(non-negative contribution to total score).'
+      )
+      .setAllowInvalid(false)
+      .build();
   }
-  // Should not happen — every first-release component is classified — but
-  // we surface defensively rather than silently emit a blank notes cell.
-  return 'Unknown sign orientation';
+  // Should not happen — every first-release component is classified.
+  return null;
 }
 
 // Build a Scorer Config tab inside the given spreadsheet. Returns the
@@ -128,9 +209,10 @@ function buildScorerConfigTab_(ss, requestEntryTabName, template) {
   var firstDataRow = 4;
   var componentCount = SCORER_CONFIG_ALL_COMPONENTS_.length;
   var lastDataRow = firstDataRow + componentCount - 1;
+  var totalCols = 4;
 
-  // Title cell, merged across all three columns.
-  sheet.getRange(titleRow, 1, 1, 3).merge();
+  // Title cell, merged across all four columns.
+  sheet.getRange(titleRow, 1, 1, totalCols).merge();
   sheet.getRange(titleRow, 1)
     .setValue('Scorer Config')
     .setFontSize(14)
@@ -138,8 +220,8 @@ function buildScorerConfigTab_(ss, requestEntryTabName, template) {
     .setHorizontalAlignment('center');
 
   // Header row.
-  sheet.getRange(headerRow, 1, 1, 3).setValues([
-    ['Component', 'Weight', 'Notes'],
+  sheet.getRange(headerRow, 1, 1, totalCols).setValues([
+    ['Component', 'Weight', 'Description', 'Sign'],
   ]).setFontWeight('bold').setBackground('#e8e8e8');
 
   // 9 data rows.
@@ -156,22 +238,29 @@ function buildScorerConfigTab_(ss, requestEntryTabName, template) {
     }
     var defaultWeight = componentWeights[componentId];
     var label = SCORER_CONFIG_COMPONENT_LABELS_[componentId] || componentId;
-    var notes = _scorerConfigSignNotes_(componentId);
-    dataValues.push([label, defaultWeight, notes]);
+    var description = SCORER_CONFIG_COMPONENT_DESCRIPTIONS_[componentId] || '';
+    var signRule = SCORER_CONFIG_COMPONENT_SIGN_RULES_[componentId] || '';
+    dataValues.push([label, defaultWeight, description, signRule]);
   }
-  sheet.getRange(firstDataRow, 1, componentCount, 3).setValues(dataValues);
+  sheet.getRange(firstDataRow, 1, componentCount, totalCols).setValues(dataValues);
 
-  // Column widths — labels need most space; weight cells modest; notes
-  // wide enough to fit "Penalty (must be ≤ 0)" without truncation.
-  sheet.setColumnWidth(1, 280);
-  sheet.setColumnWidth(2, 100);
-  sheet.setColumnWidth(3, 200);
+  // Wrap text only in the description column; the sign column is short
+  // single-line text that doesn't benefit from wrapping.
+  sheet.getRange(firstDataRow, 3, componentCount, 1).setWrap(true);
+  sheet.getRange(firstDataRow, 1, componentCount, 4).setVerticalAlignment('top');
+
+  // Column widths — label modest, weight narrow, description generous
+  // for multi-sentence content, sign cell narrow (just "Must be ≤ 0").
+  sheet.setColumnWidth(1, 240);
+  sheet.setColumnWidth(2, 90);
+  sheet.setColumnWidth(3, 420);
+  sheet.setColumnWidth(4, 110);
 
   // Trim unused columns / rows so protection semantics are bounded
   // (mirrors the request-entry tab discipline in Layout.gs).
   var maxCols = sheet.getMaxColumns();
-  if (maxCols > 3) {
-    sheet.deleteColumns(4, maxCols - 3);
+  if (maxCols > totalCols) {
+    sheet.deleteColumns(totalCols + 1, maxCols - totalCols);
   }
   var maxRows = sheet.getMaxRows();
   if (maxRows > lastDataRow) {
@@ -189,19 +278,31 @@ function buildScorerConfigTab_(ss, requestEntryTabName, template) {
   // with "Adding developer metadata to arbitrary ranges is not currently
   // supported." Use A1 row notation ("4:4") so the range is recognized
   // as row-scoped.
+  //
+  // Per-row data validation enforces sign orientation at type-time.
+  // The parser-side admission (parser_normalizer §14) remains the
+  // authoritative correctness layer at parse time, but the operator
+  // gets immediate feedback here without round-tripping through the
+  // Python pipeline.
   for (var j = 0; j < componentCount; j++) {
+    var componentIdJ = SCORER_CONFIG_ALL_COMPONENTS_[j];
     var rowNum = firstDataRow + j;
     var rowRange = sheet.getRange(rowNum + ':' + rowNum);
     rowRange.addDeveloperMetadata(
       'rosterMonster:componentId',
-      SCORER_CONFIG_ALL_COMPONENTS_[j]
+      componentIdJ
     );
+    var validation = _scorerConfigBuildDataValidation_(componentIdJ);
+    if (validation !== null) {
+      sheet.getRange(rowNum, 2).setDataValidation(validation);
+    }
   }
 
   // Lock down the tab so only the weight cells (column B, rows 4-12) are
-  // operator-editable. Title, headers, labels, notes are template-owned-
-  // structural per `docs/sheet_generation_contract.md` §11A. Same
-  // approach as ProtectionAndValidation.gs uses for the request-entry tab.
+  // operator-editable. Title, headers, labels, descriptions, suggested
+  // ranges are template-owned-structural per
+  // `docs/sheet_generation_contract.md` §11A. Same approach as
+  // ProtectionAndValidation.gs uses for the request-entry tab.
   var protection = sheet.protect()
     .setDescription('Scorer Config tab — all cells locked except weight column')
     .setWarningOnly(false);
