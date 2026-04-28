@@ -143,6 +143,27 @@ Proposed in this checkpoint (normative):
 
 Rationale: a flat per-CR weight would be indifferent to whether a single doctor hoards all honored `CR` requests. A diminishing curve rewards spreading honored `CR`s across doctors while still preferring "more honored `CR`s is better" past the seeding floor delivered by the solver (see `docs/solver_contract.md`).
 
+## 12A) `spacingPenalty` geometric-decay property (added under `docs/decision_log.md` D-0039)
+Normative:
+
+`spacingPenalty` MUST implement a **geometric-decay penalty across same-doctor call-pair gaps** with an explicit zero cutoff:
+
+- For any doctor `d` and any pair of `d`'s call-slot placements with gap `g` days (`g = 2` is the smallest soft-window gap; `g = 1` is hard-blocked by `BACK_TO_BACK_CALL` per `docs/rule_engine_contract.md` §11), the per-pair contribution to `spacingPenalty` MUST be:
+  - non-zero with magnitude strictly decreasing as `g` increases, for `g` in the soft-window range `[2, MAX_SOFT_GAP_DAYS]`,
+  - exactly zero for `g > MAX_SOFT_GAP_DAYS`.
+- **Strict monotonic decrease across the soft window**: contribution at `g = k` MUST be strictly less in absolute magnitude than contribution at `g = k − 1`, for `k ∈ {3, …, MAX_SOFT_GAP_DAYS}`.
+- **Zero past cutoff**: contribution at `g ≥ MAX_SOFT_GAP_DAYS + 1` MUST be exactly zero.
+- The total `spacingPenalty.score` is the sum of per-pair contributions across all same-doctor call-pair combinations in the allocation, multiplied by sign-correctness from `weights[spacingPenalty]` (which is non-positive per §10 / §15).
+
+First-release fixed shape (per D-0039):
+- `MAX_SOFT_GAP_DAYS = 6`. A 7-day gap corresponds to roughly once-per-week call cadence, the natural rhythm we neither encourage nor discourage; gaps `≥ 7` contribute zero so the penalty does not push the solver to spread calls beyond weekly.
+- Per-pair contribution shape is **geometric / halving**: `weights[spacingPenalty] / 2^(g − 2)` for `g ∈ {2, 3, 4, 5, 6}`. At `g = 2` the contribution is the full per-pair weight; each additional day halves it.
+- Concrete progression at `weights[spacingPenalty] = -2`: `g = 2 → -2.0`; `g = 3 → -1.0`; `g = 4 → -0.5`; `g = 5 → -0.25`; `g = 6 → -0.125`; `g ≥ 7 → 0.0`.
+
+Operator-tuneable curve parameters (alternative `MAX_SOFT_GAP_DAYS`, alternative decay shapes such as linear or exponential with operator-supplied half-life, etc.) remain `docs/future_work.md` FW-0007 deferred, same discipline as `crReward`'s curve in §12.
+
+Rationale: a binary count of "gap < 3" pairs (the v2-pre-D-0039 implementation) gives the solver no gradient between gap = 2 and gap = 6 — both contribute the same per pair, so the seeded tie-break in `SEEDED_RANDOM_BLIND` Phase 2 (`docs/solver_contract.md` §12) cannot distinguish "tightly spaced but legal" from "comfortably spaced". The geometric decay restores the v1-style continuous gradient: tighter gaps hurt more than wider gaps within the soft window, so the solver naturally prefers wider spacing among rule-valid options. Hard-pinning the shape in the contract (rather than leaving it as implementation detail like §12) is justified by v1 having pilot validation on the halving curve; deferring tunability to FW-0007 keeps the first-release surface tight.
+
 ## 13) Direction-guard invariant
 Proposed in this checkpoint (normative):
 
