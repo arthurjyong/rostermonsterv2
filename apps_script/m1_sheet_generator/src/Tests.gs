@@ -18,6 +18,13 @@ function runAllTests_() {
     testExtractSpreadsheetIdAcceptsAccountScopedUrl_,
     testExtractSpreadsheetIdRejectsUnrecognizedValue_,
     testExtractSpreadsheetIdRejectsPublishedLinkFalseMatch_,
+    // M2 C7 — Scorer Config tab + FW-0024 (D-0037 producer-side wiring).
+    testTemplatePointRowsAllCarrySlotType_,
+    testTemplatePointRowsSlotTypeReferencesKnownCallSlot_,
+    testTemplateComponentWeightsCoversAllNineFirstReleaseComponents_,
+    testTemplateComponentWeightsAreSignCorrect_,
+    testScorerConfigTabNamePairsWithRequestEntryTab_,
+    testScorerConfigComponentRowOrderMatchesPythonAllComponents_,
   ];
   var failures = [];
   for (var i = 0; i < tests.length; i++) {
@@ -140,6 +147,135 @@ function testExtractSpreadsheetIdRejectsPublishedLinkFalseMatch_() {
   assertThrows_(function () {
     extractSpreadsheetId_('https://docs.google.com/spreadsheets/d/e/2PACX-1vShortPubId/pubhtml');
   }, 'published-link URL with a single-char e/ segment must not be mis-extracted');
+}
+
+// ---------------------------------------------------------------------------
+// M2 C7 — Scorer Config tab + FW-0024 (D-0037 producer-side wiring)
+// ---------------------------------------------------------------------------
+
+function testTemplatePointRowsAllCarrySlotType_() {
+  // Per `docs/decision_log.md` D-0037 + template_artifact_contract.md §9:
+  // every pointRow MUST declare slotType. Without it, the parser overlay
+  // cannot derive ScoringConfig.pointRules per parser_normalizer §9.
+  var template = loadTemplateArtifactByDepartment_('CGH ICU/HD Call');
+  var pointRows = template.inputSheetLayout.pointRows;
+  assertTrue_(pointRows.length > 0, 'template must declare at least one pointRow');
+  for (var i = 0; i < pointRows.length; i++) {
+    var pr = pointRows[i];
+    assertTrue_(typeof pr.slotType === 'string' && pr.slotType.length > 0,
+      'pointRow ' + JSON.stringify(pr.rowKey) + ' missing slotType binding (D-0037)');
+  }
+}
+
+function testTemplatePointRowsSlotTypeReferencesKnownCallSlot_() {
+  // Per template_artifact_contract.md §9: pointRows[].slotType MUST
+  // reference a slots[].slotId whose slotKind == 'CALL'.
+  var template = loadTemplateArtifactByDepartment_('CGH ICU/HD Call');
+  var callSlotIds = {};
+  for (var i = 0; i < template.slots.length; i++) {
+    if (template.slots[i].slotKind === 'CALL') {
+      callSlotIds[template.slots[i].slotId] = true;
+    }
+  }
+  var pointRows = template.inputSheetLayout.pointRows;
+  for (var j = 0; j < pointRows.length; j++) {
+    var pr = pointRows[j];
+    assertTrue_(callSlotIds[pr.slotType] === true,
+      'pointRow rowKey=' + pr.rowKey + ' binds slotType=' + pr.slotType +
+      ' which is not a known CALL slot');
+  }
+}
+
+function testTemplateComponentWeightsCoversAllNineFirstReleaseComponents_() {
+  // Per template_artifact_contract.md §11 (D-0037): scoring.componentWeights
+  // MUST have one entry per first-release component identifier.
+  var template = loadTemplateArtifactByDepartment_('CGH ICU/HD Call');
+  var weights = template.scoring.componentWeights;
+  assertTrue_(typeof weights === 'object' && weights !== null,
+    'scoring.componentWeights missing or not an object');
+  var required = [
+    'unfilledPenalty',
+    'pointBalanceWithinSection',
+    'pointBalanceGlobal',
+    'spacingPenalty',
+    'preLeavePenalty',
+    'crReward',
+    'dualEligibleIcuBonus',
+    'standbyAdjacencyPenalty',
+    'standbyCountFairnessPenalty',
+  ];
+  for (var i = 0; i < required.length; i++) {
+    var componentId = required[i];
+    assertTrue_(
+      Object.prototype.hasOwnProperty.call(weights, componentId),
+      'scoring.componentWeights missing required component: ' + componentId
+    );
+    assertTrue_(typeof weights[componentId] === 'number' && isFinite(weights[componentId]),
+      'scoring.componentWeights.' + componentId + ' must be a finite number');
+  }
+}
+
+function testTemplateComponentWeightsAreSignCorrect_() {
+  // Per scorer_contract.md §10 / §15 + template_artifact_contract.md §11:
+  // template defaults MUST preserve sign orientation. Penalty components
+  // contribute non-positively; reward components contribute non-negatively.
+  var template = loadTemplateArtifactByDepartment_('CGH ICU/HD Call');
+  var w = template.scoring.componentWeights;
+  // Penalties — all <= 0.
+  assertTrue_(w.unfilledPenalty <= 0,
+    'unfilledPenalty must be <= 0; got ' + w.unfilledPenalty);
+  assertTrue_(w.pointBalanceWithinSection <= 0,
+    'pointBalanceWithinSection must be <= 0');
+  assertTrue_(w.pointBalanceGlobal <= 0,
+    'pointBalanceGlobal must be <= 0');
+  assertTrue_(w.spacingPenalty <= 0, 'spacingPenalty must be <= 0');
+  assertTrue_(w.preLeavePenalty <= 0, 'preLeavePenalty must be <= 0');
+  assertTrue_(w.standbyAdjacencyPenalty <= 0,
+    'standbyAdjacencyPenalty must be <= 0');
+  assertTrue_(w.standbyCountFairnessPenalty <= 0,
+    'standbyCountFairnessPenalty must be <= 0');
+  // Rewards — all >= 0.
+  assertTrue_(w.crReward >= 0, 'crReward must be >= 0; got ' + w.crReward);
+  assertTrue_(w.dualEligibleIcuBonus >= 0,
+    'dualEligibleIcuBonus must be >= 0');
+}
+
+function testScorerConfigTabNamePairsWithRequestEntryTab_() {
+  // The Scorer Config tab name MUST share the request-entry tab's
+  // version suffix so the future snapshot extractor (M2 C8) can match
+  // them by suffix. Implementation detail: prefix "Scorer Config " +
+  // request tab name.
+  var requestTabName = 'v0428123045';
+  var scorerTabName = buildScorerConfigTabName_(requestTabName);
+  assertTrue_(scorerTabName.indexOf(requestTabName) >= 0,
+    'Scorer Config tab name must embed the request-entry tab name; got ' +
+    JSON.stringify(scorerTabName));
+}
+
+function testScorerConfigComponentRowOrderMatchesPythonAllComponents_() {
+  // The 9 component rows on the Scorer Config tab MUST be in the
+  // canonical order published in `python/rostermonster/scorer/result.py`'s
+  // ALL_COMPONENTS tuple (= docs/domain_model.md §11.2). Stable order
+  // gives the snapshot extractor a fallback if DeveloperMetadata read
+  // ever fails — extractor can fall back to row-index lookup.
+  var expected = [
+    'unfilledPenalty',
+    'pointBalanceWithinSection',
+    'pointBalanceGlobal',
+    'spacingPenalty',
+    'preLeavePenalty',
+    'crReward',
+    'dualEligibleIcuBonus',
+    'standbyAdjacencyPenalty',
+    'standbyCountFairnessPenalty',
+  ];
+  assertEqualNumber_(SCORER_CONFIG_ALL_COMPONENTS_.length, expected.length,
+    'SCORER_CONFIG_ALL_COMPONENTS_ length mismatch');
+  for (var i = 0; i < expected.length; i++) {
+    assertTrue_(SCORER_CONFIG_ALL_COMPONENTS_[i] === expected[i],
+      'SCORER_CONFIG_ALL_COMPONENTS_[' + i + '] expected ' + expected[i] +
+      ' got ' + SCORER_CONFIG_ALL_COMPONENTS_[i]);
+  }
 }
 
 // ---------------------------------------------------------------------------

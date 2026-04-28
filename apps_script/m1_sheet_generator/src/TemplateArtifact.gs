@@ -66,6 +66,10 @@ var ICU_HD_TEMPLATE_ARTIFACT = Object.freeze({
     pointRows: Object.freeze([
       Object.freeze({
         rowKey: 'MICU_CALL_POINT',
+        // `slotType` binding added under `docs/decision_log.md` D-0037 — anchors
+        // the parser overlay's (callPointRowKey, dayIndex) → (slotType, dateKey)
+        // mapping per `docs/parser_normalizer_contract.md` §9.
+        slotType: 'MICU_CALL',
         label: 'MICU Call Point',
         defaultRule: Object.freeze({
           weekdayToWeekday: 1,
@@ -76,6 +80,7 @@ var ICU_HD_TEMPLATE_ARTIFACT = Object.freeze({
       }),
       Object.freeze({
         rowKey: 'MHD_CALL_POINT',
+        slotType: 'MHD_CALL',
         label: 'MHD Call Point',
         defaultRule: Object.freeze({
           weekdayToWeekday: 1,
@@ -150,6 +155,27 @@ var ICU_HD_TEMPLATE_ARTIFACT = Object.freeze({
   }),
 
   scoring: Object.freeze({
+    // `componentWeights` added under `docs/decision_log.md` D-0037 — one
+    // numeric default per first-release scorer component identifier per
+    // `docs/domain_model.md` §11.2 + `docs/template_artifact_contract.md`
+    // §11. The launcher pre-populates these onto the Scorer Config tab
+    // (`docs/sheet_generation_contract.md` §11A); operator edits override
+    // at run time per `docs/parser_normalizer_contract.md` §9 overlay.
+    // Sign orientation per `docs/scorer_contract.md` §10 / §15: penalties
+    // contribute non-positively, rewards contribute non-negatively.
+    // Magnitudes here are placeholders; v1 reference-pass tuning lands
+    // separately per FW-0014.
+    componentWeights: Object.freeze({
+      unfilledPenalty: -100,
+      pointBalanceWithinSection: -1,
+      pointBalanceGlobal: -1,
+      spacingPenalty: -2,
+      preLeavePenalty: -10,
+      crReward: 5,
+      dualEligibleIcuBonus: 0.5,
+      standbyAdjacencyPenalty: -3,
+      standbyCountFairnessPenalty: -1,
+    }),
     templateKnobs: Object.freeze([]),
   }),
 });
