@@ -197,6 +197,10 @@ The launcher attaches Apps Script `DeveloperMetadata` to specific spreadsheet lo
 - `rosterMonster:templateVersion` — value matching the template artifact version.
 - `rosterMonster:runId` — value matching the launcher's per-run identifier (used for tab-name pairing per §11A).
 
+**Sheet level on the request-entry tab** (NEW under D-0043 sub-decision 1 — drives extractor cardinality validation per D-0043 sub-decision 3):
+- `rosterMonster:expectedDoctorCount.<sectionKey>` per declared section, value = integer doctor-row count the launcher generated for that section (e.g., `expectedDoctorCount.MICU = 5`). Variable cardinality — depends on the operator-supplied doctor counts at launch time.
+- `rosterMonster:expectedDayCount` — integer day-axis day count the launcher generated. Variable cardinality — depends on the period length.
+
 **Per-row on the request-entry tab** (NEW under D-0043):
 - `rosterMonster:section` on each section header row, value = template-declared `inputSheetSections.sectionKey` (`MICU` | `MICU_HD` | `MHD` for ICU/HD first release).
 - `rosterMonster:dayAxis` on the day-axis row, value = `true` (single-row anchor).
