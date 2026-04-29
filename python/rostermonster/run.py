@@ -131,6 +131,16 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         terminationBounds=TerminationBounds(maxCandidates=args.max_candidates),
     )
+    # Resolve retention mode + sidecar directory. FULL retention requires a
+    # sidecar dir per `docs/selector_contract.md` §13 / §14; if omitted, we
+    # default to a sibling directory next to the output JSON.
+    retention_mode = RetentionMode[args.retention.upper()]
+    sidecar_dir: Path | None = None
+    if retention_mode is RetentionMode.FULL:
+        sidecar_dir = (Path(args.sidecar_dir) if args.sidecar_dir
+                       else output_path.parent / (output_path.stem + ".sidecars"))
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
+
     if not isinstance(solver_result, CandidateSet):
         # Solver returned UnsatisfiedResult — whole-run failure. Selector
         # forwards via the failure branch per `docs/selector_contract.md` §15.
@@ -157,8 +167,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     envelope = select(
         scored,
-        retentionMode=RetentionMode.BEST_ONLY,
+        retentionMode=retention_mode,
         runEnvelope=_build_run_envelope(snapshot, args.seed),
+        sidecarTargetDir=sidecar_dir,
     )
     _write_envelope(envelope, output_path)
     if isinstance(envelope.result, AllocationResult):
@@ -167,10 +178,15 @@ def main(argv: list[str] | None = None) -> int:
             1 for a in envelope.result.winnerAssignment if a.doctorId is not None
         )
         n_total = len(envelope.result.winnerAssignment)
-        print(f"Selected winner across {len(scored.candidates)} candidates. "
-              f"Score: {score_total:.3f}. "
-              f"Assignments filled: {n_filled}/{n_total}. "
-              f"Output: {output_path}")
+        msg = (f"Selected winner across {len(scored.candidates)} candidates. "
+               f"Score: {score_total:.3f}. "
+               f"Assignments filled: {n_filled}/{n_total}. "
+               f"Output: {output_path}")
+        if sidecar_dir is not None:
+            msg += (f"\nFULL retention sidecars: "
+                    f"{envelope.result.candidatesSummaryPath} + "
+                    f"{envelope.result.candidatesFullPath}")
+        print(msg)
         return 0
     # Defensive: any non-AllocationResult means selector returned the
     # failure branch shape (e.g., snapshot was structurally consumable but
@@ -205,6 +221,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--max-candidates", type=int, default=_DEFAULT_MAX_CANDIDATES,
         help=f"max number of candidates the solver enumerates "
              f"(default {_DEFAULT_MAX_CANDIDATES})",
+    )
+    p.add_argument(
+        "--retention", choices=["BEST_ONLY", "FULL"], default="BEST_ONLY",
+        help="selector retention mode per `docs/selector_contract.md` §13. "
+             "BEST_ONLY (default) keeps only the winner; FULL emits "
+             "sidecar files (candidates_summary.csv + candidates_full.json) "
+             "with the full ranked candidate set",
+    )
+    p.add_argument(
+        "--sidecar-dir", default=None,
+        help="directory for FULL-retention sidecar files (only meaningful "
+             "with --retention FULL; defaults to <output>.sidecars/ "
+             "alongside the output file)",
     )
     return p.parse_args(argv)
 
