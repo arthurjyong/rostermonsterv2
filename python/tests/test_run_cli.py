@@ -25,6 +25,10 @@ from rostermonster.run import (  # noqa: E402
     _to_jsonable,
     main,
 )
+from rostermonster.selector import (  # noqa: E402
+    FULL_FILE_NAME,
+    SUMMARY_FILE_NAME,
+)
 from rostermonster.snapshot import Snapshot  # noqa: E402
 
 _FIXTURE_PATH = (
@@ -55,6 +59,57 @@ def test_cli_runs_end_to_end_on_real_fixture() -> None:
         # All 116 assignments filled per the M2 May 2026 smoke test profile
         # (29 days × 4 slot types).
         assert len(envelope["result"]["winnerAssignment"]) == 116
+
+
+def test_cli_full_retention_emits_sidecars() -> None:
+    """`--retention FULL` writes both sidecar files (candidates_summary.csv
+    + candidates_full.json) alongside the result envelope per
+    `docs/selector_contract.md` §13 / §14. Verifies the files exist with
+    non-trivial content and that two consecutive re-runs produce byte-
+    identical sidecars (selector §18 byte-identical determinism, here
+    extended to FULL-mode artifacts)."""
+    with tempfile.TemporaryDirectory() as td:
+        runs = []
+        for label in ("first", "second"):
+            out_path = Path(td) / f"{label}.json"
+            sidecar_dir = Path(td) / f"{label}.sidecars"
+            rc = main([
+                "--snapshot", str(_FIXTURE_PATH),
+                "--output", str(out_path),
+                "--retention", "FULL",
+                "--sidecar-dir", str(sidecar_dir),
+                "--max-candidates", "3",
+                "--seed", "20260504",
+            ])
+            assert rc == 0, f"CLI exited non-zero on FULL retention; rc={rc}"
+            assert out_path.is_file()
+            csv_path = sidecar_dir / SUMMARY_FILE_NAME
+            full_path = sidecar_dir / FULL_FILE_NAME
+            assert csv_path.is_file(), f"sidecar CSV not written: {csv_path}"
+            assert full_path.is_file(), f"sidecar JSON not written: {full_path}"
+
+            # Quick shape sanity: CSV has at least header + 3 data rows;
+            # JSON has 3 candidates each carrying a non-empty assignments list.
+            csv_lines = csv_path.read_text().splitlines()
+            assert len(csv_lines) >= 4, "expected schema-version + header + 3 data rows"
+            full_payload = json.loads(full_path.read_text())
+            assert len(full_payload["candidates"]) == 3
+            for cand in full_payload["candidates"]:
+                assert cand["assignments"], "FULL sidecar candidate missing assignments"
+            runs.append((out_path, csv_path, full_path))
+
+        # Byte-identical determinism per selector §18, extended across the
+        # FULL-mode sidecar artifacts. The result envelope itself differs
+        # legitimately across re-runs because `result.candidatesSummaryPath`
+        # / `result.candidatesFullPath` reflect the test's chosen sidecar
+        # dirs (different per run by design); we compare only the sidecar
+        # contents which are determined purely by snapshot + seed + config.
+        _, csv1, full1 = runs[0]
+        _, csv2, full2 = runs[1]
+        assert csv1.read_text() == csv2.read_text(), \
+            "candidates_summary.csv drifted across re-run"
+        assert full1.read_text() == full2.read_text(), \
+            "candidates_full.json drifted across re-run"
 
 
 def test_cli_byte_identical_re_runs() -> None:
@@ -137,6 +192,8 @@ def _run() -> int:
     tests = [
         ("test_cli_runs_end_to_end_on_real_fixture",
          test_cli_runs_end_to_end_on_real_fixture),
+        ("test_cli_full_retention_emits_sidecars",
+         test_cli_full_retention_emits_sidecars),
         ("test_cli_byte_identical_re_runs", test_cli_byte_identical_re_runs),
         ("test_cli_missing_snapshot_returns_2",
          test_cli_missing_snapshot_returns_2),

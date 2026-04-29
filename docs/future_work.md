@@ -54,7 +54,16 @@ Keep entries implementation-facing. Do not restate contract meaning here. Do not
 - **Idea / direction:** When profiling shows the stateless reference to be the search-rate bottleneck during solver runs, implement an incremental-state rule engine that maintains indexed occupancy, call-adjacency structures, and eligibility bitsets across solver `tryAdd`/`undo` operations. Ship it only behind a contract-owned corpus of `(normalizedModel, ruleState, proposedUnit) → expected Decision` fixtures that cover at least each hard invariant in §11 and the `FixedAssignment` scoped admission cases in §15, per §14. Byte-identical decisions including canonical violation ordering are non-negotiable.
 - **Why deferred now:** First-release correctness target is "works and is auditable," not "works at solver's peak search rate." The stateless reference is the easier implementation to review and is the contractual baseline. Incremental state makes sense only once the solver is exercising it hard enough for validity checks to become the dominant cost.
 - **Trigger to revisit:** Profiling on realistic ICU/HD-sized inputs shows rule-engine time dominating a full `SEEDED_RANDOM_BLIND` run, or a later score-aware strategy's search rate requires faster validity adjudication than the stateless reference can supply.
-- **Related surfaces:** `docs/rule_engine_contract.md` §13 and §14, future rule-engine test-corpus files (not yet created), solver Phase 2 rule-engine call sites.
+- **Empirical baseline (measured 2026-04-29 against the production CLI on the maintainer's Mac mini, real ICU/HD May 2026 snapshot — 22 doctors × 29 days × 638 requests; raw data + full benchmark script in `experimental/timing/results.md`):**
+  - 1 candidate: 1.73 s wall time, 76,682 rule-engine placement attempts (~76 k attempts/candidate)
+  - 10 candidates: 16.3 s, 759,385 attempts (linear)
+  - 100 candidates: 162.5 s ≈ 2.7 min, 7,614,358 attempts (linear)
+  - Linear projection past the measured ceiling: 1,000 candidates ≈ 27 min; 10,000 ≈ 4.5 hours; 100,000 ≈ 45 hours.
+  - Per-candidate cost is dominated by the inner-loop rule-engine dispatch (each candidate makes ~76 k stateless `evaluate` calls, the vast majority of which are repeated rejections like `SAME_DAY_HARD_BLOCK`/`BACK_TO_BACK_CALL` against doctor sets the engine has already classified within the same partial allocation).
+  - The score-quality plateau on this dataset arrives quickly: 1 → 10 candidates yields ~220-point winner-score improvement; 10 → 100 yields a comparable ~227-point gain. Diminishing returns beyond ~100-200 candidates at this scale.
+  - **Practical pilot ceiling: ~100-200 candidates.** Anything larger is impractical wall-time-wise on a developer machine without this incremental-rule-engine optimisation.
+  - Validates the original speculation: profiling DOES show rule-engine time dominating once `--max-candidates` rises past the small-pilot range, and the score-quality gradient flattens just past that same range — meaning the solver's appetite for more candidates is now bottlenecked at exactly the point this entry anticipated.
+- **Related surfaces:** `docs/rule_engine_contract.md` §13 and §14, future rule-engine test-corpus files (not yet created), solver Phase 2 rule-engine call sites; `experimental/timing/run_timing_benchmark.py` (the harness that produced the empirical baseline above) + `experimental/timing/results.md` (the markdown summary).
 
 ### FW-0004 — Score-aware solver strategies
 - **Date noted:** 2026-04-23
