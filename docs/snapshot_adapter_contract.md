@@ -27,8 +27,8 @@ The adapter's output IS a Snapshot per `docs/snapshot_contract.md` §5 + §11A. 
 ## 3. Architectural placement (settled per D-0041)
 The extractor lives in **two new Apps Script projects** alongside the existing M1.1 launcher:
 
-- `apps_script/m1_template_bound_script/` — a thin (<30 lines) script container-bound to a single template spreadsheet. Carries `onOpen(e)` to install the operator menu (`Roster Monster → Extract Snapshot`) and one menu handler per public action that delegates to the central library. Bound-script identity means simple `onEdit` / `onOpen` triggers fire natively (the architectural constraint that reverted FW-0024 in PR #89).
-- `apps_script/m1_extractor_library/` — a clasp-managed Apps Script Library carrying the extractor implementation. Published as a versioned Apps Script Library; the bound shim depends on it at version `0` (HEAD / always-latest).
+- `apps_script/m2_template_bound_script/` — a thin (<30 lines) script container-bound to a single template spreadsheet. Carries `onOpen(e)` to install the operator menu (`Roster Monster → Extract Snapshot`) and one menu handler per public action that delegates to the central library. Bound-script identity means simple `onEdit` / `onOpen` triggers fire natively (the architectural constraint that reverted FW-0024 in PR #89).
+- `apps_script/m2_extractor_library/` — a clasp-managed Apps Script Library carrying the extractor implementation. Published as a versioned Apps Script Library; the bound shim depends on it at version `0` (HEAD / always-latest).
 
 **Launcher generation flow change.** `apps_script/m1_sheet_generator/src/GenerateSheet.gs`'s `generateIntoNewSpreadsheet` path replaces `SpreadsheetApp.create(name)` with `DriveApp.getFileById(TEMPLATE_FILE_ID).makeCopy(name)`. The copy inherits the bound shim and its library dependency, so every launcher-generated spreadsheet has the menu from the moment it is opened. The existing `generateIntoExistingSpreadsheet` path remains supported but the resulting tab does NOT receive the bound shim — a known limitation captured in D-0041 sub-decision 8.
 

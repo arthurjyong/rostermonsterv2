@@ -2,7 +2,7 @@
 
 A central Apps Script Library carrying the snapshot-extractor logic that
 operator sheets call into via the bound template shim
-(`apps_script/m1_template_bound_script/`). When the bound shim's menu
+(`apps_script/m2_template_bound_script/`). When the bound shim's menu
 handler fires, it delegates to `RMLib.extractSnapshotForActiveSheet()`
 declared here.
 
@@ -46,10 +46,10 @@ Done once per environment per `docs/snapshot_adapter_contract.md` §3:
 2. Set Drive sharing on the library to **Anyone with link → Editor** (per
    D-0041 sub-decision 6 + FW-0025 trade-off; required for HEAD-mode
    library access by operator runtime users).
-3. From the repo: `cd apps_script/m1_extractor_library/ && clasp clone <library-script-project-ID>` to wire this directory.
+3. From the repo: `cd apps_script/m2_extractor_library/ && clasp clone <library-script-project-ID>` to wire this directory.
 4. Replace the auto-cloned `appsscript.json` with the one in this repo.
 5. `clasp push` to upload.
-6. Update `apps_script/m1_template_bound_script/src/appsscript.json` to
+6. Update `apps_script/m2_template_bound_script/src/appsscript.json` to
    replace the `libraryId` placeholder with this library's script ID, then
    `clasp push` the bound shim.
 
