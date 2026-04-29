@@ -108,14 +108,26 @@ def test_cli_writeback_ready_emits_wrapper_envelope() -> None:
         # mutate the selector's output, just wraps it.
         assert wrapper["finalResultEnvelope"] == bare
 
-        # Snapshot subset shape sanity per D-0045 sub-decision 3:
-        # the five required categories are present.
+        # Snapshot subset shape sanity per D-0045 sub-decision 3 +
+        # writeback contract §9 (6 required categories).
         snap = wrapper["snapshot"]
         assert "columnADoctorNames" in snap
         assert "requestCells" in snap
         assert "callPointCells" in snap
         assert "prefilledFixedAssignmentCells" in snap
+        assert "outputAssignmentRows" in snap
         assert "shellParameters" in snap
+
+        # outputAssignmentRows is the lower-shell row order from the
+        # template's outputMapping per writeback §9 6th category.
+        # Required so the writeback library can place prefilled cells
+        # at their (surfaceId, rowOffset) source-tab coordinates per
+        # writeback §10.1.
+        rows = snap["outputAssignmentRows"]
+        assert isinstance(rows, list) and len(rows) > 0, \
+            "outputAssignmentRows must be a non-empty list"
+        for entry in rows:
+            assert set(entry.keys()) >= {"surfaceId", "slotType", "rowOffset"}
 
         # Shell parameters carry the writeback contract §9 item 2 fields.
         params = snap["shellParameters"]

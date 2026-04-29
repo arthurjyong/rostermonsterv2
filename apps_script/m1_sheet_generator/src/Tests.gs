@@ -42,6 +42,8 @@ function runAllTests_() {
     testWritebackGroupCallPointsByRowKeyGroupsByCallPointRowKey_,
     testWritebackComposeUrlAppendsGidWhenNoFragment_,
     testWritebackComposeUrlReplacesExistingGidFragment_,
+    testWritebackResolveOutputAssignmentRowsUsesDeclaredOrder_,
+    testWritebackResolveOutputAssignmentRowsFallbackSortsByWinnerSlots_,
   ];
   var failures = [];
   for (var i = 0; i < tests.length; i++) {
@@ -496,6 +498,49 @@ function testWritebackComposeUrlReplacesExistingGidFragment_() {
     'https://docs.google.com/spreadsheets/d/abc123/edit#gid=0', 999);
   assertTrue_(url === 'https://docs.google.com/spreadsheets/d/abc123/edit#gid=999',
     'existing fragment should be replaced; got ' + url);
+}
+
+function testWritebackResolveOutputAssignmentRowsUsesDeclaredOrder_() {
+  // Per writeback contract §9 6th category: when the snapshot subset
+  // declares `outputAssignmentRows`, the lower-shell rendering MUST
+  // honour the template's (surfaceId, rowOffset) order so prefilled
+  // cells land in the right slot row. Order is by surfaceId then
+  // rowOffset (sortable, deterministic).
+  var snap = {
+    outputAssignmentRows: [
+      { surfaceId: 'lowerRosterAssignments', slotType: 'HD_CALL',  rowOffset: 1 },
+      { surfaceId: 'lowerRosterAssignments', slotType: 'ICU_CALL', rowOffset: 0 },
+      { surfaceId: 'lowerRosterAssignments', slotType: 'STANDBY',  rowOffset: 2 },
+    ],
+  };
+  var resolved = _resolveOutputAssignmentRows_(snap, {});
+  assertEqualNumber_(resolved.length, 3, 'expected 3 declared rows');
+  assertTrue_(resolved[0].slotType === 'ICU_CALL' &&
+              resolved[1].slotType === 'HD_CALL' &&
+              resolved[2].slotType === 'STANDBY',
+    'rows must be sorted by (surfaceId, rowOffset); got ' +
+    JSON.stringify(resolved.map(function (r) { return r.slotType; })));
+}
+
+function testWritebackResolveOutputAssignmentRowsFallbackSortsByWinnerSlots_() {
+  // When `outputAssignmentRows` is absent (legacy wrapper envelope or
+  // edge case), the resolver falls back to sorted slot keys from the
+  // winner-assignment grouping. The fallback synthesises a
+  // `lowerRosterAssignments` surfaceId + positional rowOffset so the
+  // tab still renders even without authoritative ordering. Prefilled-
+  // cell positional fidelity is best-effort in this mode.
+  var snap = {}; // no outputAssignmentRows declared
+  var winnerBySlot = {
+    'HD_CALL':  [{ slotType: 'HD_CALL',  dateKey: '2026-05-01' }],
+    'ICU_CALL': [{ slotType: 'ICU_CALL', dateKey: '2026-05-01' }],
+  };
+  var resolved = _resolveOutputAssignmentRows_(snap, winnerBySlot);
+  assertEqualNumber_(resolved.length, 2,
+    'fallback should render one row per winner slotType');
+  assertTrue_(resolved[0].slotType === 'HD_CALL' && resolved[0].rowOffset === 0,
+    'fallback first row should be HD_CALL @ rowOffset 0');
+  assertTrue_(resolved[1].slotType === 'ICU_CALL' && resolved[1].rowOffset === 1,
+    'fallback second row should be ICU_CALL @ rowOffset 1');
 }
 
 // ---------------------------------------------------------------------------

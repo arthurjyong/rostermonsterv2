@@ -289,19 +289,25 @@ function _renderSuccessBranch_(sheet, envelope) {
     }
   }
 
-  // surfaceId → sheet row number for the surface's anchor row. Filled as
-  // we render call-point rows and lower-shell slot rows below; consumed
-  // by the prefilled-cell pass which writes each prefilled value at
-  // (surfaceIdToRow[surfaceId] + rowOffset, dayIndex column) so the
-  // value lands in the same cell coordinates the source tab carried.
-  var surfaceIdToRow = {};
+  // (surfaceId, rowOffset) → sheet row number. Filled as we render the
+  // lower-shell assignment rows below; consumed by the prefilled-cell
+  // pass which writes each prefilled value at the row keyed by its
+  // (surfaceId, rowOffset) so the value lands in the same slot row as
+  // the source tab. Per writeback contract §10.1 "written into their
+  // cell positions", the lower-shell assignment-row anchor mapping
+  // comes from the snapshot's `outputAssignmentRows` field which
+  // mirrors `template.outputSurfaces[].assignmentRows[]` per
+  // template_artifact_contract.md §10 — this is the authoritative
+  // slotType ↔ rowOffset binding the writeback library cannot derive
+  // from winner assignments alone (winner units carry slotType but no
+  // rowOffset).
+  var assignmentRowToSheetRow = {};
 
   // Call-point rows (one per callPointRowKey). Group by rowKey.
   var callPointByKey = _groupCallPointsByRowKey_(snap.callPointCells || []);
   var callPointRowKeys = Object.keys(callPointByKey).sort();
   for (var cpi = 0; cpi < callPointRowKeys.length; cpi++) {
     var cpKey = callPointRowKeys[cpi];
-    surfaceIdToRow[cpKey] = currentRow;
     sheet.getRange(currentRow, nameCol).setValue(cpKey)
       .setFontWeight('bold').setBackground('#fff2cc');
     var cpCells = callPointByKey[cpKey];
@@ -317,8 +323,8 @@ function _renderSuccessBranch_(sheet, envelope) {
   }
   currentRow++; // spacer
 
-  // Lower assignment shell — one row per slotType, surfacing the winner
-  // assignments. Render header.
+  // Lower assignment shell — one row per (surfaceId, rowOffset) per the
+  // template's outputMapping. Render header.
   sheet.getRange(currentRow, nameCol).setValue('Roster / Assignments')
     .setFontWeight('bold').setBackground('#c6e0b4');
   sheet.getRange(currentRow, nameCol, 1, totalCols).setBackground('#c6e0b4');
@@ -331,27 +337,6 @@ function _renderSuccessBranch_(sheet, envelope) {
     if (!winnerBySlot[au.slotType]) winnerBySlot[au.slotType] = [];
     winnerBySlot[au.slotType].push(au);
   }
-  // Union slot types from winner assignments AND prefilled cells so a
-  // prefilled-only surface (no winner row in this run) still gets its
-  // anchor row rendered, preventing prefilled cells from being silently
-  // dropped when no winner assignment shares the same slot type.
-  var slotTypeSet = {};
-  for (var wsk in winnerBySlot) {
-    if (Object.prototype.hasOwnProperty.call(winnerBySlot, wsk)) {
-      slotTypeSet[wsk] = true;
-    }
-  }
-  var prefilled = snap.prefilledFixedAssignmentCells || [];
-  for (var pix = 0; pix < prefilled.length; pix++) {
-    var pfx = prefilled[pix];
-    if (!surfaceIdToRow[pfx.surfaceId]) {
-      // Reserve only slot-type-shaped surfaces here; call-point surfaces
-      // were already anchored above. Treat any unknown surfaceId as a
-      // slot-type-shaped row to render in the lower shell.
-      slotTypeSet[pfx.surfaceId] = true;
-    }
-  }
-  var slotTypes = Object.keys(slotTypeSet).sort();
 
   // Build dateKey → dayIndex map for assignment rendering (winner has
   // dateKey, snapshot has dayIndex; we need to map between them via
@@ -365,9 +350,19 @@ function _renderSuccessBranch_(sheet, envelope) {
   var doctorIdToDisplayName = _buildDoctorIdToDisplayName_(
     snap.columnADoctorNames || [], doctorIdMap);
 
-  for (var st = 0; st < slotTypes.length; st++) {
-    var slot = slotTypes[st];
-    surfaceIdToRow[slot] = currentRow;
+  // Render lower-shell rows in the template-defined (surfaceId, rowOffset)
+  // order. If `outputAssignmentRows` is missing or empty, fall back to
+  // sorted slot keys from winner assignments — produces a roster-readable
+  // tab even if the writeback contract §9 6th-category field is absent
+  // (e.g., older wrapper envelopes). Prefilled cells in fallback mode
+  // are best-effort positioned but cannot be guaranteed to align with
+  // their source-tab slot row without the template binding.
+  var outputAssignmentRows = _resolveOutputAssignmentRows_(
+    snap, winnerBySlot);
+  for (var st = 0; st < outputAssignmentRows.length; st++) {
+    var rowDef = outputAssignmentRows[st];
+    var slot = rowDef.slotType;
+    assignmentRowToSheetRow[rowDef.surfaceId + ':' + rowDef.rowOffset] = currentRow;
     sheet.getRange(currentRow, nameCol).setValue(slot).setFontWeight('bold');
     var assignments = winnerBySlot[slot] || [];
     for (var ai = 0; ai < assignments.length; ai++) {
@@ -385,32 +380,60 @@ function _renderSuccessBranch_(sheet, envelope) {
     currentRow++;
   }
 
-  // Prefilled-assignment cells: write back into their original
-  // (surfaceId, rowOffset) source-tab coordinates per writeback contract
-  // §10.1 ("written into their cell positions"). Italic styling marks
-  // these cells as solver-fixed inputs rather than solver-chosen
-  // outputs. If a prefilled and a winner assignment land in the same
-  // (slot, day) cell, prefilled is written second so the italic style
-  // wins; the values must agree because prefilled is a solver
-  // constraint that the winner must respect.
+  // Prefilled-assignment cells: place each at the lower-shell row keyed
+  // by its (surfaceId, rowOffset) per writeback contract §10.1 ("written
+  // into their cell positions"). Italic styling marks the cell as a
+  // solver-fixed input rather than a solver-chosen output; if a
+  // prefilled and a winner assignment land in the same cell, prefilled
+  // is written second so the italic style wins. Values must agree
+  // because prefilled is a hard constraint the solver must respect.
+  var prefilled = snap.prefilledFixedAssignmentCells || [];
   for (var pi = 0; pi < prefilled.length; pi++) {
     var pf = prefilled[pi];
-    var pfBaseRow = surfaceIdToRow[pf.surfaceId];
-    if (pfBaseRow === undefined) {
-      // Defensive: an unknown surfaceId would mean the prefilled cell
-      // came from a surface we did not render. Skip rather than misplace
-      // the value to a wrong cell. This should not occur in practice
-      // because the loop above eagerly anchors a slot row for every
-      // unknown surfaceId; the guard remains as a backstop.
+    var pfRow = assignmentRowToSheetRow[pf.surfaceId + ':' + pf.rowOffset];
+    if (pfRow === undefined) {
+      // Defensive: a prefilled cell whose (surfaceId, rowOffset) does
+      // not match any rendered assignment row implies a snapshot/template
+      // mismatch. Skip rather than misplace the value to a wrong cell.
       continue;
     }
-    var pfRow = pfBaseRow + (pf.rowOffset || 0);
     var pfCol = dayIndexToCol[pf.dayIndex];
     if (pfCol) {
       sheet.getRange(pfRow, pfCol).setValue(pf.value)
         .setHorizontalAlignment('center').setFontStyle('italic');
     }
   }
+}
+
+// Resolve the lower-shell assignment-row order. Primary source is the
+// snapshot's `outputAssignmentRows` array (writeback contract §9 6th
+// category). Fallback for legacy wrapper envelopes that omit the field
+// is sorted slot keys from the winner-assignment grouping with
+// rowOffset reconstructed positionally — this preserves a readable
+// roster but loses prefilled-cell positional fidelity.
+function _resolveOutputAssignmentRows_(snap, winnerBySlot) {
+  var declared = snap.outputAssignmentRows;
+  if (Array.isArray(declared) && declared.length > 0) {
+    var copy = declared.slice();
+    copy.sort(function (a, b) {
+      var as = String(a.surfaceId);
+      var bs = String(b.surfaceId);
+      if (as < bs) return -1;
+      if (as > bs) return 1;
+      return (a.rowOffset || 0) - (b.rowOffset || 0);
+    });
+    return copy;
+  }
+  var slotTypes = Object.keys(winnerBySlot).sort();
+  var fallback = [];
+  for (var i = 0; i < slotTypes.length; i++) {
+    fallback.push({
+      surfaceId: 'lowerRosterAssignments',
+      slotType: slotTypes[i],
+      rowOffset: i,
+    });
+  }
+  return fallback;
 }
 
 // --- failure-branch rendering (§13.1) --------------------------------------
@@ -483,13 +506,42 @@ function _attachTraceabilityMetadata_(sheet, envelope, isSuccess) {
 
 // --- protection (§10.3 / §13.4) --------------------------------------------
 
+// Apply whole-tab read-only protection to the writeback tab. The
+// effective user (the operator who triggered the writeback Web App) is
+// preserved as an editor before removing the others so Apps Script's
+// protection API does not throw when edit access is inherited via
+// Google Group / domain settings — Apps Script disallows
+// `removeEditors` from removing the script-running user, and group-
+// based editors raise an exception on removal unless the effective
+// user is explicitly added first. Without this guard, writeback would
+// fail for valid operator accounts whose access path is group/domain-
+// inherited, the new tab would be deleted by the cleanup-on-failure
+// path (§14), and the operator would see a runtime error for a
+// successfully-written roster.
 function _protectWritebackTab_(sheet) {
   var protection = sheet.protect()
     .setDescription('Writeback tab — read-only')
     .setWarningOnly(false);
-  protection.removeEditors(protection.getEditors());
-  if (protection.canDomainEdit && protection.canDomainEdit()) {
-    try { protection.setDomainEdit(false); } catch (_) { /* non-domain */ }
+  try {
+    var me = Session.getEffectiveUser();
+    protection.addEditor(me);
+    var meEmail = me.getEmail();
+    var editors = protection.getEditors();
+    for (var i = 0; i < editors.length; i++) {
+      var ed = editors[i];
+      if (ed.getEmail() !== meEmail) {
+        protection.removeEditor(ed);
+      }
+    }
+    if (protection.canDomainEdit && protection.canDomainEdit()) {
+      try { protection.setDomainEdit(false); } catch (_) { /* non-domain */ }
+    }
+  } catch (e) {
+    // Surface protection-stage failures via the orchestrator's outer
+    // try/catch → cleanup-on-failure path (§14). Re-throwing here keeps
+    // the SUCCESS / RUNTIME_ERROR diagnostic invariant intact (§17.4):
+    // we never claim success on a half-protected tab.
+    throw e;
   }
 }
 

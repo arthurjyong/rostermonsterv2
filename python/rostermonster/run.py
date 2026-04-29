@@ -519,6 +519,16 @@ def _build_writeback_snapshot_subset(snapshot: Snapshot,
         for rec in snapshot.prefilledAssignmentRecords
     ]
 
+    output_assignment_rows = [
+        {
+            "surfaceId": surface.surfaceId,
+            "slotType": row.slotId,
+            "rowOffset": row.rowOffset,
+        }
+        for surface in template.outputSurfaces
+        for row in surface.assignmentRows
+    ]
+
     doctor_count_by_group: dict[str, int] = {}
     for rec in snapshot.doctorRecords:
         section_key = rec.sourceLocator.sectionKey
@@ -540,6 +550,7 @@ def _build_writeback_snapshot_subset(snapshot: Snapshot,
         "requestCells": request_cells,
         "callPointCells": call_point_cells,
         "prefilledFixedAssignmentCells": prefilled,
+        "outputAssignmentRows": output_assignment_rows,
         "shellParameters": {
             "department": template.identity.label,
             "periodStartDate": period_start,
