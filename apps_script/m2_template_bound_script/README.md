@@ -30,7 +30,7 @@ The bound script is frozen in each operator-copy at the moment of
 sheets. To keep that staleness inert, the bound shim is delegate-only — it
 declares the menu in `onOpen(e)` and forwards each menu action into the
 central Apps Script Library
-(`apps_script/m1_extractor_library/`), which IS update-propagable via
+(`apps_script/m2_extractor_library/`), which IS update-propagable via
 HEAD-mode library loading per D-0041 sub-decision 3.
 
 If a function needs to be a simple-trigger entrypoint (e.g., FW-0024's
@@ -48,12 +48,12 @@ Done once per environment per `docs/snapshot_adapter_contract.md` §3:
 3. Set Drive sharing on the template to **Anyone with link → Viewer** (per
    D-0041 sub-decision 6 + FW-0025 trade-off; see those references for the
    pilot-scope risk acceptance).
-4. From the repo: `cd apps_script/m1_template_bound_script/ && clasp clone <bound-script-project-ID>` to wire this directory to the bound script project.
+4. From the repo: `cd apps_script/m2_template_bound_script/ && clasp clone <bound-script-project-ID>` to wire this directory to the bound script project.
 5. Replace the auto-cloned `appsscript.json` with the one in this repo (it
    declares the central library as a dependency at version `0` / HEAD).
 6. Update the central library's `scriptId` placeholder in `appsscript.json`
    to the actual library project ID (see
-   `apps_script/m1_extractor_library/README.md`).
+   `apps_script/m2_extractor_library/README.md`).
 7. `clasp push` to upload.
 
 ## Contents
