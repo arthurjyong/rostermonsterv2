@@ -340,8 +340,13 @@ function buildScorerConfigTab_(ss, requestEntryTabName, template) {
   // active request-entry tab's `runId`.
   var runId = _scorerConfigParseRunId_(requestEntryTabName);
   sheet.addDeveloperMetadata('rosterMonster:tabType', 'scorerConfig');
+  // templateVersion lives under template.identity per `TemplateArtifact.gs`
+  // — same Codex P0 fix as in GenerateSheet.gs's request-entry sheet-level
+  // metadata writer (PR #96).
+  var templateVersion = (template.identity && template.identity.templateVersion)
+    || template.templateVersion || 'unknown';
   sheet.addDeveloperMetadata('rosterMonster:templateVersion',
-    String(template.templateVersion || 'unknown'));
+    String(templateVersion));
   sheet.addDeveloperMetadata('rosterMonster:runId', runId);
 
   // Build the row-index lookup for callers / future extractor.

@@ -296,8 +296,14 @@ function removeNonActiveSheets_(ss, keepSheet) {
 function attachRequestEntrySheetLevelMetadata_(sheet, template, runId,
                                                 doctorCountByGroup, dayCount) {
   sheet.addDeveloperMetadata('rosterMonster:tabType', 'requestEntry');
+  // templateVersion lives under template.identity per `TemplateArtifact.gs`,
+  // not at the top level. Caught by Codex P0 on PR #96 — was previously
+  // emitting "unknown" for every sheet, breaking the CLI's templateVersion
+  // parse downstream.
+  var templateVersion = (template.identity && template.identity.templateVersion)
+    || template.templateVersion || 'unknown';
   sheet.addDeveloperMetadata('rosterMonster:templateVersion',
-    String(template.templateVersion || 'unknown'));
+    String(templateVersion));
   sheet.addDeveloperMetadata('rosterMonster:runId', String(runId));
 
   // Expected-cardinality anchors driving D-0043 sub-decision 3.
@@ -310,4 +316,19 @@ function attachRequestEntrySheetLevelMetadata_(sheet, template, runId,
       String(n));
   }
   sheet.addDeveloperMetadata('rosterMonster:expectedDayCount', String(dayCount));
+
+  // expectedAssignmentRowCount = total cross-product of declared output
+  // surfaces × per-surface assignment rows. Drives the assignment-row
+  // partial-loss check per D-0043 sub-decision 3 — Codex P1 on PR #96
+  // flagged that the previous "uniqueness only" check would silently
+  // accept a deleted assignment row.
+  var assignmentRowTotal = 0;
+  if (template.outputMapping && template.outputMapping.surfaces) {
+    var surfaces = template.outputMapping.surfaces;
+    for (var u = 0; u < surfaces.length; u++) {
+      assignmentRowTotal += (surfaces[u].assignmentRows || []).length;
+    }
+  }
+  sheet.addDeveloperMetadata('rosterMonster:expectedAssignmentRowCount',
+    String(assignmentRowTotal));
 }

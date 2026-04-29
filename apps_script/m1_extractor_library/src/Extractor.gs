@@ -153,12 +153,24 @@ function _readAndValidateRequestAnchors_(sheet) {
       'extension. Regenerate via the launcher.'
     );
   }
+  var expectedAssignmentRowCountStr = _readSingleSheetMeta_(
+    sheet, 'rosterMonster:expectedAssignmentRowCount');
+  if (expectedAssignmentRowCountStr === null) {
+    throw new Error(
+      'EXTRACTION_ERROR: rosterMonster:expectedAssignmentRowCount not found ' +
+      'on tab "' + sheet.getName() + '" — sheet may predate the M2 C9 ' +
+      'assignment-row coverage extension. Regenerate via the launcher.'
+    );
+  }
+  var expectedAssignmentRowCount = parseInt(
+    String(expectedAssignmentRowCountStr), 10);
 
   // Per D-0043 sub-decision 3: validate cardinality + uniqueness + coverage.
   _validateDoctorRowCoverage_(doctorRows, expectedDoctorCounts, sheet.getName());
   _validateSectionCoverage_(sectionRows, expectedDoctorCounts, sheet.getName());
   _validateCallPointRowCoverage_(callPointRows, sheet.getName());
-  _validateAssignmentRowCoverage_(assignmentRows, sheet.getName());
+  _validateAssignmentRowCoverage_(assignmentRows, expectedAssignmentRowCount,
+    sheet.getName());
   // dayAxis is a single-row anchor; cardinality of the day cells is
   // validated at SnapshotBuilder time when we read the day-axis row.
 
@@ -170,6 +182,7 @@ function _readAndValidateRequestAnchors_(sheet) {
     assignmentRows: assignmentRows,
     expectedDoctorCounts: expectedDoctorCounts,
     expectedDayCount: parseInt(String(expectedDayCount), 10),
+    expectedAssignmentRowCount: expectedAssignmentRowCount,
   };
 }
 

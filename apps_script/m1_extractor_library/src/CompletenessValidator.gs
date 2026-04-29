@@ -146,19 +146,25 @@ function _validateComponentIdCoverage_(anchors, tabName) {
   _validateFixedSetCoverage_(anchors, EXPECTED, 'componentId', tabName);
 }
 
-// Assignment-row anchors: expected set is template-derived. For ICU/HD
-// first release the surface is `lowerRosterAssignments` with row offsets
-// matching the template's `outputMapping.surfaces[0].assignmentRows`.
-// We don't have the template artifact at extraction time (the extractor
-// runs on the operator's spreadsheet, not against the launcher), so we
-// validate uniqueness + non-empty rather than a fixed set. The parser
-// admission stage cross-checks against the template.
-function _validateAssignmentRowCoverage_(anchors, tabName) {
-  if (anchors.length === 0) {
+// Assignment-row anchors: validates cardinality against the launcher-
+// recorded `rosterMonster:expectedAssignmentRowCount` sheet-level anchor +
+// uniqueness of the per-row `<surfaceId>:<rowOffset>` values. Catches the
+// partial-loss case Codex P1 flagged on PR #96 — without the cardinality
+// check, a deleted assignment row would silently omit its prefilled
+// assignments from the snapshot, and the parser couldn't reconstruct the
+// loss because missing rows produce no records. Exact value-coverage
+// (which surfaceIds/rowOffsets are expected) is template-derived and the
+// extractor doesn't have the template at runtime, so the parser admission
+// stage cross-checks individual surfaceId:rowOffset values against the
+// template per `docs/parser_normalizer_contract.md` §14 — that closes the
+// "wrong rowOffset value but right count" residual.
+function _validateAssignmentRowCoverage_(anchors, expectedCount, tabName) {
+  if (anchors.length !== expectedCount) {
     throw new Error(
       'EXTRACTION_ERROR: assignmentRow coverage mismatch on tab "' + tabName +
-      '" — expected at least one assignment row, got 0. Sheet may predate ' +
-      'the M2 C9 metadata extension.'
+      '" — expected ' + expectedCount + ', got ' + anchors.length +
+      '. An assignment row may have been deleted or duplicated; regenerate ' +
+      'via the launcher to recover the expected layout.'
     );
   }
   var seen = {};
