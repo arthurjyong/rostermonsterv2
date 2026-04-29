@@ -73,6 +73,8 @@ The concrete transport that delivers the JSON envelope to the writeback launcher
 
 The transport decision is jointly scoped with the structurally-symmetric inbound side per `docs/decision_log.md` D-0036 (snapshot-extraction Apps Script implementation pinned to a late-M2 checkpoint before M3 activation). When the transport is settled, both inbound (snapshot ingestion) and outbound (writeback envelope delivery) directions adopt the same transport mechanic to avoid two divergent transports across the same Apps Script ↔ Python boundary.
 
+**Resolved transport (per `docs/decision_log.md` D-0040, settled in M2 C9):** browser-download of a JSON file. Inbound (snapshot extraction): Apps Script extractor emits a JSON blob that the operator saves locally; Python CLI ingests via `--snapshot path/to/file.json`. Outbound (writeback, M3): Python emits a `FinalResultEnvelope` JSON file to disk; the operator drags / pastes it into the launcher's writeback form, which ingests via the same JSON-blob mechanic in reverse. UTF-8 JSON, pretty-printed (2-space indent), no envelope wrapping or compression. The §6.3 deferral language above is retained for forward-compat (the *exact* writeback launcher form UX remains M3 implementation-slice), but the joint-scoping commitment from D-0036 is now resolved.
+
 ## 7) What this contract governs
 This contract governs:
 - the shape of writeback input (the `FinalResultEnvelope`, the snapshot bundle, and the `doctorIdMap`),
