@@ -1,0 +1,10 @@
+# Don't commit large run outputs by default — they're regenerable from the
+# committed `run_timing_benchmark.py` + a snapshot path. Keep markdown
+# summaries (small + interesting) but skip the raw JSON / CSV outputs.
+timing/runs/
+timing/*.json
+timing/*.csv
+roster_inspections/
+
+# Keep `.gitkeep` files so empty subdirs remain in the repo
+!**/.gitkeep
