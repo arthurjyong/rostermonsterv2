@@ -200,6 +200,7 @@ The launcher attaches Apps Script `DeveloperMetadata` to specific spreadsheet lo
 **Sheet level on the request-entry tab** (NEW under D-0043 sub-decision 1 — drives extractor cardinality validation per D-0043 sub-decision 3):
 - `rosterMonster:expectedDoctorCount.<sectionKey>` per declared section, value = integer doctor-row count the launcher generated for that section (e.g., `expectedDoctorCount.MICU = 5`). Variable cardinality — depends on the operator-supplied doctor counts at launch time.
 - `rosterMonster:expectedDayCount` — integer day-axis day count the launcher generated. Variable cardinality — depends on the period length.
+- `rosterMonster:expectedAssignmentRowCount` — integer cross-product count of declared output surfaces × per-surface assignment rows (e.g., `4` for the ICU/HD first-release `lowerRosterAssignments` surface with 4 rows). Drives the partial-loss check on the assignmentRow anchor; absent this count, a deleted assignment row would silently omit its prefilled assignments from the snapshot.
 
 **Per-row on the request-entry tab** (NEW under D-0043):
 - `rosterMonster:section` on each section header row, value = template-declared `inputSheetSections.sectionKey` (`MICU` | `MICU_HD` | `MHD` for ICU/HD first release).

@@ -16,6 +16,16 @@ var LAYOUT_COLORS_ = Object.freeze({
   headerRowBg:  '#e7e6e6',
 });
 
+// Attach DeveloperMetadata to a single sheet row using A1 row notation. The
+// Sheets API rejects "arbitrary range" scopes (e.g., partial-row ranges built
+// via getRange(row, col, 1, n)), so per the M2 C7 PR #90 hotfix lesson
+// recorded in `docs/decision_log.md` D-0043 sub-decision 1 + the inline
+// comment in `ScorerConfigTab.gs`, all per-row anchors MUST be installed via
+// the `<rowNum>:<rowNum>` row-scoped form.
+function attachRowMetadata_(sheet, rowNum, key, value) {
+  sheet.getRange(rowNum + ':' + rowNum).addDeveloperMetadata(key, String(value));
+}
+
 function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
   var numDays = dateRange.length;
   if (numDays < 1) {
@@ -69,6 +79,11 @@ function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
     .setFontWeight('bold')
     .setHorizontalAlignment('center')
     .setBackground(LAYOUT_COLORS_.headerRowBg);
+  // D-0043 sub-decision 1 + sheet_generation_contract §11B: anchor the day-
+  // axis row so the snapshot extractor can locate it via sheet-scoped
+  // DeveloperMetadata finder. A1 row notation per the M2 C7 pattern in
+  // `ScorerConfigTab.gs` — the API rejects arbitrary range scopes.
+  attachRowMetadata_(sheet, dateRow, 'rosterMonster:dayAxis', 'true');
 
   // ---- Row 3: weekday row ----
   var weekdayRow = 3;
@@ -105,11 +120,18 @@ function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
       .setBackground(LAYOUT_COLORS_.sectionBg);
     var sectionHeaderRow = currentRow;
     bandedRows.push({ row: sectionHeaderRow, bg: LAYOUT_COLORS_.sectionBg });
+    // D-0043 sub-decision 1: section header row anchor.
+    attachRowMetadata_(sheet, sectionHeaderRow, 'rosterMonster:section', sec.sectionKey);
     currentRow++;
 
     var firstDoctorRow = currentRow;
     for (var d = 0; d < count; d++) {
       doctorRowNumbers.push(currentRow);
+      // D-0043 sub-decision 1: per-doctor row anchor with `<sectionKey>:<idx>`
+      // value drives the snapshot extractor's per-section cardinality
+      // validation against `expectedDoctorCount.<sectionKey>` (D-0043 §3).
+      attachRowMetadata_(sheet, currentRow, 'rosterMonster:doctorRow',
+        sec.sectionKey + ':' + d);
       currentRow++;
     }
     var lastDoctorRow = currentRow - 1;
@@ -164,6 +186,8 @@ function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
       numCols: numDays,
     });
     bandedRows.push({ row: currentRow, bg: LAYOUT_COLORS_.pointBg });
+    // D-0043 sub-decision 1: per-call-point-row anchor.
+    attachRowMetadata_(sheet, currentRow, 'rosterMonster:callPointRow', pr.rowKey);
     currentRow++;
   }
 
@@ -192,6 +216,11 @@ function buildLayout_(sheet, template, dateRange, doctorCountByGroup) {
     var row = lowerShellAnchorRow + ar.rowOffset;
     var slotLabel = (slotById[ar.slotId] && slotById[ar.slotId].label) || ar.slotId;
     sheet.getRange(row, nameCol).setValue(slotLabel).setFontWeight('bold');
+    // D-0043 sub-decision 1: per-assignment-row anchor with `<surfaceId>:<rowOffset>`
+    // value matches the snapshot's outputMapping locator path per
+    // `docs/snapshot_contract.md` §10.
+    attachRowMetadata_(sheet, row, 'rosterMonster:assignmentRow',
+      outputSurface.surfaceId + ':' + ar.rowOffset);
     lowerShellRanges.push({
       slotId: ar.slotId,
       row: row,

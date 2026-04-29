@@ -21,20 +21,36 @@ function generateIntoNewSpreadsheet(config) {
   var dateRange = buildDateRange_(normalized.periodStartDate, normalized.periodEndDate);
 
   var spreadsheetName = buildSpreadsheetName_(normalized);
-  var ss = SpreadsheetApp.create(spreadsheetName);
+  // Per `docs/decision_log.md` D-0041: copy the bound-template spreadsheet so
+  // every operator sheet inherits the bound shim + central library dependency.
+  // Falls back to the legacy `SpreadsheetApp.create()` path only if no template
+  // is configured (clear setup error rather than silent regression).
+  var ss = createSpreadsheetFromTemplate_(spreadsheetName);
   var tabName = buildVersionedTabName_(new Date());
+  var runId = tabName; // tabName IS the runId per `docs/sheet_generation_contract.md` §11A
   var sheet = ss.getActiveSheet();
   sheet.setName(tabName);
+
+  // Drop any tabs the template carries beyond the active one (e.g., placeholder
+  // sheets from manual template setup). Keeps the post-generation surface clean.
+  removeNonActiveSheets_(ss, sheet);
 
   var layoutInfo = buildLayout_(sheet, template, dateRange, normalized.doctorCountByGroup);
   applyValidations_(sheet, layoutInfo);
   applyProtections_(sheet, layoutInfo);
 
+  // Per `docs/sheet_generation_contract.md` §11B + D-0043 sub-decision 1:
+  // attach launcher-side DeveloperMetadata anchors at the request-entry sheet
+  // level so the snapshot extractor can locate per-tab identity, period
+  // identity, and expected cardinalities for the §6 completeness validation.
+  attachRequestEntrySheetLevelMetadata_(sheet, template, runId,
+    normalized.doctorCountByGroup, dateRange.length);
+
   // Generate the paired Scorer Config tab per
   // `docs/sheet_generation_contract.md` §11A (D-0037). Operator-editable
   // weight cells pre-populated from template.scoring.componentWeights;
-  // tab name shares the request-entry tab's version suffix so the future
-  // snapshot extractor can match the two by suffix.
+  // tab name shares the request-entry tab's version suffix so the snapshot
+  // extractor can match the two by `runId`.
   var scorerConfigInfo = buildScorerConfigTab_(ss, sheet.getName(), template);
 
   var shareResult = tryAutoShareAnyoneWithLink_(ss.getId());
@@ -77,9 +93,18 @@ function generateIntoExistingSpreadsheet(config) {
   }
 
   var sheet = ss.insertSheet(tabName);
+  var runId = tabName; // tabName IS the runId per §11A
   var layoutInfo = buildLayout_(sheet, template, dateRange, normalized.doctorCountByGroup);
   applyValidations_(sheet, layoutInfo);
   applyProtections_(sheet, layoutInfo);
+
+  // Existing-spreadsheet path: per D-0041 sub-decision 8, the resulting tab
+  // does NOT receive the bound shim (no in-sheet menu, no operator-driven
+  // extraction). Per-row + sheet-level DeveloperMetadata is still attached so
+  // the surface remains structurally extractor-ready if a maintainer-driven
+  // path is wired in the future.
+  attachRequestEntrySheetLevelMetadata_(sheet, template, runId,
+    normalized.doctorCountByGroup, dateRange.length);
 
   // Same Scorer Config tab generation as the new-spreadsheet path. The
   // tab name shares the version suffix of THIS request-entry tab, so
@@ -210,4 +235,100 @@ function tryAutoShareAnyoneWithLink_(fileId) {
     Logger.log('Auto-share failed: ' + message);
     return { ok: false, reason: message };
   }
+}
+
+// Per `docs/decision_log.md` D-0041 sub-decision 4: every operator sheet must
+// inherit the bound shim attached to the maintainer-owned template
+// spreadsheet. Replaces `SpreadsheetApp.create()` so simple onOpen / onEdit
+// triggers fire on each generated sheet (the architectural gap that reverted
+// FW-0024 in PR #89).
+//
+// Reads `TEMPLATE_FILE_ID` from Script Properties — set once during M2 C9
+// one-time setup per `docs/snapshot_adapter_contract.md` §3 step 5.
+//
+// OAuth-scope requirement: `auth/drive` is required because `getFileById`
+// against a file the app did NOT create cannot piggyback on `drive.file`.
+// The launcher manifest declares the broader scope per D-0041 sub-decision 4.
+function createSpreadsheetFromTemplate_(spreadsheetName) {
+  var props = PropertiesService.getScriptProperties();
+  var templateId = props.getProperty('TEMPLATE_FILE_ID');
+  if (!templateId) {
+    throw new Error(
+      'Script Property TEMPLATE_FILE_ID is not set. Complete the one-time ' +
+      'setup steps in docs/snapshot_adapter_contract.md §3 (create the ' +
+      '[INTERNAL] Roster Monster Template spreadsheet and record its File ID).'
+    );
+  }
+  var copy;
+  try {
+    copy = DriveApp.getFileById(templateId).makeCopy(spreadsheetName);
+  } catch (e) {
+    var msg = (e && e.message) ? e.message : String(e);
+    throw new Error(
+      'Could not copy template (TEMPLATE_FILE_ID=' + templateId + '): ' + msg +
+      '. Verify the operator account has Drive Viewer access to the template ' +
+      'per docs/decision_log.md D-0041 sub-decision 4 + setup step (a).'
+    );
+  }
+  return SpreadsheetApp.openById(copy.getId());
+}
+
+// Drop any tabs the template carries beyond the active sheet. Manual template
+// setup (Extensions → Apps Script bound shim creation) often leaves a default
+// "Sheet1" plus the bound shim's own associated sheet; we want each generated
+// spreadsheet to start with exactly the active sheet that buildLayout_ will
+// populate. Skips the active sheet itself.
+function removeNonActiveSheets_(ss, keepSheet) {
+  var keepGid = keepSheet.getSheetId();
+  var sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    if (sheets[i].getSheetId() !== keepGid) {
+      ss.deleteSheet(sheets[i]);
+    }
+  }
+}
+
+// Per `docs/sheet_generation_contract.md` §11B + `docs/decision_log.md` D-0043
+// sub-decision 1: attach DeveloperMetadata at the sheet level so the snapshot
+// extractor (`docs/snapshot_adapter_contract.md` §6) can identify the active
+// request-entry tab, pair it with its Scorer Config tab via `runId`, and run
+// the per-anchor cardinality validation (D-0043 sub-decision 3).
+function attachRequestEntrySheetLevelMetadata_(sheet, template, runId,
+                                                doctorCountByGroup, dayCount) {
+  sheet.addDeveloperMetadata('rosterMonster:tabType', 'requestEntry');
+  // templateVersion lives under template.identity per `TemplateArtifact.gs`,
+  // not at the top level. Caught by Codex P0 on PR #96 — was previously
+  // emitting "unknown" for every sheet, breaking the CLI's templateVersion
+  // parse downstream.
+  var templateVersion = (template.identity && template.identity.templateVersion)
+    || template.templateVersion || 'unknown';
+  sheet.addDeveloperMetadata('rosterMonster:templateVersion',
+    String(templateVersion));
+  sheet.addDeveloperMetadata('rosterMonster:runId', String(runId));
+
+  // Expected-cardinality anchors driving D-0043 sub-decision 3.
+  var sections = template.inputSheetLayout.sections;
+  for (var s = 0; s < sections.length; s++) {
+    var sec = sections[s];
+    var n = doctorCountByGroup[sec.groupId] | 0;
+    sheet.addDeveloperMetadata(
+      'rosterMonster:expectedDoctorCount.' + sec.sectionKey,
+      String(n));
+  }
+  sheet.addDeveloperMetadata('rosterMonster:expectedDayCount', String(dayCount));
+
+  // expectedAssignmentRowCount = total cross-product of declared output
+  // surfaces × per-surface assignment rows. Drives the assignment-row
+  // partial-loss check per D-0043 sub-decision 3 — Codex P1 on PR #96
+  // flagged that the previous "uniqueness only" check would silently
+  // accept a deleted assignment row.
+  var assignmentRowTotal = 0;
+  if (template.outputMapping && template.outputMapping.surfaces) {
+    var surfaces = template.outputMapping.surfaces;
+    for (var u = 0; u < surfaces.length; u++) {
+      assignmentRowTotal += (surfaces[u].assignmentRows || []).length;
+    }
+  }
+  sheet.addDeveloperMetadata('rosterMonster:expectedAssignmentRowCount',
+    String(assignmentRowTotal));
 }
