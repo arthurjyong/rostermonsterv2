@@ -185,6 +185,17 @@ function _scorerConfigBuildDataValidation_(componentId) {
 // (sheet-row, 1-indexed) keyed by componentId — useful for caller-side
 // post-processing (e.g. attaching a Property entry per FW-0024 for the
 // per-day call-point rows on the request-entry side).
+// runId is parsed off the request-entry tab name (`vMMddHHmmss`) so the
+// snapshot extractor's runId-paired tab discovery (per
+// `docs/snapshot_adapter_contract.md` §6 step 3) can locate this tab from
+// the active request-entry tab without ambiguity. Returned to the caller via
+// the result object for tests + downstream callers that want the value.
+function _scorerConfigParseRunId_(versionedRequestTabName) {
+  // tab name shape is `v<MMddHHmmss>` per `buildVersionedTabName_` in
+  // GenerateSheet.gs; the runId IS that exact string.
+  return String(versionedRequestTabName);
+}
+
 function buildScorerConfigTab_(ss, requestEntryTabName, template) {
   var componentWeights = template.scoring.componentWeights;
   if (!componentWeights) {
@@ -320,6 +331,23 @@ function buildScorerConfigTab_(ss, requestEntryTabName, template) {
   // future without losing the column headers (cheap polish; future-
   // proof for FW-0007 curve-parameter rows).
   sheet.setFrozenRows(headerRow);
+
+  // Per `docs/sheet_generation_contract.md` §11B + `docs/decision_log.md`
+  // D-0043 sub-decision 1: attach sheet-level DeveloperMetadata so the
+  // snapshot extractor's runId-paired tab discovery (per
+  // `docs/snapshot_adapter_contract.md` §6 step 3) can locate this tab as
+  // the unique `tabType=scorerConfig` sheet whose `runId` matches the
+  // active request-entry tab's `runId`.
+  var runId = _scorerConfigParseRunId_(requestEntryTabName);
+  sheet.addDeveloperMetadata('rosterMonster:tabType', 'scorerConfig');
+  // templateVersion lives under template.identity per `TemplateArtifact.gs`
+  // — same Codex P0 fix as in GenerateSheet.gs's request-entry sheet-level
+  // metadata writer (PR #96).
+  var templateVersion = (template.identity && template.identity.templateVersion)
+    || template.templateVersion || 'unknown';
+  sheet.addDeveloperMetadata('rosterMonster:templateVersion',
+    String(templateVersion));
+  sheet.addDeveloperMetadata('rosterMonster:runId', runId);
 
   // Build the row-index lookup for callers / future extractor.
   var componentRowByComponentId = {};

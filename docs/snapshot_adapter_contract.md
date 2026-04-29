@@ -75,6 +75,7 @@ DeveloperMetadata anchors **attached at generation time** (this contract extends
 - Sheet level (NEW, D-0043 sub-decision 1 — expected-cardinality anchors driving the §6 completeness validation per D-0043 sub-decision 3):
   - `rosterMonster:expectedDoctorCount.<sectionKey>` per declared section, value = integer count of doctor rows the launcher generated for that section (e.g., `expectedDoctorCount.MICU = 5`). Variable cardinality — depends on the operator-supplied doctor counts at launch time.
   - `rosterMonster:expectedDayCount`, value = integer count of day-axis days the launcher generated. Variable cardinality — depends on the period length.
+  - `rosterMonster:expectedAssignmentRowCount`, value = integer cross-product count of declared output surfaces × per-surface assignment rows. Drives the assignmentRow partial-loss check; the extractor lacks the template at runtime so this anchor closes the gap.
 - Per row (NEW, D-0043 sub-decision 1):
   - `rosterMonster:section` on each section header row, value = `sectionKey` (`MICU` | `MICU_HD` | `MHD`).
   - `rosterMonster:dayAxis` on the day-axis row, value = `true`.
