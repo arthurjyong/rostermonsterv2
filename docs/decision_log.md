@@ -712,3 +712,122 @@
   1. If a real operator workflow surfaces where a metadata anchor legitimately disappears (e.g., operator deletes a section the roster doesn't use), revisit toward "soft-missing anchor → empty record collection" rather than "hard-fail extraction" — recorded as future-work if it appears.
   2. If column drift becomes a real concern (currently disallowed by §6 / §7 protection), revisit toward column-anchored DeveloperMetadata for column-axis surfaces.
 - **Related docs:** `docs/snapshot_contract.md` §3 (adapter discipline), §10 (sourceLocator surfaces this decision anchors); `docs/sheet_generation_contract.md` §6 (operator-allowed edits), §7 (disallowed structural drift), §11A (Scorer Config tab metadata pattern this decision extends); `docs/decision_log.md` D-0036 (M2 C9 commitment), D-0040 (transport), D-0041 (extractor placement), D-0042 (snapshot identity); `docs/snapshot_adapter_contract.md` (new — codifies the metadata-anchored algorithm).
+
+
+### D-0044: Writeback transport mechanic — file upload via launcher form
+- **Date:** 2026-04-30
+- **Status:** Accepted
+- **Context:** `docs/decision_log.md` D-0040 settled the snapshot-extraction (inbound) transport at "browser-download of a JSON file" and noted the writeback (outbound) side would adopt the same mechanic in reverse. D-0040's wording — "the operator drags / pastes it into the launcher's writeback form" — was deliberately vague between drag-and-drop, copy-paste textarea, and `<input type="file">` upload. M3 C1 (writeback implementation) needs a concrete UI choice. `docs/writeback_contract.md` §6.3 / §8 / §22 leave the concrete launcher transport as implementation-slice, so settling it here doesn't require a writeback `contractVersion` bump.
+- **Decision:** **File upload via the launcher web form** is the operator-facing transport for writeback. Concretely:
+  1. The launcher Web App (`apps_script/m1_sheet_generator/`) gains a writeback route exposing an HTML form with an `<input type="file" accept=".json,application/json">` field.
+  2. Operator selects the JSON file produced by the local Python CLI (`python -m rostermonster.run --snapshot ... --output result.json`) — see D-0047 for the rule that the CLI's output IS the writeback envelope.
+  3. The form submits via Apps Script's standard `google.script.run` channel; the file content reaches the server-side `doPost(e)` handler as a string the server `JSON.parse`s.
+  4. Maximum file size is bounded by Apps Script's request-payload limit (currently 50 MB compressed / 30 MB uncompressed for HTML form posts; first-release writeback envelope at ICU/HD scale is well under 100 KB so this is not a concern).
+  5. The form does not accept drag-and-drop or clipboard paste in first release; those are deferred as UX-polish entries if pilot operator feedback warrants.
+  6. No new OAuth scopes. The launcher's existing `drive` scope (broadened in M2 C9 per D-0041 sub-decision 4) is sufficient — the file upload is operator-mediated and doesn't require Apps Script to read the operator's Drive directly.
+- **Bidirectional audit dogfooded** (per `docs/delivery_plan.md` §14):
+  - **Forward**: writeback consumer (Apps Script) expects to receive a JSON envelope per `docs/writeback_contract.md` §9 → operator uploads via file picker → server `JSON.parse`s → consumer's input shape satisfied. ✓
+  - **Reverse**: writeback producer (Python CLI's output JSON file per D-0047) → file upload widget consumes the file → no producer-side changes needed. ✓
+- **Rationale:** File upload is the simplest mechanic that:
+  - matches the operator's existing mental model from M1.1 (forms with file inputs are commonplace),
+  - avoids the size constraints of clipboard paste (operator workflow shouldn't break if envelope grows past clipboard limits),
+  - reuses the launcher's existing form infrastructure rather than building a new transport surface,
+  - mirrors the symmetry of D-0040's browser-download for the inbound side (operator manages a single local file; no Drive API on either side).
+  Drag-and-drop adds JavaScript complexity for marginal UX gain; can be added later as polish. Drive Picker would require additional OAuth scopes.
+- **Consequences:**
+  - `docs/writeback_contract.md` §6.3 / §22 receive an addendum citing this decision as the resolved transport (the §6.3 / §22 deferral language is retained for forward-compat — drag-and-drop and Drive Picker remain implementation-slice options for future polish — but the joint-scoping commitment from D-0036 is now fully resolved on both directions).
+  - M3 C1 Phase 2 implementation extends the launcher Web App with: (a) a new HTML view for the writeback form, (b) a route or query-parameter dispatch from `doGet(e)` to render either the existing generation form or the new writeback form, (c) a `doPost(e)` handler accepting the JSON content + invoking the writeback library.
+  - The launcher's existing `drive` OAuth scope (per D-0041) covers the writeback path; no new scope addition.
+  - File-size limit is not a first-release concern (envelopes are ≪50 MB); revisit only if envelope shape grows to include large sidecar content (currently excluded per `docs/writeback_contract.md` §8 + §9).
+- **Follow-up actions:**
+  1. If pilot operator surfaces friction with the file-upload-then-form-submit two-step flow, revisit toward drag-and-drop or auto-submit-on-file-pick. Captured as future-work polish if it surfaces.
+  2. If the writeback envelope ever needs to carry FULL-retention selector sidecars (currently prohibited per `docs/writeback_contract.md` §8 + §9), revisit the file-size limit and potentially the transport mechanic.
+- **Related docs:** `docs/decision_log.md` D-0040 (parent transport decision; refines its "drag/paste" language for the writeback direction); `docs/writeback_contract.md` §6.3 / §8 / §9 / §22 (transport surface in the contract); `docs/decision_log.md` D-0023 (M1.1 OAuth posture this transport inherits); `apps_script/m1_sheet_generator/` (launcher project that grows the writeback route in M3 C1 Phase 2); `docs/decision_log.md` D-0045 / D-0046 / D-0047 (companion M3 C1 Phase 1 decisions).
+
+### D-0045: Writeback envelope shape — single JSON wrapper carrying FinalResultEnvelope + snapshot bundle + doctorIdMap
+- **Date:** 2026-04-30
+- **Status:** Accepted
+- **Context:** `docs/writeback_contract.md` §9 declares the writeback consumer's three input categories (`finalResultEnvelope`, `snapshot`, `doctorIdMap`) but explicitly leaves "concrete JSON envelope schema layout" deferred (§6.3, §8, §22). M3 C1 needs a concrete shape so the Python CLI knows what to emit and the Apps Script writeback library knows what to ingest. The simplest operator-facing UX (D-0044's file-upload mechanic) requires the operator to upload a SINGLE file, not three; the envelope MUST therefore wrap all three categories into one JSON document.
+- **Decision:** Writeback envelope is a single JSON wrapper at top level with the following shape categories (concrete key ordering / nesting / Unicode normalization remain implementation-slice per `docs/writeback_contract.md` §22; this decision pins the categories of content):
+  ```
+  {
+    "schemaVersion": 1,
+    "finalResultEnvelope": { ...selector v2 FinalResultEnvelope per docs/selector_contract.md §10... },
+    "snapshot": {
+      "columnADoctorNames": [...],
+      "requestCells": [...],
+      "callPointCells": [...],
+      "prefilledFixedAssignmentCells": [...],
+      "shellParameters": { department, periodStartDate, periodEndDate, doctorCountByGroup }
+    },
+    "doctorIdMap": [{ "doctorId": "...", "sectionGroup": "...", "rowIndex": N }, ...]
+  }
+  ```
+  Concrete properties:
+  1. **`schemaVersion`**: integer, currently `1`. Distinct from `docs/writeback_contract.md` `contractVersion` per §20.2 (the writeback artifact's `contractVersion` IS the schema-version surface for the *writeback tab*; this `schemaVersion` is for the *upload envelope* the operator uploads). Bumps when the envelope's required-categories set changes in a v1-targeted-reader-breaking way.
+  2. **`finalResultEnvelope`**: the unmodified `FinalResultEnvelope` produced by the selector, per `docs/selector_contract.md` §10.
+  3. **`snapshot`**: a SUBSET of the original snapshot the operator extracted in M2 C9 — only the categories the writeback library needs to reconstruct shell content per `docs/writeback_contract.md` §10.1. Full snapshot fields (e.g., `requestRecords` raw text, `prefilledAssignmentRecords` raw text per `docs/snapshot_contract.md` §9 / §11) are repackaged into the simpler operator-cell shapes the writeback contract names. The Python CLI is responsible for projecting from the full snapshot to this writeback-subset.
+  4. **`doctorIdMap`**: array of `{doctorId, sectionGroup, rowIndex}` triples derived by Python from the original snapshot's doctor records.
+- **Bidirectional audit dogfooded** (per `docs/delivery_plan.md` §14):
+  - **Forward**: writeback consumer (Apps Script library) reads `envelope.finalResultEnvelope`, `envelope.snapshot.*`, `envelope.doctorIdMap` → Python CLI emits exactly those fields → declared in this decision and `docs/writeback_contract.md` §9. ✓
+  - **Reverse**: writeback producer (Python CLI) emits the wrapper shape → operator uploads to launcher → consumer's input shape (writeback contract §9 categories) is satisfied → declared here and in D-0047. ✓
+- **Rationale:** Single wrapper file is the cleanest operator UX (one upload, not three), avoids partial-upload corruption (operator can't accidentally upload only result.json without the snapshot), and puts assembly responsibility on the Python CLI (which has all three inputs at hand naturally). Pinning categories without pinning concrete schema layout matches `docs/selector_contract.md` §14.3's pattern and `docs/writeback_contract.md` §6.3 / §22's existing deferral discipline.
+- **Consequences:**
+  - `python/rostermonster/run.py` is extended in M3 C1 Phase 2 to emit the wrapper envelope as its output instead of the bare `FinalResultEnvelope`. The CLI gains a `--writeback-ready` flag (default `true` in first release) controlling this; pure `FinalResultEnvelope`-only output remains available via `--writeback-ready=false` for callers who don't intend to writeback.
+  - Apps Script writeback library validates the wrapper's required categories at ingestion time and surfaces validation failure through the runtime-error state per `docs/writeback_contract.md` §17.3.
+  - `docs/writeback_contract.md` §9 receives an addendum subsection (provisionally §9.1 or §9-extension) declaring the wrapper-shape categories normatively, distinct from the concrete schema layout which remains implementation-slice.
+- **Follow-up actions:**
+  1. If a future selector strategy emits a meaningfully different `FinalResultEnvelope` shape that requires writeback to consume new categories, bump the wrapper's `schemaVersion` per §1 of this decision.
+  2. The `snapshot` subset's exact field shapes are pinned in M3 C1 Phase 2 alongside the Python projection helper that produces them; document the shape in `docs/writeback_contract.md` at that point.
+- **Related docs:** `docs/writeback_contract.md` §9 (input shape — primary contract surface); `docs/selector_contract.md` §10 (FinalResultEnvelope shape); `docs/snapshot_contract.md` §5..§11 (snapshot shape Python projects from); `docs/decision_log.md` D-0044 / D-0046 / D-0047 (companion M3 C1 Phase 1 decisions); `python/rostermonster/run.py` (CLI extended in Phase 2 to emit the wrapper).
+
+### D-0046: Writeback placement — launcher Web App route, NOT in-sheet bound shim menu
+- **Date:** 2026-04-30
+- **Status:** Accepted
+- **Context:** Two viable architectures for the writeback operator-facing entrypoint surfaced in M3 C1 Phase 1 design discussion: (a) extend the launcher Web App at `apps_script/m1_sheet_generator/` with a new writeback route (separate URL or query-parameter dispatch); (b) extend the per-sheet bound shim at `apps_script/m2_template_bound_script/` with a `Roster Monster → Apply Writeback` menu item that opens a file picker dialog. Both are mechanically feasible given the M2 C9 architecture; this decision picks one for first release.
+- **Decision:** Writeback is **launcher-driven** for first release. The launcher Web App at `apps_script/m1_sheet_generator/` gains a writeback route; the bound shim does NOT carry writeback functionality. Concretely:
+  1. The launcher Web App's `doGet(e)` dispatches based on a query parameter (provisional name `?action=writeback`) to render either the existing generation form (`LauncherForm.html`) or a new writeback form (provisional name `WritebackForm.html`).
+  2. The writeback form carries the file-upload widget (per D-0044) and a confirmation-preview block sourcing source-spreadsheet identity from the uploaded envelope per `docs/writeback_contract.md` §18.4.
+  3. The writeback library (provisional path `apps_script/m1_sheet_generator/src/Writeback.gs` or a new clasp-managed library project — implementation-slice) is invoked by the launcher's `doPost(e)` handler.
+  4. The bound template's bound shim and the central extractor library remain unchanged. They retain their existing surface (`Roster Monster → Extract Snapshot` menu) and gain no writeback responsibility.
+- **Bidirectional audit dogfooded** (per `docs/delivery_plan.md` §14):
+  - **Forward**: writeback launcher consumer (operator visiting a launcher URL with `?action=writeback`) → launcher Web App's `doGet(e)` dispatch produces the writeback form → upload triggers `doPost(e)` invoking the writeback adapter per `docs/writeback_contract.md` §6 → spreadsheet is updated. ✓
+  - **Reverse**: launcher's writeback route consumer (the operator submitting the form) → form posts envelope JSON to `doPost(e)` → declared in this decision and in D-0044's transport mechanism. ✓
+- **Rationale:** Launcher-driven writeback:
+  - reuses the already-deployed launcher Web App's form infrastructure (HTML serving, OAuth handling, `doPost` dispatch, success/error UI),
+  - keeps the bound shim thin (delegate-only) and focused on per-sheet read concerns (extraction, future FW-0024 onEdit auto-fill) rather than mixing per-sheet UX with operator-driven cross-spreadsheet mutation,
+  - separates concerns cleanly: bound shim = "this spreadsheet's data outbound"; launcher = "operator-driven actions across spreadsheets,"
+  - preserves the option to add an in-sheet menu later (as future-work polish, FW-NNNN if pilot demand surfaces) without reversing the architecture; adding a menu later is purely additive.
+  - The bound shim approach would require either (a) extending the central library with writeback logic (couples extractor and writeback projects) or (b) adding a separate writeback library and a second library dependency on the bound shim (heavier setup). Both options inflate the bound shim's responsibility and complicate the M2 C9 architecture's clean delegate-only pattern.
+- **Consequences:**
+  - M3 C1 Phase 2 work lives in `apps_script/m1_sheet_generator/`; the bound shim and central library projects do NOT change for M3 C1.
+  - Launcher OAuth scope is unchanged (D-0041's `drive` scope already covers writeback per D-0044).
+  - The launcher's deployment ID (`AKfycbwCOsciJ0kciYeEz8UL3LORd_FcI67T6EJaAQlarJ_xYDjDuy8-RNjnNme3f6u21SyB`) is reused; M3 C1 ships a new version (`@13` or later) of the same deployment.
+  - Operator workflow: visit the launcher URL with the writeback query parameter (provisional `tinyurl.com/cghicuhdlauncherv1?action=writeback`) → upload JSON → watch the launcher's success/failure diagnostic per `docs/writeback_contract.md` §17.
+- **Follow-up actions:**
+  1. If pilot operator feedback surfaces "I wish I could just click a menu in the sheet to writeback" (mirroring the extractor menu UX), file a future-work entry covering bound-shim extension OR a separate writeback library project. The architecture supports it; we deferred for first-release simplicity, not architectural reasons.
+  2. The exact query-parameter / route shape (`?action=writeback` vs `/writeback` vs separate `LauncherSuccess`-style success page) is implementation-slice; settled in M3 C1 Phase 2.
+- **Related docs:** `docs/decision_log.md` D-0022 (launcher architecture this decision extends), D-0023 (launcher OAuth posture inherited), D-0041 (M2 C9 bound-template + library architecture this decision deliberately leaves unchanged), D-0044 / D-0045 / D-0047 (companion M3 C1 Phase 1 decisions); `docs/writeback_contract.md` §6.1 (stack ownership), §17 (launcher diagnostic surface), §18.4 (launcher UX implication); `apps_script/m1_sheet_generator/` (the launcher project the writeback route lands inside).
+
+### D-0047: Python CLI output IS the writeback envelope
+- **Date:** 2026-04-30
+- **Status:** Accepted
+- **Context:** D-0045 pins the writeback envelope as a single JSON wrapper containing `finalResultEnvelope` + `snapshot` subset + `doctorIdMap`. Two CLI-output strategies surfaced: (a) `python -m rostermonster.run` produces the wrapper envelope directly as its `--output` file (operator uploads it to writeback as-is); (b) `python -m rostermonster.run` continues to produce a bare `FinalResultEnvelope` and a separate sub-command (`python -m rostermonster.writeback-prep`) wraps it into the writeback envelope. Strategy (a) is one operator action ("upload result.json"); strategy (b) is two ("first run prep, then upload writeback.json"). For pilot UX simplicity this decision picks (a).
+- **Decision:** **The Python CLI's standard output IS the writeback envelope.** No separate envelope-assembly step. Concretely:
+  1. `python -m rostermonster.run --snapshot path/to/snapshot.json --output result.json` writes the writeback wrapper envelope (per D-0045) directly to `--output` in first release. The CLI's existing flags (`--retention`, `--seed`, `--max-candidates`, `--sidecar-dir`) continue to behave as today.
+  2. The CLI gains a new `--writeback-ready` flag, default `true`. When `true`, the output is the wrapper envelope per D-0045; when `false`, the output is the bare `FinalResultEnvelope` (current behavior pre-M3 C1) for callers who explicitly don't intend to writeback (regression testing, programmatic consumption that doesn't need the snapshot subset, etc.).
+  3. Operator workflow becomes single-file: extract → run CLI → upload the CLI's output to writeback. No intermediate prep step.
+  4. Backward compatibility: existing test fixtures and integration smoke tests that consume bare `FinalResultEnvelope` JSON continue to work via `--writeback-ready=false`. The default behavior change (true vs false) is a M3 C1 Phase 2 implementation concern; the decision here is the design intent.
+- **Bidirectional audit dogfooded** (per `docs/delivery_plan.md` §14):
+  - **Forward**: writeback launcher consumer (per D-0046) expects to receive the wrapper envelope shape per D-0045 → Python CLI emits it directly → operator uploads → launcher ingests. ✓
+  - **Reverse**: Python CLI's wrapper-envelope emission requires access to (a) the FinalResultEnvelope (already produced by the existing pipeline), (b) snapshot subset (Python has the full snapshot in memory at run time per `_snapshot_from_dict`), (c) doctorIdMap (derivable from the snapshot's `doctorRecords`) → all three inputs are already available in the CLI's existing data flow → no new CLI-stage data dependency. ✓
+- **Rationale:** Single-file output and single-action upload is a much simpler operator mental model than "first run prep, then upload." The Python CLI already has all three inputs to the wrapper envelope at hand (from the snapshot it ingested + the pipeline it ran), so emitting the wrapper directly costs almost no implementation complexity. The `--writeback-ready=false` escape hatch keeps existing test consumers working without forcing a refactor across the test suite.
+- **Consequences:**
+  - `python/rostermonster/run.py` Phase 2 work: build a small projection helper that maps the in-memory `Snapshot` to the writeback `snapshot` subset shape per D-0045; build a `doctorIdMap` from the same `Snapshot`; emit the wrapper.
+  - `python/tests/test_run_cli.py` tests need updating: existing tests consume the bare `FinalResultEnvelope`, so they need either `--writeback-ready=false` or new wrapper-aware assertions (Phase 2 implementation concern, not a Phase 1 decision).
+  - `docs/snapshot_adapter_contract.md` §11 (Python ingestion CLI scope) gets an addendum noting the CLI's output now serves writeback per D-0047 — a small forward-pointer update.
+  - Operator-facing CLI UX: the success message at the end of a CLI run remains the same (winner score + filled count + output path); the output path is now the writeback envelope.
+- **Follow-up actions:**
+  1. If a future use case emerges where the CLI consumer wants ONLY the FinalResultEnvelope without the snapshot subset (for example, a third-party tool consuming run outputs), `--writeback-ready=false` is already the documented escape.
+  2. If the wrapper-envelope size becomes operationally awkward (e.g., embeds too much snapshot content for clipboard / file-size reasons), revisit whether the wrapper should be split — but this is a future scaling concern, not a first-release one.
+- **Related docs:** `docs/decision_log.md` D-0040 (transport — the wrapper envelope IS the file the operator uploads), D-0044 / D-0045 / D-0046 (companion M3 C1 Phase 1 decisions); `docs/writeback_contract.md` §9 (input-shape contract surface this decision implements producer-side); `python/rostermonster/run.py` (the CLI module Phase 2 extends).
