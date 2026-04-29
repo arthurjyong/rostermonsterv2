@@ -289,11 +289,19 @@ function _renderSuccessBranch_(sheet, envelope) {
     }
   }
 
+  // surfaceId → sheet row number for the surface's anchor row. Filled as
+  // we render call-point rows and lower-shell slot rows below; consumed
+  // by the prefilled-cell pass which writes each prefilled value at
+  // (surfaceIdToRow[surfaceId] + rowOffset, dayIndex column) so the
+  // value lands in the same cell coordinates the source tab carried.
+  var surfaceIdToRow = {};
+
   // Call-point rows (one per callPointRowKey). Group by rowKey.
   var callPointByKey = _groupCallPointsByRowKey_(snap.callPointCells || []);
   var callPointRowKeys = Object.keys(callPointByKey).sort();
   for (var cpi = 0; cpi < callPointRowKeys.length; cpi++) {
     var cpKey = callPointRowKeys[cpi];
+    surfaceIdToRow[cpKey] = currentRow;
     sheet.getRange(currentRow, nameCol).setValue(cpKey)
       .setFontWeight('bold').setBackground('#fff2cc');
     var cpCells = callPointByKey[cpKey];
@@ -309,9 +317,8 @@ function _renderSuccessBranch_(sheet, envelope) {
   }
   currentRow++; // spacer
 
-  // Lower assignment shell — one row per (surfaceId, rowOffset) pair seen
-  // either in winnerAssignments (slotType-keyed) or prefilled cells.
-  // Render header.
+  // Lower assignment shell — one row per slotType, surfacing the winner
+  // assignments. Render header.
   sheet.getRange(currentRow, nameCol).setValue('Roster / Assignments')
     .setFontWeight('bold').setBackground('#c6e0b4');
   sheet.getRange(currentRow, nameCol, 1, totalCols).setBackground('#c6e0b4');
@@ -324,7 +331,27 @@ function _renderSuccessBranch_(sheet, envelope) {
     if (!winnerBySlot[au.slotType]) winnerBySlot[au.slotType] = [];
     winnerBySlot[au.slotType].push(au);
   }
-  var slotTypes = Object.keys(winnerBySlot).sort();
+  // Union slot types from winner assignments AND prefilled cells so a
+  // prefilled-only surface (no winner row in this run) still gets its
+  // anchor row rendered, preventing prefilled cells from being silently
+  // dropped when no winner assignment shares the same slot type.
+  var slotTypeSet = {};
+  for (var wsk in winnerBySlot) {
+    if (Object.prototype.hasOwnProperty.call(winnerBySlot, wsk)) {
+      slotTypeSet[wsk] = true;
+    }
+  }
+  var prefilled = snap.prefilledFixedAssignmentCells || [];
+  for (var pix = 0; pix < prefilled.length; pix++) {
+    var pfx = prefilled[pix];
+    if (!surfaceIdToRow[pfx.surfaceId]) {
+      // Reserve only slot-type-shaped surfaces here; call-point surfaces
+      // were already anchored above. Treat any unknown surfaceId as a
+      // slot-type-shaped row to render in the lower shell.
+      slotTypeSet[pfx.surfaceId] = true;
+    }
+  }
+  var slotTypes = Object.keys(slotTypeSet).sort();
 
   // Build dateKey → dayIndex map for assignment rendering (winner has
   // dateKey, snapshot has dayIndex; we need to map between them via
@@ -340,8 +367,9 @@ function _renderSuccessBranch_(sheet, envelope) {
 
   for (var st = 0; st < slotTypes.length; st++) {
     var slot = slotTypes[st];
+    surfaceIdToRow[slot] = currentRow;
     sheet.getRange(currentRow, nameCol).setValue(slot).setFontWeight('bold');
-    var assignments = winnerBySlot[slot];
+    var assignments = winnerBySlot[slot] || [];
     for (var ai = 0; ai < assignments.length; ai++) {
       var a = assignments[ai];
       var aDayIndex = dateKeyToDayIndex[a.dateKey];
@@ -357,39 +385,30 @@ function _renderSuccessBranch_(sheet, envelope) {
     currentRow++;
   }
 
-  // Prefilled-assignment cells (carry through into the writeback tab so
-  // operator can compare). Render at offset (lower-shell-anchor + rowOffset).
-  // For first release we render them as a separate block below the slot
-  // rows for visibility; the contract doesn't require pixel-perfect
-  // M1-shell-style placement.
-  var prefilled = snap.prefilledFixedAssignmentCells || [];
-  if (prefilled.length > 0) {
-    currentRow++; // spacer
-    sheet.getRange(currentRow, nameCol)
-      .setValue('Prefilled (carried forward from request tab)')
-      .setFontWeight('bold').setFontStyle('italic');
-    currentRow++;
-    var pfBySurfaceRow = {};
-    for (var pi = 0; pi < prefilled.length; pi++) {
-      var pf = prefilled[pi];
-      var pfKey = pf.surfaceId + ':' + pf.rowOffset;
-      if (!pfBySurfaceRow[pfKey]) pfBySurfaceRow[pfKey] = [];
-      pfBySurfaceRow[pfKey].push(pf);
+  // Prefilled-assignment cells: write back into their original
+  // (surfaceId, rowOffset) source-tab coordinates per writeback contract
+  // §10.1 ("written into their cell positions"). Italic styling marks
+  // these cells as solver-fixed inputs rather than solver-chosen
+  // outputs. If a prefilled and a winner assignment land in the same
+  // (slot, day) cell, prefilled is written second so the italic style
+  // wins; the values must agree because prefilled is a solver
+  // constraint that the winner must respect.
+  for (var pi = 0; pi < prefilled.length; pi++) {
+    var pf = prefilled[pi];
+    var pfBaseRow = surfaceIdToRow[pf.surfaceId];
+    if (pfBaseRow === undefined) {
+      // Defensive: an unknown surfaceId would mean the prefilled cell
+      // came from a surface we did not render. Skip rather than misplace
+      // the value to a wrong cell. This should not occur in practice
+      // because the loop above eagerly anchors a slot row for every
+      // unknown surfaceId; the guard remains as a backstop.
+      continue;
     }
-    var pfKeys = Object.keys(pfBySurfaceRow).sort();
-    for (var pki = 0; pki < pfKeys.length; pki++) {
-      var pfk = pfKeys[pki];
-      sheet.getRange(currentRow, nameCol).setValue(pfk).setFontStyle('italic');
-      var pfCells = pfBySurfaceRow[pfk];
-      for (var pfc = 0; pfc < pfCells.length; pfc++) {
-        var pfCell = pfCells[pfc];
-        var pfCol = dayIndexToCol[pfCell.dayIndex];
-        if (pfCol) {
-          sheet.getRange(currentRow, pfCol).setValue(pfCell.value)
-            .setHorizontalAlignment('center').setFontStyle('italic');
-        }
-      }
-      currentRow++;
+    var pfRow = pfBaseRow + (pf.rowOffset || 0);
+    var pfCol = dayIndexToCol[pf.dayIndex];
+    if (pfCol) {
+      sheet.getRange(pfRow, pfCol).setValue(pf.value)
+        .setHorizontalAlignment('center').setFontStyle('italic');
     }
   }
 }
@@ -480,8 +499,27 @@ function _writebackSuccess_(sheet, isSuccess, ss) {
   return {
     state: isSuccess ? 'SUCCESS' : 'FAILED',
     tabName: sheet.getName(),
-    spreadsheetUrl: ss.getUrl(),
+    spreadsheetUrl: _anchorSpreadsheetUrlToSheet_(ss, sheet),
   };
+}
+
+// Construct a spreadsheet URL anchored to the writeback tab so the
+// operator lands directly on the new tab (not the spreadsheet's default
+// tab) per writeback contract §17.1 / §17.2 ("anchored to the new tab
+// where the platform supports tab anchoring"). Google Sheets uses the
+// `#gid=<sheetId>` URL fragment for tab targeting.
+function _anchorSpreadsheetUrlToSheet_(ss, sheet) {
+  return _composeSpreadsheetUrlWithGid_(ss.getUrl(), sheet.getSheetId());
+}
+
+// Pure URL composition: replace any existing `#...` fragment on the
+// spreadsheet URL with `#gid=<sheetId>`. Extracted as a helper so the
+// fragment-replacement logic is unit-testable without spinning up
+// SpreadsheetApp.
+function _composeSpreadsheetUrlWithGid_(baseUrl, sheetId) {
+  var hashIdx = baseUrl.indexOf('#');
+  var trimmedBase = hashIdx >= 0 ? baseUrl.substring(0, hashIdx) : baseUrl;
+  return trimmedBase + '#gid=' + sheetId;
 }
 
 function _writebackError_(message) {

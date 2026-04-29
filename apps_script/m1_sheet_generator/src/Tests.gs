@@ -40,6 +40,8 @@ function runAllTests_() {
     testWritebackGroupColumnAByDoctorSectionGroupsBySectionKey_,
     testWritebackOrderedSectionKeysPreservesDiscoveryOrder_,
     testWritebackGroupCallPointsByRowKeyGroupsByCallPointRowKey_,
+    testWritebackComposeUrlAppendsGidWhenNoFragment_,
+    testWritebackComposeUrlReplacesExistingGidFragment_,
   ];
   var failures = [];
   for (var i = 0; i < tests.length; i++) {
@@ -473,6 +475,27 @@ function testWritebackGroupCallPointsByRowKeyGroupsByCallPointRowKey_() {
     'CALL_ICU_POINTS should have 2 cells');
   assertEqualNumber_(grouped.CALL_HD_POINTS.length, 1,
     'CALL_HD_POINTS should have 1 cell');
+}
+
+function testWritebackComposeUrlAppendsGidWhenNoFragment_() {
+  // Per writeback contract §17.1 / §17.2: the diagnostic link should
+  // anchor to the newly-created tab, not the spreadsheet default.
+  // SpreadsheetApp.getUrl() typically returns `.../edit` with no
+  // fragment; the helper appends `#gid=<sheetId>`.
+  var url = _composeSpreadsheetUrlWithGid_(
+    'https://docs.google.com/spreadsheets/d/abc123/edit', 1234567890);
+  assertTrue_(url === 'https://docs.google.com/spreadsheets/d/abc123/edit#gid=1234567890',
+    'expected gid fragment appended; got ' + url);
+}
+
+function testWritebackComposeUrlReplacesExistingGidFragment_() {
+  // If SpreadsheetApp.getUrl() ever returns a URL with an existing
+  // fragment (e.g., `#gid=0` for the default tab), the helper must
+  // replace the fragment rather than concatenating two.
+  var url = _composeSpreadsheetUrlWithGid_(
+    'https://docs.google.com/spreadsheets/d/abc123/edit#gid=0', 999);
+  assertTrue_(url === 'https://docs.google.com/spreadsheets/d/abc123/edit#gid=999',
+    'existing fragment should be replaced; got ' + url);
 }
 
 // ---------------------------------------------------------------------------
