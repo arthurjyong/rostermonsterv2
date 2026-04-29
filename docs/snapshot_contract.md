@@ -30,6 +30,8 @@ Settled boundary points:
 - Parser instantiates normalized slot demand from template-declared `requiredCountPerDay` across normalized days (not from snapshot-side defaults).
 
 ## 3. Adapter/parser split
+The production Apps Script adapter's responsibilities, placement, transport, and layout-drift handling are pinned in `docs/snapshot_adapter_contract.md` (added under `docs/decision_log.md` D-0036 / D-0040 / D-0041 / D-0042 / D-0043). This section pins the conceptual split; the adapter contract operationalizes it.
+
 ### Adapter guarantees
 The adapter is responsible for extraction fidelity, traceability, and template-declared logical mapping resolution needed to build snapshot locators:
 - preserve extracted values as seen in source

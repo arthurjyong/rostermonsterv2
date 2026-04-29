@@ -49,7 +49,7 @@ For this contract, **downstream-governing facts** are normalized facts that down
 
 ## 5) Boundary position
 **Repo-settled**:
-- Upstream: snapshot contract provides raw records and structural trace fields.
+- Upstream: snapshot contract provides raw records and structural trace fields. The production Apps Script adapter that emits the snapshot is pinned in `docs/snapshot_adapter_contract.md` (added under `docs/decision_log.md` D-0036 / D-0040 / D-0041 / D-0042 / D-0043).
 - Boundary: parser/normalizer interprets and normalizes snapshot content into domain-model-consumable facts.
 - Downstream: rule engine/solver/scorer operate on normalized model, not raw snapshot rows.
 
