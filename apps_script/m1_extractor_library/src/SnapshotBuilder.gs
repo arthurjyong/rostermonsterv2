@@ -30,10 +30,20 @@ function _buildSnapshotFromAnchors_(ss, requestSheet, scorerSheet, runId,
     requestSheet, scorerSheet, requestAnchors, scorerAnchors,
     dayColumnByIndex);
 
+  // templateId / templateVersion are read from sheet-level metadata
+  // (templateVersion was attached at generation per D-0043 sub-decision 1).
+  // First-release templateId is hard-coded `cgh_icu_hd` since the launcher
+  // is single-template; future multi-template work surfaces this as a
+  // sheet-level anchor.
+  var templateVersion = parseInt(
+    String(_readSingleSheetMeta_(requestSheet, 'rosterMonster:templateVersion') ||
+      '1'), 10);
+
   return {
     metadata: {
       snapshotId: snapshotId,
-      runId: runId,
+      templateId: 'cgh_icu_hd',
+      templateVersion: templateVersion,
       sourceSpreadsheetId: spreadsheetId,
       sourceTabName: requestSheet.getName(),
       generationTimestamp: new Date().toISOString(),
@@ -77,7 +87,7 @@ function _buildDayRecords_(sheet, dayAxisRow, expectedDayCount) {
       rawDateText: isoDate, // ISO-normalized at adapter per D-0033
       sourceLocator: {
         surfaceKey: 'dayAxis',
-        path: { dayIndex: dayIndex },
+        dayIndex: dayIndex,
       },
       physicalSourceRef: {
         sheetName: sheet.getName(),
@@ -98,8 +108,22 @@ function _buildDayRecords_(sheet, dayAxisRow, expectedDayCount) {
   return records;
 }
 
-// Doctor records: one per doctor row anchor, with column A as displayName.
+// Doctor records: one per doctor row anchor. Field shape matches the live
+// Python `DoctorRecord` dataclass (`python/rostermonster/snapshot.py`):
+// `sourceDoctorKey` (raw extractor-generated key), `displayName` (column A
+// content), `rawSectionText` (the section header row's column A text).
+// `sourceLocator` is flattened (no `path` wrapper) — the contract describes
+// the typed shape with `path = {...}` but the live JSON serialization the
+// parser consumes inlines the locator fields.
 function _buildDoctorRecords_(sheet, anchors) {
+  // Index section header anchors by sectionKey so we can look up the header
+  // row's column-A text per doctor record.
+  var sectionHeaderRowBySectionKey = {};
+  for (var s = 0; s < anchors.sectionRows.length; s++) {
+    sectionHeaderRowBySectionKey[anchors.sectionRows[s].value] =
+      anchors.sectionRows[s].rowIndex;
+  }
+
   var records = [];
   for (var i = 0; i < anchors.doctorRows.length; i++) {
     var a = anchors.doctorRows[i];
@@ -107,16 +131,22 @@ function _buildDoctorRecords_(sheet, anchors) {
     var colonIdx = v.indexOf(':');
     var sectionKey = v.substring(0, colonIdx);
     var doctorIndexInSection = parseInt(v.substring(colonIdx + 1), 10);
-    var rawDisplayName = sheet.getRange(a.rowIndex, 1).getValue();
+    var displayName = sheet.getRange(a.rowIndex, 1).getValue();
+    var sectionHeaderRow = sectionHeaderRowBySectionKey[sectionKey];
+    var rawSectionText = sectionHeaderRow != null
+      ? sheet.getRange(sectionHeaderRow, 1).getValue() : '';
     records.push({
-      doctorId: sectionKey + ':' + doctorIndexInSection, // raw — parser canonicalizes
-      rawDisplayNameText: String(rawDisplayName == null ? '' : rawDisplayName),
+      // sourceDoctorKey shape mirrors the existing test fixture convention
+      // (`<lowercase-section>_dr_<idx>`) so the parser's downstream
+      // matching is unaffected.
+      sourceDoctorKey: sectionKey.toLowerCase() + '_dr_' +
+        doctorIndexInSection,
+      displayName: String(displayName == null ? '' : displayName),
+      rawSectionText: String(rawSectionText == null ? '' : rawSectionText),
       sourceLocator: {
         surfaceKey: 'doctorRows',
-        path: {
-          sectionKey: sectionKey,
-          doctorIndexInSection: doctorIndexInSection,
-        },
+        sectionKey: sectionKey,
+        doctorIndexInSection: doctorIndexInSection,
       },
       physicalSourceRef: {
         sheetName: sheet.getName(),
@@ -141,7 +171,10 @@ function _buildRequestRecords_(sheet, anchors, dayColumnByIndex) {
     var colonIdx = v.indexOf(':');
     var sectionKey = v.substring(0, colonIdx);
     var doctorIndexInSection = parseInt(v.substring(colonIdx + 1), 10);
-    var sourceDoctorKey = sectionKey + ':' + doctorIndexInSection;
+    // Same sourceDoctorKey shape as `_buildDoctorRecords_` — must agree so
+    // the parser can match request records to their owning doctor records.
+    var sourceDoctorKey = sectionKey.toLowerCase() + '_dr_' +
+      doctorIndexInSection;
     for (var j = 0; j < dayIndexes.length; j++) {
       var dayIndex = dayIndexes[j];
       var col = dayColumnByIndex[dayIndex];
@@ -152,10 +185,8 @@ function _buildRequestRecords_(sheet, anchors, dayColumnByIndex) {
         rawRequestText: String(rawText == null ? '' : rawText),
         sourceLocator: {
           surfaceKey: 'requestCells',
-          path: {
-            sourceDoctorKey: sourceDoctorKey,
-            dayIndex: dayIndex,
-          },
+          sourceDoctorKey: sourceDoctorKey,
+          dayIndex: dayIndex,
         },
         physicalSourceRef: {
           sheetName: sheet.getName(),
@@ -194,11 +225,9 @@ function _buildPrefilledAssignmentRecords_(sheet, anchors, dayColumnByIndex) {
         rowOffset: rowOffset,
         sourceLocator: {
           surfaceKey: 'outputMapping',
-          path: {
-            surfaceId: surfaceId,
-            rowOffset: rowOffset,
-            dayIndex: dayIndex,
-          },
+          surfaceId: surfaceId,
+          rowOffset: rowOffset,
+          dayIndex: dayIndex,
         },
         physicalSourceRef: {
           sheetName: sheet.getName(),
@@ -227,7 +256,7 @@ function _buildScoringConfigRecords_(requestSheet, scorerSheet,
       rawValue: String(rawValue == null ? '' : rawValue),
       sourceLocator: {
         surfaceKey: 'scorerConfigCells',
-        path: { componentId: row.value },
+        componentId: row.value,
       },
       physicalSourceRef: {
         sheetName: scorerSheet.getName(),
@@ -252,10 +281,8 @@ function _buildScoringConfigRecords_(requestSheet, scorerSheet,
         rawValue: String(rawText == null ? '' : rawText),
         sourceLocator: {
           surfaceKey: 'callPointCells',
-          path: {
-            callPointRowKey: pAnchor.value,
-            dayIndex: dayIndex,
-          },
+          callPointRowKey: pAnchor.value,
+          dayIndex: dayIndex,
         },
         physicalSourceRef: {
           sheetName: requestSheet.getName(),
