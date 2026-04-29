@@ -189,6 +189,29 @@ Explicitly out of scope at contract level:
 
 This section adds a new operator-facing structural surface to the existing M1 generation scope, but does not reopen any prior M1 generation decisions — the request-entry tab and lower-shell surfaces continue exactly as `docs/sheet_generation_contract.md` §5 / §6 / §8 / §9 declare them.
 
+## 11B. Launcher-attached DeveloperMetadata (added under `docs/decision_log.md` D-0043)
+The launcher attaches Apps Script `DeveloperMetadata` to specific spreadsheet locations at generation time so the snapshot extractor (`docs/snapshot_adapter_contract.md`) can locate sheet regions stably across operator edits. Cells inside an anchored row are located by column offset; metadata-anchored rows survive operator row inserts/deletes because Apps Script DeveloperMetadata follows the row.
+
+**Sheet level** (existing M1.1 surface; pre-D-0043):
+- `rosterMonster:tabType` — value `requestEntry` on the request-entry tab; value `scorerConfig` on the Scorer Config tab.
+- `rosterMonster:templateVersion` — value matching the template artifact version.
+- `rosterMonster:runId` — value matching the launcher's per-run identifier (used for tab-name pairing per §11A).
+
+**Per-row on the request-entry tab** (NEW under D-0043):
+- `rosterMonster:section` on each section header row, value = template-declared `inputSheetSections.sectionKey` (`MICU` | `MICU_HD` | `MHD` for ICU/HD first release).
+- `rosterMonster:dayAxis` on the day-axis row, value = `true` (single-row anchor).
+- `rosterMonster:doctorRow` on each doctor row, value = `<sectionKey>:<doctorIndexInSection>` (zero-indexed within the section).
+- `rosterMonster:callPointRow` on each call-point row, value = template-declared `pointRows.rowKey` (`MICU_CALL_POINT` | `MHD_CALL_POINT`).
+- `rosterMonster:assignmentRow` on each prefilled-assignment shell row, value = `<surfaceId>:<rowOffset>` for output-mapping locator alignment per `docs/snapshot_contract.md` §10.
+
+**Per-row on the Scorer Config tab** (existing under M2 C7 / D-0037):
+- `rosterMonster:componentId` on each component-weight row, value = canonical `componentId` per `docs/domain_model.md` §11.2.
+
+These metadata anchors are normative for sheets generated under D-0041 and onward (i.e., sheets carrying the bound shim per `docs/snapshot_adapter_contract.md` §3). Pre-D-0041 sheets do not carry the per-row anchors; per `docs/decision_log.md` D-0043 the snapshot extractor hard-fails on missing anchors rather than falling back to visible-text lookup, so pre-D-0041 sheets must be regenerated to be extractable.
+
+Out-of-scope at contract level:
+- Concrete metadata-finder query patterns and column-offset values. These are implementation-slice concerns owned by the snapshot adapter (`docs/snapshot_adapter_contract.md` §6).
+
 ## 12. Operator-facing launcher surface (M1.1)
 
 ### 12.1 Purpose and status
