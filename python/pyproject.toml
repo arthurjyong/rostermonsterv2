@@ -7,6 +7,10 @@ authors = [{ name = "Roster Monster maintainers" }]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# Cloud Run service runtime deps per `docs/cloud_compute_contract.md`
+# §8.5. Mirrors `cloud_compute_service/requirements.txt` for non-Docker
+# installations (local Flask dev server, test harness).
+service = ["flask>=3.1,<4.0", "gunicorn>=23.0,<24.0"]
 
 [build-system]
 requires = ["setuptools>=68"]
