@@ -145,7 +145,7 @@ Concrete properties:
 The snapshot's `metadata.sourceSpreadsheetId` + `metadata.sourceTabName` MUST conform to `docs/selector_contract.md` v2 §9 item 3 (required `runEnvelope` fields). The cloud service propagates these through the run envelope unchanged so the writeback step that consumes the response can target the correct source spreadsheet per `docs/writeback_contract.md` §18.
 
 ### 9.5 Body size
-First-release ICU/HD scale: snapshot ~290 KB, optional config ~50 bytes. Cloud Run request body limit is 32 MB compressed (configurable up to 100 MB). No first-release size concern; revisit if snapshot scope grows materially.
+First-release ICU/HD scale: snapshot ~290 KB, optional config ~50 bytes. Cloud Run's per-request body limit is 32 MiB on HTTP/1.1 (hard, not configurable); HTTP/2 streaming has different rules but the bound shim's `UrlFetchApp.fetch` is HTTP/1.1, so the practical ceiling is 32 MiB. No first-release size concern. If snapshot scope ever grows past that ceiling, the response shape and transport mechanic both need rethinking — `UrlFetchApp` returns `413 Payload Too Large` rather than chunking, so the contract would need a fallback mechanic (multipart upload, snapshot-via-Drive-ID, or async job submission per FW-0027).
 
 ## 10) Response shape
 Proposed in this checkpoint (normative):
