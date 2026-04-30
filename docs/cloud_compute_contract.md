@@ -100,7 +100,7 @@ Asia-Southeast1 (Singapore) — operator-proximate. May be revisited if pilot ex
 - **Concurrency**: 1 request per instance (compute is CPU-bound; sharing CPU across concurrent requests degrades both).
 
 ### 8.4 Request timeout
-Service-side timeout: 5 minutes. Compute time at `maxCandidates=50` is ~30-60s; 5min provides comfortable headroom for cold-start + larger config values. The bound shim's `UrlFetchApp.fetch()` inherits Apps Script's per-script-execution 6 min wall clock; the alignment is intentional.
+Service-side timeout: 5 minutes. Compute time at the default `_DEFAULT_MAX_CANDIDATES` (currently `32`) is ~50s on the ICU/HD May 2026 fixture; 5min provides comfortable headroom for cold-start + larger overridden config values. The bound shim's `UrlFetchApp.fetch()` inherits Apps Script's per-script-execution 6 min wall clock; the alignment is intentional.
 
 ### 8.5 Container
 - Base image: `python:3.12-slim` (or compatible — pinned at Dockerfile commit time).
@@ -137,8 +137,8 @@ JSON object with the following top-level fields:
 Concrete properties:
 1. **`snapshot`** *(required)*: A full Snapshot per `docs/snapshot_contract.md` §5..§11, including all sections required by the parser/normalizer for ingestion. Same shape as the JSON file the bound shim's existing "Export Snapshot" menu produces — no schema divergence between local-mode (file-on-disk) and cloud-mode (in-request-body) extraction outputs. The bound shim assembles this in-memory via the central library's snapshot-builder API per D-0052.
 2. **`optionalConfig`** *(optional)*: An object overriding compute defaults. First-release recognized fields:
-   - `maxCandidates` *(integer, default `50`)*: number of candidates the solver enumerates before selector cascade. Bound shim's "Solve Roster" handler omits this field by default; service falls back to `50` per default.
-   - `seed` *(integer, default = an internally-chosen deterministic seed derived from the snapshot's identity)*: random seed for the solver's `SEEDED_RANDOM_BLIND` strategy. Default seed scheme and exact derivation are implementation-slice; the contract pins only that re-runs with the same `optionalConfig` produce byte-identical responses (§10.4).
+   - `maxCandidates` *(integer, optional)*: number of candidates the solver enumerates before selector cascade. When omitted, the service falls back to the local CLI's `_DEFAULT_MAX_CANDIDATES` constant in `python/rostermonster/run.py` (currently `32`). Tying both surfaces to the same Python constant guarantees that an operator running the CLI with no flags and the bound shim with no `optionalConfig` get **byte-identical** results from the same snapshot per D-0050's dual-track parity claim.
+   - `seed` *(integer, optional)*: random seed for the solver's `SEEDED_RANDOM_BLIND` strategy. When omitted, the service falls back to the local CLI's `_DEFAULT_SEED` constant in `python/rostermonster/run.py` (currently `20260504`). Same parity rationale — a single Python constant governs both surfaces.
    - Future config fields: additive only. New optional fields MAY be added without a contract version bump (§11). Removing or renaming fields is a contract bump.
 
 ### 9.4 Snapshot identity propagation
