@@ -69,8 +69,15 @@ The service requires authenticated invocation via Google Cloud Run's IAM-based a
 ### 7.2 IAM binding
 Cloud Run service grants `roles/run.invoker` to the **same email allowlist as the OAuth consent screen Test Users list** for the consolidated `RosterMonsterV2` GCP project (per `docs/decision_log.md` D-0051). Adding a new pilot operator to the launcher requires adding their email to BOTH the OAuth consent screen Test Users list AND the Cloud Run service's IAM bindings; the operational onboarding playbook in `docs/delivery_plan.md` §11 (and the M4 C1 closure note when it lands) documents both steps.
 
-### 7.3 No new OAuth scopes
-The bound shim does NOT acquire new OAuth scopes for this auth path. `ScriptApp.getIdentityToken()` issues a token scoped to the script's own project + the operator's identity, which is sufficient for IAM `roles/run.invoker` validation. The launcher's existing scopes (`spreadsheets`, `drive`, `userinfo.email` per `apps_script/m1_sheet_generator/src/appsscript.json`) are not extended.
+### 7.3 Required manifest OAuth scopes on the bound shim
+The bound shim's `apps_script/m2_template_bound_script/src/appsscript.json` MUST declare the following scopes (in addition to the existing `https://www.googleapis.com/auth/spreadsheets.currentonly` + `https://www.googleapis.com/auth/script.container.ui`) for the cloud invocation path to function at runtime:
+- **`https://www.googleapis.com/auth/script.external_request`** — required for `UrlFetchApp.fetch(...)` to call Cloud Run from Apps Script.
+- **`openid`** — required for `ScriptApp.getIdentityToken()` to issue an OIDC ID token Cloud Run IAM can validate.
+- **`https://www.googleapis.com/auth/userinfo.email`** — required to populate the OIDC token's `email` claim that IAM matches against the `roles/run.invoker` allowlist; also the operator-identity surface the consent screen presents.
+
+These are operator-account scopes (no service account, no shared secret); each one is explicitly enumerated in the consent dialog the operator approves on first invocation of the "Solve Roster" menu. The launcher's own manifest is unchanged — the launcher does not invoke Cloud Run; the bound shim does.
+
+The writeback library (now hosted in the central library per `docs/decision_log.md` D-0052) calls `SpreadsheetApp.openById(envelope.runEnvelope.sourceSpreadsheetId)` to write into the source spreadsheet. In the cloud-mode flow, `sourceSpreadsheetId` always equals the bound spreadsheet's own ID (the bound shim is in that spreadsheet), so the existing `spreadsheets.currentonly` scope is expected to suffice. If runtime testing in M4 C1 Phase 2 finds that `openById` against the bound spreadsheet's own ID is rejected under `spreadsheets.currentonly`, broaden to `https://www.googleapis.com/auth/spreadsheets` (full) — captured as a Phase 2 finding, not a contract change.
 
 ### 7.4 Token freshness
 `ScriptApp.getIdentityToken()` issues short-lived tokens; the bound shim acquires a fresh token at each invocation. No token caching is required or expected at the Apps Script side. Cloud Run validates the token's expiry on each request.
