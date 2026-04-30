@@ -202,6 +202,47 @@ function _utcWritebackTimestamp_() {
 
 // --- success-branch rendering (§10.1) --------------------------------------
 
+// M1.1 visual palette — identical hex values to
+// `apps_script/m1_sheet_generator/src/Layout.gs` LAYOUT_COLORS_ so the
+// writeback tab matches the operator-input shell aesthetically. ICU/HD-
+// specific label maps below are first-release hardcodes per the M4 C1
+// "minimum demo" quality bar (D-0049); template-aware label propagation
+// is FW-0029 territory.
+var _WB_COLORS_ = Object.freeze({
+  titleBg:     '#1f4e78',
+  titleFg:     '#ffffff',
+  sectionBg:   '#d9d9d9',
+  pointBg:     '#fff2cc',
+  lowerBg:     '#c6e0b4',
+  weekendBg:   '#fce5cd',
+  headerRowBg: '#e7e6e6',
+});
+
+// ICU/HD first-release section header labels per
+// `apps_script/m1_sheet_generator/src/TemplateData.gs`'s sections. Falls
+// back to the raw sectionKey if a key isn't in the map (defensive — the
+// M2 C9 snapshot extractor and the M1.1 generator share the same
+// sectionKey vocabulary, so all keys should be present).
+var _WB_SECTION_LABELS_ = Object.freeze({
+  MICU: 'MICU  (ICU_ONLY)',
+  MICU_HD: 'ICU + HD  (ICU_HD)',
+  MHD: 'MHD  (HD_ONLY)',
+});
+
+// Call-point row labels per `pointRows[i].label` in TemplateData.gs.
+var _WB_POINT_ROW_LABELS_ = Object.freeze({
+  MICU_CALL_POINT: 'MICU Call Point',
+  MHD_CALL_POINT: 'MHD Call Point',
+});
+
+// Slot labels per `template.slots[i].label`. ICU/HD has 4 slot types.
+var _WB_SLOT_LABELS_ = Object.freeze({
+  MICU_CALL: 'MICU Call',
+  MICU_STANDBY: 'MICU Standby',
+  MHD_CALL: 'MHD Call',
+  MHD_STANDBY: 'MHD Standby',
+});
+
 // Render the success-branch writeback tab per §10.1. The tab carries:
 // - reconstructed M1-style shell from snapshot bundle's shellParameters +
 //   columnADoctorNames (operator-readable as a roster shell on its own),
@@ -210,6 +251,12 @@ function _utcWritebackTimestamp_() {
 // - winner allocation: every AssignmentUnit from
 //   finalResultEnvelope.result.winnerAssignment rendered with the
 //   column-A cell value of the resolved doctor (§12).
+//
+// Visual styling matches `apps_script/m1_sheet_generator/src/Layout.gs`'s
+// empty-shell generation per the M4 C1 Phase 2 polish pass — same color
+// palette, same friendly labels, weekend column shading, frozen panes.
+// Label maps live in `_WB_SECTION_LABELS_` / `_WB_POINT_ROW_LABELS_` /
+// `_WB_SLOT_LABELS_` above (ICU/HD-specific hardcodes per FW-0029).
 function _renderSuccessBranch_(sheet, envelope) {
   var fre = envelope.finalResultEnvelope;
   var snap = envelope.snapshot;
@@ -221,25 +268,56 @@ function _renderSuccessBranch_(sheet, envelope) {
   var totalCols = firstDateCol + dayKeys.length - 1;
 
   var currentRow = 1;
+  // Track rows whose intentional bg color must "win" over weekend-column
+  // shading (same pattern as `apps_script/m1_sheet_generator/src/Layout.gs`'s
+  // bandedRows mechanism). Weekend shading is applied last per column,
+  // then these row-level backgrounds are reapplied to overwrite.
+  var bandedRows = [];
 
-  // Title row
+  // ---- Row 1: title (same navy bg + white bold 14pt as M1.1) ----
   var params = snap.shellParameters || {};
   var dept = params.department || '';
   var startDate = params.periodStartDate || (dayKeys[0] || '');
   var endDate = params.periodEndDate || (dayKeys[dayKeys.length - 1] || '');
-  sheet.getRange(currentRow, nameCol).setValue(
+  var titleRow = currentRow;
+  sheet.getRange(titleRow, nameCol).setValue(
     dept + '   (' + startDate + ' – ' + endDate + ')   [Writeback]'
-  ).setFontWeight('bold').setFontSize(14);
+  ).setFontWeight('bold').setFontSize(14)
+    .setFontColor(_WB_COLORS_.titleFg);
+  sheet.getRange(titleRow, nameCol, 1, totalCols)
+    .setBackground(_WB_COLORS_.titleBg);
+  bandedRows.push({ row: titleRow, bg: _WB_COLORS_.titleBg });
   currentRow++;
 
-  // Date row
-  sheet.getRange(currentRow, nameCol).setValue('Date').setFontWeight('bold');
+  // ---- Row 2: date axis ----
+  var dateRow = currentRow;
+  sheet.getRange(dateRow, nameCol).setValue('Date')
+    .setFontWeight('bold')
+    .setBackground(_WB_COLORS_.headerRowBg);
   if (dayKeys.length > 0) {
-    sheet.getRange(currentRow, firstDateCol, 1, dayKeys.length)
+    sheet.getRange(dateRow, firstDateCol, 1, dayKeys.length)
       .setValues([dayKeys])
       .setFontWeight('bold')
-      .setHorizontalAlignment('center');
+      .setHorizontalAlignment('center')
+      .setBackground(_WB_COLORS_.headerRowBg);
   }
+  bandedRows.push({ row: dateRow, bg: _WB_COLORS_.headerRowBg });
+  currentRow++;
+
+  // ---- Row 3: weekday axis (Mon/Tue/Wed) — derived from ISO dates ----
+  var weekdayRow = currentRow;
+  sheet.getRange(weekdayRow, nameCol).setValue('Day')
+    .setFontWeight('bold')
+    .setBackground(_WB_COLORS_.headerRowBg);
+  if (dayKeys.length > 0) {
+    var weekdayValues = dayKeys.map(_weekdayLabelForIso_);
+    sheet.getRange(weekdayRow, firstDateCol, 1, dayKeys.length)
+      .setValues([weekdayValues])
+      .setFontWeight('bold')
+      .setHorizontalAlignment('center')
+      .setBackground(_WB_COLORS_.headerRowBg);
+  }
+  bandedRows.push({ row: weekdayRow, bg: _WB_COLORS_.headerRowBg });
   currentRow++;
 
   // Section + doctor rows. Group columnADoctorNames by sectionGroup,
@@ -261,9 +339,12 @@ function _renderSuccessBranch_(sheet, envelope) {
   for (var s = 0; s < sectionOrder.length; s++) {
     var sectionKey = sectionOrder[s];
     var doctors = bySection[sectionKey];
-    sheet.getRange(currentRow, nameCol).setValue('Section: ' + sectionKey)
-      .setFontWeight('bold').setBackground('#d9d9d9');
-    sheet.getRange(currentRow, nameCol, 1, totalCols).setBackground('#d9d9d9');
+    var sectionLabel = _WB_SECTION_LABELS_[sectionKey] || sectionKey;
+    sheet.getRange(currentRow, nameCol).setValue(sectionLabel)
+      .setFontWeight('bold');
+    sheet.getRange(currentRow, nameCol, 1, totalCols)
+      .setBackground(_WB_COLORS_.sectionBg);
+    bandedRows.push({ row: currentRow, bg: _WB_COLORS_.sectionBg });
     currentRow++;
     // Sort doctors by rowIndex so the order is deterministic + stable.
     doctors.sort(function (a, b) { return a.rowIndex - b.rowIndex; });
@@ -324,17 +405,21 @@ function _renderSuccessBranch_(sheet, envelope) {
   var callPointRowKeys = Object.keys(callPointByKey).sort();
   for (var cpi = 0; cpi < callPointRowKeys.length; cpi++) {
     var cpKey = callPointRowKeys[cpi];
-    sheet.getRange(currentRow, nameCol).setValue(cpKey)
-      .setFontWeight('bold').setBackground('#fff2cc');
+    var cpLabel = _WB_POINT_ROW_LABELS_[cpKey] || cpKey;
+    sheet.getRange(currentRow, nameCol).setValue(cpLabel)
+      .setFontWeight('bold')
+      .setBackground(_WB_COLORS_.pointBg);
     var cpCells = callPointByKey[cpKey];
     for (var cpc = 0; cpc < cpCells.length; cpc++) {
       var cpCell = cpCells[cpc];
       var cpCol = dayIndexToCol[cpCell.dayIndex];
       if (cpCol) {
         sheet.getRange(currentRow, cpCol).setValue(cpCell.value)
-          .setHorizontalAlignment('center');
+          .setHorizontalAlignment('center')
+          .setBackground(_WB_COLORS_.pointBg);
       }
     }
+    bandedRows.push({ row: currentRow, bg: _WB_COLORS_.pointBg });
     currentRow++;
   }
   currentRow++; // spacer
@@ -342,8 +427,10 @@ function _renderSuccessBranch_(sheet, envelope) {
   // Lower assignment shell — one row per (surfaceId, rowOffset) per the
   // template's outputMapping. Render header.
   sheet.getRange(currentRow, nameCol).setValue('Roster / Assignments')
-    .setFontWeight('bold').setBackground('#c6e0b4');
-  sheet.getRange(currentRow, nameCol, 1, totalCols).setBackground('#c6e0b4');
+    .setFontWeight('bold').setBackground(_WB_COLORS_.lowerBg);
+  sheet.getRange(currentRow, nameCol, 1, totalCols)
+    .setBackground(_WB_COLORS_.lowerBg);
+  bandedRows.push({ row: currentRow, bg: _WB_COLORS_.lowerBg });
   currentRow++;
 
   // Group winner assignments by slotType — each slotType gets one row.
@@ -379,7 +466,9 @@ function _renderSuccessBranch_(sheet, envelope) {
     var rowDef = outputAssignmentRows[st];
     var slot = rowDef.slotType;
     assignmentRowToSheetRow[rowDef.surfaceId + ':' + rowDef.rowOffset] = currentRow;
-    sheet.getRange(currentRow, nameCol).setValue(slot).setFontWeight('bold');
+    var slotLabel = _WB_SLOT_LABELS_[slot] || slot;
+    sheet.getRange(currentRow, nameCol).setValue(slotLabel)
+      .setFontWeight('bold');
     var assignments = winnerBySlot[slot] || [];
     for (var ai = 0; ai < assignments.length; ai++) {
       var a = assignments[ai];
@@ -419,6 +508,60 @@ function _renderSuccessBranch_(sheet, envelope) {
         .setHorizontalAlignment('center').setFontStyle('italic');
     }
   }
+
+  // ---- Weekend column shading ----
+  // Apply weekend (Sat/Sun) salmon-bg shading to entire date columns
+  // from the date row down to the last content row. Public-holiday
+  // shading is intentionally OUT of scope per the M4 C1 Phase 2 polish
+  // pass — the launcher's DatesAndHolidays helper isn't reachable from
+  // the central library, and FW-0029 (template-aware label propagation)
+  // would naturally pick up the holiday calendar too if needed later.
+  // Track the last content row before applying.
+  var lastContentRow = currentRow - 1;
+  for (var wi = 0; wi < dayKeys.length; wi++) {
+    if (!_isWeekendIso_(dayKeys[wi])) continue;
+    var weCol = firstDateCol + wi;
+    sheet.getRange(dateRow, weCol, lastContentRow - dateRow + 1, 1)
+      .setBackground(_WB_COLORS_.weekendBg);
+  }
+
+  // ---- Re-apply banded row backgrounds so structural row colors win
+  // ---- over the weekend column shading just applied.
+  for (var b = 0; b < bandedRows.length; b++) {
+    sheet.getRange(bandedRows[b].row, nameCol, 1, totalCols)
+      .setBackground(bandedRows[b].bg);
+  }
+
+  // ---- Column widths + frozen panes (match M1.1 layout) ----
+  sheet.setColumnWidth(nameCol, 200);
+  for (var wci = 0; wci < dayKeys.length; wci++) {
+    sheet.setColumnWidth(firstDateCol + wci, 100);
+  }
+  sheet.setFrozenRows(weekdayRow);
+  sheet.setFrozenColumns(nameCol);
+}
+
+// Helper: derive 3-letter weekday label ('Mon', 'Tue', ...) from an ISO
+// date string ('YYYY-MM-DD'). Used for the writeback tab's weekday axis
+// row matching M1.1's pattern. Returns the original input on parse
+// failure (defensive — should not occur in practice since dayKeys
+// originate from `_collectDayKeys_` which produces ISO dates).
+function _weekdayLabelForIso_(isoDate) {
+  if (typeof isoDate !== 'string' || isoDate.length < 10) return isoDate;
+  var d = new Date(isoDate + 'T00:00:00Z');
+  if (isNaN(d.getTime())) return isoDate;
+  return Utilities.formatDate(d, 'UTC', 'EEE');
+}
+
+// Helper: true if the given ISO date falls on a Saturday or Sunday.
+// Public holidays are NOT detected — see M4 C1 Phase 2 polish-pass
+// scoping note inside `_renderSuccessBranch_`.
+function _isWeekendIso_(isoDate) {
+  if (typeof isoDate !== 'string' || isoDate.length < 10) return false;
+  var d = new Date(isoDate + 'T00:00:00Z');
+  if (isNaN(d.getTime())) return false;
+  var dow = d.getUTCDay(); // 0 = Sunday, 6 = Saturday
+  return dow === 0 || dow === 6;
 }
 
 // Resolve the lower-shell assignment-row order. Primary source is the
