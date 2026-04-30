@@ -4,3 +4,8 @@
 # narrow on purpose — Cloud Run cold-start latency benefits.
 flask>=3.1,<4.0
 gunicorn>=23.0,<24.0
+# Google ID-token verification for the Flask-level operator allowlist
+# auth path (per `docs/decision_log.md` D-0054 — IdentityToken
+# audience-mismatch finding from M4 C1 Phase 2 testing).
+google-auth>=2.30,<3.0
+requests>=2.32,<3.0

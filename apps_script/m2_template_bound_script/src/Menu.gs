@@ -118,7 +118,13 @@ function _solveRoster_() {
   try {
     response = UrlFetchApp.fetch(endpoint, {
       method: 'post',
-      headers: { Authorization: 'Bearer ' + token },
+      // Per `docs/decision_log.md` D-0054, the operator's ID token
+      // travels via `X-Auth-Token` (not `Authorization`). Cloud Run
+      // strips the standard `Authorization` header from public
+      // services to prevent token leakage; using a custom header
+      // bypasses that scrubbing while keeping the Flask-side
+      // operator-allowlist auth path functional.
+      headers: { 'X-Auth-Token': token },
       contentType: 'application/json',
       payload: requestBody,
       muteHttpExceptions: true,

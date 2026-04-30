@@ -18,12 +18,19 @@ Requires `flask>=3.1` per `cloud_compute_service/requirements.txt`.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Disable the operator-allowlist auth check for unit tests per
+# `docs/decision_log.md` D-0054. The auth path is exercised separately
+# via integration tests against the deployed Cloud Run service; unit
+# tests focus on request/response shape semantics.
+os.environ["DISABLE_AUTH_FOR_LOCAL_TESTING"] = "1"
 
 from rostermonster_service.app import create_app  # noqa: E402
 

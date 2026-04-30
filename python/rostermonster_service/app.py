@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import logging
 import os
-import traceback
 from typing import Any
 
 from flask import Flask, Response, jsonify, request
@@ -40,6 +39,20 @@ from rostermonster.templates import icu_hd_template_artifact
 
 log = logging.getLogger("rostermonster_service")
 
+# Per `docs/decision_log.md` D-0054, Cloud Run runs as `--allow-unauthenticated`
+# and the Flask app gates by validating the operator's Google ID token
+# (sent via Authorization: Bearer <token> by the bound shim's
+# `ScriptApp.getIdentityToken()`) and checking the email claim against
+# the comma-separated `ALLOWED_EMAILS` env var. Operator-identity gating
+# at app layer instead of platform-IAM layer because Apps Script's
+# IdentityToken's `aud` claim doesn't match Cloud Run's expected service
+# URL — the platform-IAM check would reject every request.
+_ALLOWED_EMAILS_ENV = "ALLOWED_EMAILS"
+# Skip allowlist enforcement entirely when this env var is unset. Used
+# by the test_client harness (no Cloud Run env injection) so unit tests
+# don't have to mock Google's token verification endpoint.
+_DISABLE_AUTH_ENV = "DISABLE_AUTH_FOR_LOCAL_TESTING"
+
 
 def create_app() -> Flask:
     """Application factory. Cloud Run / gunicorn / tests all use this."""
@@ -53,9 +66,116 @@ def create_app() -> Flask:
 
     @app.post("/compute")
     def compute() -> Response:
+        # Stage 0: app-level operator-allowlist auth check per
+        # `docs/decision_log.md` D-0054.
+        auth_error = _check_operator_allowlist()
+        if auth_error is not None:
+            return auth_error
         return _compute_endpoint()
 
     return app
+
+
+def _check_operator_allowlist() -> Response | None:
+    """Validate the operator's ID token + check email allowlist per
+    `docs/decision_log.md` D-0054. Returns a 200 INPUT_ERROR-shaped
+    response on auth failure; returns None on success."""
+    if os.environ.get(_DISABLE_AUTH_ENV):
+        return None
+
+    allowed = os.environ.get(_ALLOWED_EMAILS_ENV, "").strip()
+    if not allowed:
+        # Misconfiguration: Cloud Run service is public but allowlist
+        # isn't set. Reject everything until the maintainer configures.
+        log.error("ALLOWED_EMAILS env var not set; rejecting all requests")
+        return jsonify({
+            "state": "INPUT_ERROR",
+            "writebackEnvelope": None,
+            "error": {
+                "code": "SERVICE_MISCONFIGURED",
+                "message": "Cloud Run service has no ALLOWED_EMAILS env "
+                           "var set. Maintainer must redeploy with "
+                           "--set-env-vars ALLOWED_EMAILS=<comma-list>.",
+            },
+        })
+
+    allowed_set = {e.strip().lower() for e in allowed.split(",") if e.strip()}
+
+    # Per `docs/decision_log.md` D-0054, the operator's ID token is sent
+    # in `X-Auth-Token`, NOT `Authorization`. Cloud Run drops the
+    # standard `Authorization` header on `--allow-unauthenticated`
+    # services to prevent token-leakage; using a custom header
+    # bypasses that scrubbing.
+    token = request.headers.get("X-Auth-Token", "").strip()
+    if not token:
+        return _auth_error(
+            "MISSING_AUTH_TOKEN",
+            "Request is missing the X-Auth-Token header carrying the "
+            "operator's Google ID token.",
+        )
+
+    try:
+        from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token
+    except ImportError as e:
+        log.exception("google-auth library not installed")
+        return _auth_error(
+            "AUTH_LIBRARY_UNAVAILABLE",
+            f"Token verification library missing on the service. "
+            f"Maintainer should redeploy. ({e})",
+        )
+
+    try:
+        # `audience=None` means we don't enforce a specific audience —
+        # the token's signature + expiry + email claim are still
+        # verified by Google. Audience-mismatch was the original
+        # blocker (D-0054); skipping the audience check is the
+        # explicit decision recorded there.
+        info = id_token.verify_oauth2_token(
+            token, google_requests.Request(), audience=None,
+        )
+    except ValueError as e:
+        return _auth_error(
+            "INVALID_TOKEN",
+            f"Token failed Google verification: {e}",
+        )
+
+    email = info.get("email", "").strip().lower()
+    if not email:
+        return _auth_error(
+            "TOKEN_NO_EMAIL",
+            "Token has no `email` claim. Bound shim must include "
+            "`userinfo.email` in OAuth scopes per D-0051 sub-decision 3a.",
+        )
+    if not info.get("email_verified", False):
+        return _auth_error(
+            "EMAIL_NOT_VERIFIED",
+            f"Token's email ({email}) is not verified by Google.",
+        )
+    if email not in allowed_set:
+        log.warning(
+            "Rejecting request from non-allowlisted email: %s "
+            "(allowlist size: %d)", email, len(allowed_set),
+        )
+        return _auth_error(
+            "EMAIL_NOT_ALLOWLISTED",
+            f"Operator email '{email}' is not on the service's allowlist. "
+            f"Maintainer must add it via Cloud Run env var ALLOWED_EMAILS.",
+        )
+
+    log.info("Authorized request from %s", email)
+    return None
+
+
+def _auth_error(code: str, message: str) -> Response:
+    """Auth failures surface as INPUT_ERROR per
+    `docs/cloud_compute_contract.md` §10.1 — the bound shim's UI
+    dispatches on this state to show an error dialog."""
+    return jsonify({
+        "state": "INPUT_ERROR",
+        "writebackEnvelope": None,
+        "error": {"code": code, "message": message},
+    })
 
 
 def _compute_endpoint() -> Response:
