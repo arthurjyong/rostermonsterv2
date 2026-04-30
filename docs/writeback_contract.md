@@ -121,6 +121,7 @@ Writeback invocations consume the following inputs:
    - `requestCells` — operator-supplied request-entry cell values,
    - `callPointCells` — call-point cell values (operator-overridable from M1 generation defaults per `docs/sheet_generation_contract.md` §8),
    - `prefilledFixedAssignmentCells` — operator-prefilled lower-shell cells admitted as `FixedAssignment` (`docs/sheet_generation_contract.md` §6; `docs/domain_model.md` §10.1),
+   - `outputAssignmentRows` — the lower-shell assignment-row order from the template's `outputMapping.surfaces[].assignmentRows[]` per `docs/template_artifact_contract.md` §10. Each entry binds a `surfaceId`, a `slotType` (= `slotId` in the template), and a `rowOffset` within the surface. Required for faithful prefilled-cell positioning per §10.1: prefilled cells carry `(surfaceId, rowOffset, dayIndex)` and the writeback tab MUST place each at the assignment row whose `(surfaceId, rowOffset)` matches, otherwise the cell would land in the wrong slot row.
    - `shellParameters` — `department`, `periodStartDate`, `periodEndDate`, and `doctorCountByGroup` per `docs/sheet_generation_contract.md` §3.
 3. **`doctorIdMap`** — a mapping from `doctorId` to `(sectionGroup, rowIndex)` per the source tab's structural layout, built at the parser/normalizer boundary from the source tab's column-A cells. Writeback consumes this map to resolve `AssignmentUnit.doctorId` to the column-A cell value the operator typed, per §12.
 
