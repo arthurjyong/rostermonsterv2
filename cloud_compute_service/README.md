@@ -6,13 +6,20 @@ D-0050 + D-0051 and `docs/cloud_compute_contract.md`.
 
 ## What lives here
 
-- `Dockerfile` — Cloud Run container definition.
 - `requirements.txt` — runtime deps (flask + gunicorn; rostermonster
   itself has no third-party deps).
+- `README.md` — this file.
 
-The Python source for the service lives at
-`python/rostermonster_service/`. The Dockerfile copies it (and the
-`rostermonster` package) into the image at build time.
+The `Dockerfile` lives at the **repo root** (not here) so
+`gcloud run deploy --source .` from the repo root finds it
+automatically without extra flags. The Dockerfile copies the Python
+source from `python/rostermonster/` and `python/rostermonster_service/`
+plus this directory's `requirements.txt` into the image at build
+time.
+
+A `.gcloudignore` at the repo root prunes the Cloud Build upload
+context (excludes `.git`, `apps_script/`, `docs/`, test data, etc.)
+to keep build times short — important for cold-start sensitivity.
 
 ## Build + deploy (M4 C1 Phase 2 workstream b)
 
