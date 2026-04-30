@@ -13,7 +13,19 @@
 //     OAuth consent screen's Test Users list for the script's GCP project.
 //   - No in-app allowlist; no persisted per-operator state.
 
-function doGet() {
+function doGet(e) {
+  var params = (e && e.parameter) ? e.parameter : {};
+  var action = (params.action == null ? '' : String(params.action)).trim().toLowerCase();
+  if (action === 'writeback') {
+    // M3 C1 writeback route per `docs/decision_log.md` D-0044 sub-decision 3.
+    // Operator uploads the wrapper-envelope JSON file produced by the Python
+    // CLI; client-side FileReader serializes the file content; server-side
+    // entry point is `applyWriteback(envelopeJsonString)` in Writeback.gs.
+    return HtmlService.createTemplateFromFile('WritebackForm')
+      .evaluate()
+      .setTitle('CGH ICU/HD Roster Writeback')
+      .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+  }
   return HtmlService.createTemplateFromFile('LauncherForm')
     .evaluate()
     .setTitle('CGH ICU/HD Roster Launcher')

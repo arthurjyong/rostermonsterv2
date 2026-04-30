@@ -25,6 +25,25 @@ function runAllTests_() {
     testTemplateComponentWeightsAreSignCorrect_,
     testScorerConfigTabNamePairsWithRequestEntryTab_,
     testScorerConfigComponentRowOrderMatchesPythonAllComponents_,
+    // M3 C1 — Writeback library pure helpers (D-0044..D-0047).
+    testWritebackValidateRejectsNonObject_,
+    testWritebackValidateRejectsMissingFinalResultEnvelope_,
+    testWritebackValidateRejectsMissingSnapshot_,
+    testWritebackValidateRejectsMissingDoctorIdMap_,
+    testWritebackValidateRejectsMissingRunEnvelope_,
+    testWritebackValidateRejectsMissingSourceSpreadsheetId_,
+    testWritebackValidateRejectsMissingSourceTabName_,
+    testWritebackValidateAcceptsWellFormedEnvelope_,
+    testWritebackIsAllocationResultDetectsSuccessBranch_,
+    testWritebackIsAllocationResultDetectsFailureBranch_,
+    testWritebackBuildDoctorIdToDisplayNameResolvesViaSectionRow_,
+    testWritebackGroupColumnAByDoctorSectionGroupsBySectionKey_,
+    testWritebackOrderedSectionKeysPreservesDiscoveryOrder_,
+    testWritebackGroupCallPointsByRowKeyGroupsByCallPointRowKey_,
+    testWritebackComposeUrlAppendsGidWhenNoFragment_,
+    testWritebackComposeUrlReplacesExistingGidFragment_,
+    testWritebackResolveOutputAssignmentRowsUsesDeclaredOrder_,
+    testWritebackResolveOutputAssignmentRowsFallbackSortsByWinnerSlots_,
   ];
   var failures = [];
   for (var i = 0; i < tests.length; i++) {
@@ -276,6 +295,252 @@ function testScorerConfigComponentRowOrderMatchesPythonAllComponents_() {
       'SCORER_CONFIG_ALL_COMPONENTS_[' + i + '] expected ' + expected[i] +
       ' got ' + SCORER_CONFIG_ALL_COMPONENTS_[i]);
   }
+}
+
+// ---------------------------------------------------------------------------
+// M3 C1 — Writeback library pure helpers
+// ---------------------------------------------------------------------------
+//
+// Tests below exercise pure functions in Writeback.gs that do not touch
+// SpreadsheetApp (envelope validation + helpers). Tab-mutation paths
+// (`_renderSuccessBranch_`, `_renderFailureBranch_`, `_buildWritebackTabName_`,
+// protection, metadata) are covered by integration smoke tests run against
+// a live spreadsheet, not by these unit tests.
+
+function _wbValidEnvelopeFixture_() {
+  // Minimum-viable wrapper-shape envelope per writeback contract §9 +
+  // D-0045 sub-decisions; only the fields that `_validateWritebackEnvelopeShape_`
+  // inspects need to be present.
+  return {
+    schemaVersion: 1,
+    finalResultEnvelope: {
+      runEnvelope: {
+        runId: 'rm-test-001',
+        generationTimestamp: '2026-04-30T00:00:00Z',
+        sourceSpreadsheetId: '1xFakeSpreadsheetId00000000000000000000000',
+        sourceTabName: 'v0428123045',
+      },
+      result: { winnerAssignment: [], winnerScore: -10 },
+    },
+    snapshot: {
+      columnADoctorNames: [],
+      requestCells: [],
+      callPointCells: [],
+      prefilledFixedAssignmentCells: [],
+      shellParameters: {},
+    },
+    doctorIdMap: [],
+  };
+}
+
+function testWritebackValidateRejectsNonObject_() {
+  var msg = _validateWritebackEnvelopeShape_(null);
+  assertTrue_(typeof msg === 'string' && msg.length > 0,
+    'expected validation error for null envelope');
+  msg = _validateWritebackEnvelopeShape_('a string');
+  assertTrue_(typeof msg === 'string' && msg.length > 0,
+    'expected validation error for non-object envelope');
+}
+
+function testWritebackValidateRejectsMissingFinalResultEnvelope_() {
+  var env = _wbValidEnvelopeFixture_();
+  delete env.finalResultEnvelope;
+  var msg = _validateWritebackEnvelopeShape_(env);
+  assertTrue_(typeof msg === 'string' && msg.indexOf('finalResultEnvelope') >= 0,
+    'expected message naming finalResultEnvelope; got ' + JSON.stringify(msg));
+}
+
+function testWritebackValidateRejectsMissingSnapshot_() {
+  var env = _wbValidEnvelopeFixture_();
+  delete env.snapshot;
+  var msg = _validateWritebackEnvelopeShape_(env);
+  assertTrue_(typeof msg === 'string' && msg.indexOf('snapshot') >= 0,
+    'expected message naming snapshot; got ' + JSON.stringify(msg));
+}
+
+function testWritebackValidateRejectsMissingDoctorIdMap_() {
+  var env = _wbValidEnvelopeFixture_();
+  delete env.doctorIdMap;
+  var msg = _validateWritebackEnvelopeShape_(env);
+  assertTrue_(typeof msg === 'string' && msg.indexOf('doctorIdMap') >= 0,
+    'expected message naming doctorIdMap; got ' + JSON.stringify(msg));
+}
+
+function testWritebackValidateRejectsMissingRunEnvelope_() {
+  var env = _wbValidEnvelopeFixture_();
+  delete env.finalResultEnvelope.runEnvelope;
+  var msg = _validateWritebackEnvelopeShape_(env);
+  assertTrue_(typeof msg === 'string' && msg.indexOf('runEnvelope') >= 0,
+    'expected message naming runEnvelope; got ' + JSON.stringify(msg));
+}
+
+function testWritebackValidateRejectsMissingSourceSpreadsheetId_() {
+  var env = _wbValidEnvelopeFixture_();
+  delete env.finalResultEnvelope.runEnvelope.sourceSpreadsheetId;
+  var msg = _validateWritebackEnvelopeShape_(env);
+  assertTrue_(typeof msg === 'string' && msg.indexOf('sourceSpreadsheetId') >= 0,
+    'expected message naming sourceSpreadsheetId; got ' + JSON.stringify(msg));
+}
+
+function testWritebackValidateRejectsMissingSourceTabName_() {
+  var env = _wbValidEnvelopeFixture_();
+  delete env.finalResultEnvelope.runEnvelope.sourceTabName;
+  var msg = _validateWritebackEnvelopeShape_(env);
+  assertTrue_(typeof msg === 'string' && msg.indexOf('sourceTabName') >= 0,
+    'expected message naming sourceTabName; got ' + JSON.stringify(msg));
+}
+
+function testWritebackValidateAcceptsWellFormedEnvelope_() {
+  var env = _wbValidEnvelopeFixture_();
+  var msg = _validateWritebackEnvelopeShape_(env);
+  assertTrue_(msg === null,
+    'expected null (no validation error) for well-formed envelope; got ' +
+    JSON.stringify(msg));
+}
+
+function testWritebackIsAllocationResultDetectsSuccessBranch_() {
+  // AllocationResult per selector contract §10 carries `winnerAssignment`.
+  assertTrue_(_isAllocationResult_({ winnerAssignment: [], winnerScore: -1 }) === true,
+    'AllocationResult must be detected by presence of winnerAssignment');
+}
+
+function testWritebackIsAllocationResultDetectsFailureBranch_() {
+  // UnsatisfiedResultEnvelope per selector contract §10 has `unfilledDemand`
+  // + `reasons` and notably NO `winnerAssignment`.
+  assertTrue_(_isAllocationResult_({ unfilledDemand: [], reasons: ['x'] }) === false,
+    'UnsatisfiedResultEnvelope must NOT be detected as allocation result');
+}
+
+function testWritebackBuildDoctorIdToDisplayNameResolvesViaSectionRow_() {
+  // §12 doctor identity resolution: doctorIdMap (doctorId →
+  // sectionGroup+rowIndex) joins with columnADoctorNames keyed by
+  // (sectionGroup, rowIndex) to produce doctorId → display name.
+  var columnA = [
+    { sectionGroup: 'ICU_ONLY', rowIndex: 0, value: 'Dr. Adam' },
+    { sectionGroup: 'ICU_ONLY', rowIndex: 1, value: 'Dr. Beth' },
+    { sectionGroup: 'HD_ONLY',  rowIndex: 0, value: 'Dr. Cara' },
+  ];
+  var doctorIdMap = [
+    { doctorId: 'doc-1', sectionGroup: 'ICU_ONLY', rowIndex: 0 },
+    { doctorId: 'doc-2', sectionGroup: 'ICU_ONLY', rowIndex: 1 },
+    { doctorId: 'doc-3', sectionGroup: 'HD_ONLY',  rowIndex: 0 },
+  ];
+  var lookup = _buildDoctorIdToDisplayName_(columnA, doctorIdMap);
+  assertTrue_(lookup['doc-1'] === 'Dr. Adam',
+    'doc-1 should resolve to "Dr. Adam"; got ' + JSON.stringify(lookup['doc-1']));
+  assertTrue_(lookup['doc-2'] === 'Dr. Beth',
+    'doc-2 should resolve to "Dr. Beth"; got ' + JSON.stringify(lookup['doc-2']));
+  assertTrue_(lookup['doc-3'] === 'Dr. Cara',
+    'doc-3 should resolve to "Dr. Cara"; got ' + JSON.stringify(lookup['doc-3']));
+}
+
+function testWritebackGroupColumnAByDoctorSectionGroupsBySectionKey_() {
+  var columnA = [
+    { sectionGroup: 'ICU_ONLY', rowIndex: 0, value: 'A' },
+    { sectionGroup: 'HD_ONLY',  rowIndex: 0, value: 'B' },
+    { sectionGroup: 'ICU_ONLY', rowIndex: 1, value: 'C' },
+  ];
+  var grouped = _groupColumnAByDoctorSection_(columnA);
+  assertEqualNumber_(grouped.ICU_ONLY.length, 2,
+    'ICU_ONLY section should have 2 doctors');
+  assertEqualNumber_(grouped.HD_ONLY.length, 1,
+    'HD_ONLY section should have 1 doctor');
+  assertTrue_(grouped.ICU_ONLY[0].value === 'A' && grouped.ICU_ONLY[1].value === 'C',
+    'ICU_ONLY section preserves input order');
+}
+
+function testWritebackOrderedSectionKeysPreservesDiscoveryOrder_() {
+  // Discovery order in columnADoctorNames is what determines section
+  // ordering in the rendered tab — important for the M1-shell-style
+  // ICU_ONLY → ICU_HD → HD_ONLY visual.
+  var columnA = [
+    { sectionGroup: 'ICU_ONLY', rowIndex: 0, value: 'A' },
+    { sectionGroup: 'ICU_HD',   rowIndex: 0, value: 'B' },
+    { sectionGroup: 'HD_ONLY',  rowIndex: 0, value: 'C' },
+    { sectionGroup: 'ICU_ONLY', rowIndex: 1, value: 'D' },  // dup discovery — must NOT re-add
+  ];
+  var ordered = _orderedSectionKeys_(columnA);
+  assertEqualNumber_(ordered.length, 3,
+    'expected 3 unique sections; got ' + JSON.stringify(ordered));
+  assertTrue_(ordered[0] === 'ICU_ONLY' && ordered[1] === 'ICU_HD' && ordered[2] === 'HD_ONLY',
+    'discovery-order should be ICU_ONLY → ICU_HD → HD_ONLY; got ' + JSON.stringify(ordered));
+}
+
+function testWritebackGroupCallPointsByRowKeyGroupsByCallPointRowKey_() {
+  var cells = [
+    { callPointRowKey: 'CALL_ICU_POINTS', dayIndex: 0, value: 1 },
+    { callPointRowKey: 'CALL_HD_POINTS',  dayIndex: 0, value: 1.5 },
+    { callPointRowKey: 'CALL_ICU_POINTS', dayIndex: 1, value: 2 },
+  ];
+  var grouped = _groupCallPointsByRowKey_(cells);
+  assertEqualNumber_(grouped.CALL_ICU_POINTS.length, 2,
+    'CALL_ICU_POINTS should have 2 cells');
+  assertEqualNumber_(grouped.CALL_HD_POINTS.length, 1,
+    'CALL_HD_POINTS should have 1 cell');
+}
+
+function testWritebackComposeUrlAppendsGidWhenNoFragment_() {
+  // Per writeback contract §17.1 / §17.2: the diagnostic link should
+  // anchor to the newly-created tab, not the spreadsheet default.
+  // SpreadsheetApp.getUrl() typically returns `.../edit` with no
+  // fragment; the helper appends `#gid=<sheetId>`.
+  var url = _composeSpreadsheetUrlWithGid_(
+    'https://docs.google.com/spreadsheets/d/abc123/edit', 1234567890);
+  assertTrue_(url === 'https://docs.google.com/spreadsheets/d/abc123/edit#gid=1234567890',
+    'expected gid fragment appended; got ' + url);
+}
+
+function testWritebackComposeUrlReplacesExistingGidFragment_() {
+  // If SpreadsheetApp.getUrl() ever returns a URL with an existing
+  // fragment (e.g., `#gid=0` for the default tab), the helper must
+  // replace the fragment rather than concatenating two.
+  var url = _composeSpreadsheetUrlWithGid_(
+    'https://docs.google.com/spreadsheets/d/abc123/edit#gid=0', 999);
+  assertTrue_(url === 'https://docs.google.com/spreadsheets/d/abc123/edit#gid=999',
+    'existing fragment should be replaced; got ' + url);
+}
+
+function testWritebackResolveOutputAssignmentRowsUsesDeclaredOrder_() {
+  // Per writeback contract §9 6th category: when the snapshot subset
+  // declares `outputAssignmentRows`, the lower-shell rendering MUST
+  // honour the template's (surfaceId, rowOffset) order so prefilled
+  // cells land in the right slot row. Order is by surfaceId then
+  // rowOffset (sortable, deterministic).
+  var snap = {
+    outputAssignmentRows: [
+      { surfaceId: 'lowerRosterAssignments', slotType: 'HD_CALL',  rowOffset: 1 },
+      { surfaceId: 'lowerRosterAssignments', slotType: 'ICU_CALL', rowOffset: 0 },
+      { surfaceId: 'lowerRosterAssignments', slotType: 'STANDBY',  rowOffset: 2 },
+    ],
+  };
+  var resolved = _resolveOutputAssignmentRows_(snap, {});
+  assertEqualNumber_(resolved.length, 3, 'expected 3 declared rows');
+  assertTrue_(resolved[0].slotType === 'ICU_CALL' &&
+              resolved[1].slotType === 'HD_CALL' &&
+              resolved[2].slotType === 'STANDBY',
+    'rows must be sorted by (surfaceId, rowOffset); got ' +
+    JSON.stringify(resolved.map(function (r) { return r.slotType; })));
+}
+
+function testWritebackResolveOutputAssignmentRowsFallbackSortsByWinnerSlots_() {
+  // When `outputAssignmentRows` is absent (legacy wrapper envelope or
+  // edge case), the resolver falls back to sorted slot keys from the
+  // winner-assignment grouping. The fallback synthesises a
+  // `lowerRosterAssignments` surfaceId + positional rowOffset so the
+  // tab still renders even without authoritative ordering. Prefilled-
+  // cell positional fidelity is best-effort in this mode.
+  var snap = {}; // no outputAssignmentRows declared
+  var winnerBySlot = {
+    'HD_CALL':  [{ slotType: 'HD_CALL',  dateKey: '2026-05-01' }],
+    'ICU_CALL': [{ slotType: 'ICU_CALL', dateKey: '2026-05-01' }],
+  };
+  var resolved = _resolveOutputAssignmentRows_(snap, winnerBySlot);
+  assertEqualNumber_(resolved.length, 2,
+    'fallback should render one row per winner slotType');
+  assertTrue_(resolved[0].slotType === 'HD_CALL' && resolved[0].rowOffset === 0,
+    'fallback first row should be HD_CALL @ rowOffset 0');
+  assertTrue_(resolved[1].slotType === 'ICU_CALL' && resolved[1].rowOffset === 1,
+    'fallback second row should be ICU_CALL @ rowOffset 1');
 }
 
 // ---------------------------------------------------------------------------

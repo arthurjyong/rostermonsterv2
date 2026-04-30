@@ -149,7 +149,8 @@ def main(argv: list[str] | None = None) -> int:
             retentionMode=RetentionMode.BEST_ONLY,
             runEnvelope=_build_run_envelope(snapshot, args.seed),
         )
-        _write_envelope(envelope, output_path)
+        _write_output(envelope, snapshot, template, output_path,
+                      writeback_ready=args.writeback_ready)
         print(f"UNSATISFIED — no rule-valid roster found within "
               f"{args.max_candidates} candidate budget. "
               f"Result written to {output_path}", file=sys.stderr)
@@ -171,7 +172,8 @@ def main(argv: list[str] | None = None) -> int:
         runEnvelope=_build_run_envelope(snapshot, args.seed),
         sidecarTargetDir=sidecar_dir,
     )
-    _write_envelope(envelope, output_path)
+    _write_output(envelope, snapshot, template, output_path,
+                  writeback_ready=args.writeback_ready)
     if isinstance(envelope.result, AllocationResult):
         score_total = envelope.result.winnerScore.totalScore
         n_filled = sum(
@@ -235,7 +237,33 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
              "with --retention FULL; defaults to <output>.sidecars/ "
              "alongside the output file)",
     )
+    p.add_argument(
+        "--writeback-ready",
+        type=_parse_bool,
+        default=True,
+        help="when true (default), the output JSON is the writeback envelope "
+             "wrapper per `docs/decision_log.md` D-0045 + D-0047 (single file "
+             "containing FinalResultEnvelope + snapshot subset + doctorIdMap, "
+             "ready to upload to the launcher's writeback form). When false, "
+             "the output is the bare FinalResultEnvelope (pre-M3 C1 behavior, "
+             "useful for callers that don't intend to writeback).",
+    )
     return p.parse_args(argv)
+
+
+def _parse_bool(value: str) -> bool:
+    """Loose bool parser for the --writeback-ready CLI flag. Accepts
+    `true`/`false`/`yes`/`no`/`1`/`0` (case-insensitive)."""
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    if s in {"true", "yes", "1", "y", "t"}:
+        return True
+    if s in {"false", "no", "0", "n", "f"}:
+        return False
+    raise argparse.ArgumentTypeError(
+        f"expected a boolean (true/false/yes/no/1/0), got {value!r}"
+    )
 
 
 # --- snapshot JSON deserialization ----------------------------------------
@@ -403,11 +431,149 @@ def _build_run_envelope(snapshot: Snapshot, seed: int) -> RunEnvelope:
     )
 
 
-def _write_envelope(envelope: FinalResultEnvelope, output_path: Path) -> None:
-    """Serialize a FinalResultEnvelope to JSON. Uses dataclass-asdict
-    + custom Enum/tuple handling so the output matches `docs/selector_contract.md`
-    §10 / §13 / §16 shape."""
-    output_path.write_text(json.dumps(_to_jsonable(envelope), indent=2))
+def _write_output(envelope: FinalResultEnvelope, snapshot: Snapshot,
+                  template, output_path: Path, *,
+                  writeback_ready: bool) -> None:
+    """Serialize the CLI's output JSON to disk. When `writeback_ready` is
+    true (the M3 C1+ default per `docs/decision_log.md` D-0047), the output
+    is the writeback wrapper envelope per D-0045 (single file containing
+    `finalResultEnvelope` + `snapshot` subset + `doctorIdMap`). When false,
+    the output is the bare `FinalResultEnvelope` (pre-M3 C1 behavior, kept
+    available for callers that don't intend to writeback — for example,
+    test harnesses that assert on the selector's exact output shape per
+    `docs/selector_contract.md` §10)."""
+    if writeback_ready:
+        payload = _assemble_writeback_wrapper(envelope, snapshot, template)
+    else:
+        payload = _to_jsonable(envelope)
+    output_path.write_text(json.dumps(payload, indent=2))
+
+
+# --- writeback wrapper assembly (per D-0045) ------------------------------
+
+
+def _assemble_writeback_wrapper(envelope: FinalResultEnvelope,
+                                  snapshot: Snapshot,
+                                  template) -> dict[str, Any]:
+    """Wrap the FinalResultEnvelope with a snapshot subset + doctorIdMap so
+    the operator uploads ONE file to the launcher's writeback form per
+    `docs/decision_log.md` D-0045 + D-0047. Concrete keys/order are
+    implementation-slice per `docs/writeback_contract.md` §22; categories of
+    content are pinned by D-0045 sub-decisions 1..4."""
+    return {
+        "schemaVersion": 1,
+        "finalResultEnvelope": _to_jsonable(envelope),
+        "snapshot": _build_writeback_snapshot_subset(snapshot, template),
+        "doctorIdMap": _build_doctor_id_map(snapshot),
+    }
+
+
+def _build_writeback_snapshot_subset(snapshot: Snapshot,
+                                       template) -> dict[str, Any]:
+    """Project the full Snapshot into the writeback contract §9 'snapshot'
+    subset that the Apps Script writeback library needs to reconstruct
+    shell content per `docs/writeback_contract.md` §10.1. Categories
+    pinned by D-0045 sub-decision 3:
+    `columnADoctorNames` + `requestCells` + `callPointCells` +
+    `prefilledFixedAssignmentCells` + `shellParameters`. Full snapshot
+    fields (record-level locators, physical source refs, raw cell text
+    beyond what the writeback tab needs) are deliberately omitted."""
+    section_to_group = {
+        s.sectionKey: s.groupId for s in template.inputSheetSections
+    }
+
+    column_a = [
+        {
+            "sectionGroup": rec.sourceLocator.sectionKey,
+            "rowIndex": rec.sourceLocator.doctorIndexInSection,
+            "value": rec.displayName,
+        }
+        for rec in snapshot.doctorRecords
+    ]
+
+    request_cells = [
+        {
+            "sourceDoctorKey": rec.sourceDoctorKey,
+            "dayIndex": rec.dayIndex,
+            "value": rec.rawRequestText,
+        }
+        for rec in snapshot.requestRecords
+    ]
+
+    call_point_cells = [
+        {
+            "callPointRowKey": rec.callPointRowKey,
+            "dayIndex": rec.dayIndex,
+            "value": rec.rawValue,
+        }
+        for rec in snapshot.scoringConfigRecords.callPointRecords
+    ]
+
+    prefilled = [
+        {
+            "surfaceId": rec.surfaceId,
+            "rowOffset": rec.rowOffset,
+            "dayIndex": rec.dayIndex,
+            "value": rec.rawAssignedDoctorText,
+        }
+        for rec in snapshot.prefilledAssignmentRecords
+    ]
+
+    output_assignment_rows = [
+        {
+            "surfaceId": surface.surfaceId,
+            "slotType": row.slotId,
+            "rowOffset": row.rowOffset,
+        }
+        for surface in template.outputSurfaces
+        for row in surface.assignmentRows
+    ]
+
+    doctor_count_by_group: dict[str, int] = {}
+    for rec in snapshot.doctorRecords:
+        section_key = rec.sourceLocator.sectionKey
+        # Fall back to section key if the template doesn't declare a
+        # mapping (defensive — should never happen for ICU/HD first
+        # release where the template covers all snapshot sections).
+        group_id = section_to_group.get(section_key, section_key)
+        doctor_count_by_group[group_id] = (
+            doctor_count_by_group.get(group_id, 0) + 1
+        )
+
+    period_start = (snapshot.dayRecords[0].rawDateText
+                    if snapshot.dayRecords else "")
+    period_end = (snapshot.dayRecords[-1].rawDateText
+                  if snapshot.dayRecords else "")
+
+    return {
+        "columnADoctorNames": column_a,
+        "requestCells": request_cells,
+        "callPointCells": call_point_cells,
+        "prefilledFixedAssignmentCells": prefilled,
+        "outputAssignmentRows": output_assignment_rows,
+        "shellParameters": {
+            "department": template.identity.label,
+            "periodStartDate": period_start,
+            "periodEndDate": period_end,
+            "doctorCountByGroup": doctor_count_by_group,
+        },
+    }
+
+
+def _build_doctor_id_map(snapshot: Snapshot) -> list[dict[str, Any]]:
+    """Build the `doctorIdMap` per `docs/writeback_contract.md` §9 item 3 +
+    §12. First-release parser passes `sourceDoctorKey` through unchanged
+    as `Doctor.doctorId`, so doctorId = sourceDoctorKey here. Apps Script
+    writeback library uses this map to resolve `AssignmentUnit.doctorId`
+    to the column-A cell value via §12.1."""
+    return [
+        {
+            "doctorId": rec.sourceDoctorKey,
+            "sectionGroup": rec.sourceLocator.sectionKey,
+            "rowIndex": rec.sourceLocator.doctorIndexInSection,
+        }
+        for rec in snapshot.doctorRecords
+    ]
 
 
 def _to_jsonable(value: Any) -> Any:

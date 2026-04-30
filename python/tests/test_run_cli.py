@@ -47,6 +47,7 @@ def test_cli_runs_end_to_end_on_real_fixture() -> None:
             "--output", str(out_path),
             "--max-candidates", "3",
             "--seed", "20260504",
+            "--writeback-ready", "false",
         ])
         assert rc == 0, f"CLI exited non-zero on happy path; rc={rc}"
         assert out_path.is_file(), "CLI did not write output file"
@@ -59,6 +60,102 @@ def test_cli_runs_end_to_end_on_real_fixture() -> None:
         # All 116 assignments filled per the M2 May 2026 smoke test profile
         # (29 days × 4 slot types).
         assert len(envelope["result"]["winnerAssignment"]) == 116
+
+
+def test_cli_writeback_ready_emits_wrapper_envelope() -> None:
+    """Default `--writeback-ready=true` mode (M3 C1+) emits the writeback
+    wrapper envelope per `docs/decision_log.md` D-0045 + D-0047 — a single
+    JSON file with `finalResultEnvelope` + `snapshot` (subset) +
+    `doctorIdMap` at top level. This is what the operator uploads to the
+    launcher's writeback form. Verifies the wrapper shape is correct,
+    embedded `finalResultEnvelope` matches what `--writeback-ready=false`
+    would have emitted, and re-runs are byte-identical."""
+    with tempfile.TemporaryDirectory() as td:
+        wrapper_path = Path(td) / "wrapper.json"
+        bare_path = Path(td) / "bare.json"
+
+        # Default mode: writeback-ready=true → wrapper.
+        rc = main([
+            "--snapshot", str(_FIXTURE_PATH),
+            "--output", str(wrapper_path),
+            "--max-candidates", "3",
+            "--seed", "20260504",
+        ])
+        assert rc == 0, f"CLI exited non-zero on writeback-ready run; rc={rc}"
+
+        # Comparison run: writeback-ready=false → bare FinalResultEnvelope.
+        rc2 = main([
+            "--snapshot", str(_FIXTURE_PATH),
+            "--output", str(bare_path),
+            "--max-candidates", "3",
+            "--seed", "20260504",
+            "--writeback-ready", "false",
+        ])
+        assert rc2 == 0
+
+        wrapper = json.loads(wrapper_path.read_text())
+        bare = json.loads(bare_path.read_text())
+
+        # Wrapper-shape contract per D-0045: top-level keys are
+        # `schemaVersion`, `finalResultEnvelope`, `snapshot`, `doctorIdMap`.
+        assert wrapper["schemaVersion"] == 1
+        assert "finalResultEnvelope" in wrapper
+        assert "snapshot" in wrapper
+        assert "doctorIdMap" in wrapper
+
+        # Embedded FinalResultEnvelope matches the bare-mode output exactly.
+        # This proves writeback-ready=true is purely additive — it doesn't
+        # mutate the selector's output, just wraps it.
+        assert wrapper["finalResultEnvelope"] == bare
+
+        # Snapshot subset shape sanity per D-0045 sub-decision 3 +
+        # writeback contract §9 (6 required categories).
+        snap = wrapper["snapshot"]
+        assert "columnADoctorNames" in snap
+        assert "requestCells" in snap
+        assert "callPointCells" in snap
+        assert "prefilledFixedAssignmentCells" in snap
+        assert "outputAssignmentRows" in snap
+        assert "shellParameters" in snap
+
+        # outputAssignmentRows is the lower-shell row order from the
+        # template's outputMapping per writeback §9 6th category.
+        # Required so the writeback library can place prefilled cells
+        # at their (surfaceId, rowOffset) source-tab coordinates per
+        # writeback §10.1.
+        rows = snap["outputAssignmentRows"]
+        assert isinstance(rows, list) and len(rows) > 0, \
+            "outputAssignmentRows must be a non-empty list"
+        for entry in rows:
+            assert set(entry.keys()) >= {"surfaceId", "slotType", "rowOffset"}
+
+        # Shell parameters carry the writeback contract §9 item 2 fields.
+        params = snap["shellParameters"]
+        assert "department" in params
+        assert "periodStartDate" in params
+        assert "periodEndDate" in params
+        assert "doctorCountByGroup" in params
+
+        # ICU/HD May 2026 fixture should produce 22 column-A entries
+        # (9 + 6 + 7) matching the doctor count.
+        assert len(snap["columnADoctorNames"]) == 22
+
+        # doctorIdMap shape per D-0045 sub-decision 4 + writeback §9 item 3.
+        for entry in wrapper["doctorIdMap"]:
+            assert set(entry.keys()) >= {"doctorId", "sectionGroup", "rowIndex"}
+        assert len(wrapper["doctorIdMap"]) == 22
+
+        # Byte-identical determinism: re-run with same flags → identical wrapper.
+        wrapper2_path = Path(td) / "wrapper2.json"
+        rc3 = main([
+            "--snapshot", str(_FIXTURE_PATH),
+            "--output", str(wrapper2_path),
+            "--max-candidates", "3",
+            "--seed", "20260504",
+        ])
+        assert rc3 == 0
+        assert wrapper_path.read_text() == wrapper2_path.read_text(), \
+            "wrapper envelope drifted across writeback-ready re-run"
 
 
 def test_cli_full_retention_emits_sidecars() -> None:
@@ -192,6 +289,8 @@ def _run() -> int:
     tests = [
         ("test_cli_runs_end_to_end_on_real_fixture",
          test_cli_runs_end_to_end_on_real_fixture),
+        ("test_cli_writeback_ready_emits_wrapper_envelope",
+         test_cli_writeback_ready_emits_wrapper_envelope),
         ("test_cli_full_retention_emits_sidecars",
          test_cli_full_retention_emits_sidecars),
         ("test_cli_byte_identical_re_runs", test_cli_byte_identical_re_runs),
