@@ -75,14 +75,14 @@ The service runs `--allow-unauthenticated` at the Cloud Run platform layer. Oper
 `ALLOWED_EMAILS` env var on the Cloud Run service is the operator allowlist. Adding a new pilot operator: `gcloud run services update roster-monster-compute --update-env-vars=ALLOWED_EMAILS=existing,new@example.com --region=asia-southeast1`. Single-knob configuration; no IAM ceremony, no service account creation. The same email must also be on the OAuth consent screen Test Users list for the operator's bound shim consent flow to succeed.
 
 ### 7.3 Required manifest OAuth scopes on the bound shim
-The bound shim's `apps_script/m2_template_bound_script/src/appsscript.json` MUST declare the following scopes (in addition to the existing `https://www.googleapis.com/auth/spreadsheets.currentonly` + `https://www.googleapis.com/auth/script.container.ui`):
+The bound shim's `apps_script/m2_template_bound_script/src/appsscript.json` MUST declare the following scopes:
+- **`https://www.googleapis.com/auth/spreadsheets`** (full, NOT `spreadsheets.currentonly`) — required by `SpreadsheetApp.openById()` which the writeback library calls inside `RMLib.applyWriteback(envelope)`. Live testing confirmed `spreadsheets.currentonly` is insufficient even when the target ID is the bound spreadsheet's own ID; Apps Script's scope check fires before the spreadsheet-existence check ("Specified permissions are not sufficient to call SpreadsheetApp.openById. Required permissions: https://www.googleapis.com/auth/spreadsheets"). The narrower `spreadsheets.currentonly` was the original M2 C9 default for the snapshot extractor, which only uses `getActiveSpreadsheet()` and never `openById`; M4 C1's writeback path requires the broader scope.
 - **`https://www.googleapis.com/auth/script.external_request`** — required for `UrlFetchApp.fetch(...)` to call Cloud Run.
 - **`openid`** — required for `ScriptApp.getIdentityToken()` to issue a valid OIDC ID token.
 - **`https://www.googleapis.com/auth/userinfo.email`** — required to populate the OIDC token's `email` claim that Flask validates against the `ALLOWED_EMAILS` env var.
+- **`https://www.googleapis.com/auth/script.container.ui`** (existing, unchanged) — required for the menu / dialog UI affordances the bound shim exposes.
 
 These are operator-account scopes (no service account, no shared secret); each one is explicitly enumerated in the consent dialog the operator approves on first invocation of the "Solve Roster" menu. The launcher's own manifest is unchanged — the launcher does not invoke Cloud Run; the bound shim does.
-
-The writeback library (now hosted in the central library per `docs/decision_log.md` D-0052) calls `SpreadsheetApp.openById(envelope.runEnvelope.sourceSpreadsheetId)` to write into the source spreadsheet. In the cloud-mode flow, `sourceSpreadsheetId` always equals the bound spreadsheet's own ID (the bound shim is in that spreadsheet), so the existing `spreadsheets.currentonly` scope is expected to suffice. If runtime testing finds otherwise, broaden to `https://www.googleapis.com/auth/spreadsheets` (full).
 
 ### 7.4 Token freshness
 `ScriptApp.getIdentityToken()` issues short-lived tokens (~1 hour); the bound shim acquires a fresh token at each invocation. No token caching is required or expected at the Apps Script side. Flask validates the token's expiry on each request via the google-auth library.
