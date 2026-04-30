@@ -235,7 +235,7 @@ The contract's determinism guarantee is bytes-of-`writebackEnvelope`-only.
 ## 14) Consistency with adjacent contracts
 Repo-settled alignments:
 - Consistent with `docs/decision_log.md` D-0017 / D-0018: cloud compute is Python-side; Apps Script is the adapter layer.
-- Consistent with `docs/decision_log.md` D-0023: no new OAuth scopes; bound shim's identity token mechanism reuses operator-account auth.
+- Consistent with `docs/decision_log.md` D-0023: bound shim's identity token mechanism reuses operator-account auth (no service account, no shared secret). The cloud invocation path adds three explicit manifest scopes on the bound shim per §7.3 (`script.external_request`, `openid`, `userinfo.email`) — these are surfaces the existing operator-account-auth posture already accommodates; the operator-account discipline itself is unchanged.
 - Consistent with `docs/selector_contract.md` v2 §9 item 3: snapshot's `sourceSpreadsheetId` + `sourceTabName` propagate through the run envelope into the response's `writebackEnvelope`.
 - Consistent with `docs/writeback_contract.md` §6.2 + §9: response's `writebackEnvelope` matches writeback contract's input shape; bound shim hands it directly to `RMLib.applyWriteback(envelope)` without reshape.
 - Consistent with `docs/writeback_contract.md` §17: the response's `state` field semantically aligns with writeback's 3-state diagnostic — `"OK"` / `"UNSATISFIED"` / `"INPUT_ERROR"` / `"COMPUTE_ERROR"` map onto writeback's `SUCCESS` / `FAILED` / `RUNTIME_ERROR` (with the cloud side splitting `RUNTIME_ERROR` into pre-compute vs in-compute branches for diagnostic clarity).
