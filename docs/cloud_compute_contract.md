@@ -83,7 +83,7 @@ The writeback library (now hosted in the central library per `docs/decision_log.
 `ScriptApp.getIdentityToken()` issues short-lived tokens; the bound shim acquires a fresh token at each invocation. No token caching is required or expected at the Apps Script side. Cloud Run validates the token's expiry on each request.
 
 ### 7.5 No fallback to public access
-The Cloud Run service is NOT public. There is no API key fallback, no shared-secret fallback. Unauthenticated requests receive `401 Unauthorized` directly from Cloud Run (the service code never runs).
+The Cloud Run service is NOT public. There is no API key fallback, no shared-secret fallback. Unauthenticated or insufficiently-authorized requests are rejected directly by Cloud Run (the service code never runs); the response is `401 Unauthorized` (missing or malformed token) or `403 Forbidden` (valid token but caller lacks `roles/run.invoker` on the service). The bound shim's auth-error handling MUST treat both statuses as auth-failure surfaces and emit the corresponding bound-shim diagnostic per §10.5.
 
 ## 8) Deployment posture
 Proposed in this checkpoint (normative):
