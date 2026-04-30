@@ -56,9 +56,25 @@ function _applyWritebackInner_(envelope) {
     );
   }
 
-  var newTabName = _buildWritebackTabName_(ss, sourceTabName);
-  var sheet = ss.insertSheet(newTabName);
-  // Track newly-created tab for cleanup-on-failure per §14.1.
+  // Tab-name build + tab creation MUST surface through the §17.3
+  // RUNTIME_ERROR diagnostic, not the client's withFailureHandler
+  // (which would deliver an unstructured infrastructure error).
+  // `_buildWritebackTabName_` throws on pathological source-tab names
+  // (§11.1.1 length-truncation impossible) or §11.1.2 collision-suffix
+  // exhaustion; `ss.insertSheet` throws on Sheets-side failures (sheet
+  // count limit, race-condition collision, invalid name characters).
+  // No cleanup is needed — `insertSheet` either succeeds and returns
+  // the sheet or throws without leaving an orphan tab.
+  var newTabName, sheet;
+  try {
+    newTabName = _buildWritebackTabName_(ss, sourceTabName);
+    sheet = ss.insertSheet(newTabName);
+  } catch (e) {
+    return _writebackError_(
+      'Could not create writeback tab: ' +
+      (e && e.message ? e.message : String(e))
+    );
+  }
 
   try {
     var isSuccess = _isAllocationResult_(fre.result);
