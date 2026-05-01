@@ -84,7 +84,7 @@ v2 follows a multi-layer model:
 - **Writer / Execution / Observability support layers**: package outputs, run compute in local/cloud modes, and emit diagnostics.
 
 This model separates reusable allocation logic from department-specific behavior.
-Implementation ownership note: sheet-native surface work is implemented in Google Apps Script — the narrowest Sheets-facing integration path — and today includes both the M1 generator core and the M1.1 operator-facing launcher that wraps it. Compute-heavy core logic remains outside Apps Script and is intended to start local-first in Python. This blueprint note does not force a cloud/server/orchestration runtime decision.
+Implementation ownership note: sheet-native surface work is implemented in Google Apps Script — the narrowest Sheets-facing integration path — and today includes the M1 generator core, the M1.1 operator-facing launcher, the M2 bound shim + central extractor library (D-0041), the M3 writeback library hosted on the central library (D-0052), and the M4 bound shim's `Roster Monster → Solve Roster` orchestration menu. Compute-heavy core logic stays outside Apps Script and is realized as the dual-track Python architecture per `docs/decision_log.md` D-0050: a shared compute core (`python/rostermonster/pipeline.py`), a thin local CLI wrapper (`python/rostermonster/run.py`), and a thin HTTP wrapper (`python/rostermonster_service/app.py`) deployed to Cloud Run as `roster-monster-compute` per D-0051 / D-0054. Both wrappers call the same compute core and produce byte-identical envelopes at the same `(snapshot, optionalConfig)` input when seed is explicitly set per D-0053.
 
 ## 7. Boundary definitions
 

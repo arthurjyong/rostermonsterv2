@@ -14,9 +14,10 @@ This repo uses a single planning vocabulary:
 - **Task**: a concrete work item used to close a checkpoint.
 
 ## Current focus
-- **Active milestone:** `Minimal local compute pipeline` (M2), activated at milestone level only on 2026-04-22 after M1.1 closure
-- **Active checkpoint:** none currently — deliberate exception pending M2 first-checkpoint scoping; see `docs/delivery_plan.md` §8
-- **Note:** M1.1 (`Operator-facing launcher`) closed on 2026-04-22 on hands-on validation; see `docs/delivery_plan.md` §11. The addendum-milestone convention (D-0021), launcher architecture (D-0022), and auto-share additive scope (D-0023) remain accepted directional decisions.
+- **Active milestone:** *(none)* — M1 / M1.1 / M2 / M3 / M4 are all closed.
+- **Active checkpoint:** *(none)*.
+- **What's live:** the full **sheet → snapshot → Python compute → writeback** round-trip runs end-to-end on real ICU/HD data in two modes — local (CLI-driven) and cloud (`Roster Monster → Solve Roster` one-click bound-shim menu against a Cloud Run service). See `docs/delivery_plan.md` §11 + §15.
+- **Next likely milestone:** solver-strategy optimization (per `docs/decision_log.md` D-0049's forward-pointer). Activation is left to the maintainer's call; nothing auto-rolls forward.
 
 ## Repo navigation
 - `docs/blueprint.md` — Stable architecture truth (what the system is and how boundaries are defined).
