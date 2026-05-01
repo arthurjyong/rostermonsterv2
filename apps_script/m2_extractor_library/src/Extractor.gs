@@ -31,6 +31,22 @@ function extractSnapshotForActiveSheet() {
   }
 }
 
+// In-memory snapshot extraction entrypoint per `docs/decision_log.md`
+// D-0049 + D-0052 (M4 C1 cloud-mode dual track) + `docs/snapshot_adapter_contract.md`
+// §7 in-memory addendum. Returns the Snapshot-shape JavaScript object
+// directly (NOT wrapped in download HTML), so the bound shim's
+// "Solve Roster" handler can ship it straight to Cloud Run via
+// UrlFetchApp without a file boundary.
+//
+// Errors propagate as exceptions (caller catches and renders into the
+// bound shim's error dialog) rather than being wrapped in error HTML
+// like `extractSnapshotForActiveSheet` does — the bound shim path
+// orchestrates extract + cloud + writeback as one operation, so the
+// extract step's error surface is "throw and let orchestrator catch."
+function extractSnapshotInMemoryForActiveSheet() {
+  return _buildSnapshotForActiveSheet_();
+}
+
 // Internal: orchestrates §6 steps 1..9. Throws Error with a user-facing
 // message on any extraction-blocking defect; the public entrypoint catches
 // and renders the message into an error HtmlOutput.
