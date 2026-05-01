@@ -61,29 +61,37 @@ The service exposes exactly one operation in first release: `POST /compute`. No 
 The service is stateless across requests. No per-operator state, no session cookies, no in-memory caching of snapshots between requests. Each request carries everything the service needs (snapshot + optional config); each response carries the full computed envelope.
 
 ## 7) Authentication
-Proposed in this checkpoint (normative):
+Proposed in this checkpoint (normative). Updated per `docs/decision_log.md` D-0054 (audience-mismatch finding from M4 C1 Phase 2 testing — original IAM-based design rejected every bound-shim request because `ScriptApp.getIdentityToken()`'s `aud` claim is the Apps Script project's GCP OAuth client ID, not the Cloud Run service URL).
 
 ### 7.1 Auth mechanism
-The service requires authenticated invocation via Google Cloud Run's IAM-based auth model. The bound shim attaches `Authorization: Bearer <id-token>` where `<id-token>` is obtained from `ScriptApp.getIdentityToken()`; Cloud Run validates the token against IAM bindings on the service.
+The service runs `--allow-unauthenticated` at the Cloud Run platform layer. Operator-identity gating is enforced **app-side** by the Flask handler:
+1. Bound shim calls `ScriptApp.getIdentityToken()` to mint a Google OIDC token carrying the operator's identity.
+2. Bound shim sends the token as the value of a custom `X-Auth-Token` request header (NOT the standard `Authorization` header — see §7.5).
+3. Flask handler validates the token via `google.oauth2.id_token.verify_oauth2_token(token, requests.Request(), audience=None)` — signature, expiry, and `email_verified` are checked; `aud` is intentionally not enforced.
+4. Flask handler reads the `email` claim and checks it against the `ALLOWED_EMAILS` env var (comma-separated list of lower-cased emails) on the Cloud Run service.
+5. Token-validation or allowlist mismatch returns a structured `INPUT_ERROR` response per §10.1 with one of the auth-specific `error.code` values (`MISSING_AUTH_TOKEN`, `INVALID_TOKEN`, `EMAIL_NOT_VERIFIED`, `EMAIL_NOT_ALLOWLISTED`, `SERVICE_MISCONFIGURED`).
 
-### 7.2 IAM binding
-Cloud Run service grants `roles/run.invoker` to the **same email allowlist as the OAuth consent screen Test Users list** for the consolidated `RosterMonsterV2` GCP project (per `docs/decision_log.md` D-0051). Adding a new pilot operator to the launcher requires adding their email to BOTH the OAuth consent screen Test Users list AND the Cloud Run service's IAM bindings; the operational onboarding playbook in `docs/delivery_plan.md` §11 (and the M4 C1 closure note when it lands) documents both steps.
+### 7.2 Operator allowlist via env var
+`ALLOWED_EMAILS` env var on the Cloud Run service is the operator allowlist. Adding a new pilot operator: `gcloud run services update roster-monster-compute --update-env-vars=ALLOWED_EMAILS=existing,new@example.com --region=asia-southeast1`. Single-knob configuration; no IAM ceremony, no service account creation. The same email must also be on the OAuth consent screen Test Users list for the operator's bound shim consent flow to succeed.
 
 ### 7.3 Required manifest OAuth scopes on the bound shim
-The bound shim's `apps_script/m2_template_bound_script/src/appsscript.json` MUST declare the following scopes (in addition to the existing `https://www.googleapis.com/auth/spreadsheets.currentonly` + `https://www.googleapis.com/auth/script.container.ui`) for the cloud invocation path to function at runtime:
-- **`https://www.googleapis.com/auth/script.external_request`** — required for `UrlFetchApp.fetch(...)` to call Cloud Run from Apps Script.
-- **`openid`** — required for `ScriptApp.getIdentityToken()` to issue an OIDC ID token Cloud Run IAM can validate.
-- **`https://www.googleapis.com/auth/userinfo.email`** — required to populate the OIDC token's `email` claim that IAM matches against the `roles/run.invoker` allowlist; also the operator-identity surface the consent screen presents.
+The bound shim's `apps_script/m2_template_bound_script/src/appsscript.json` MUST declare the following scopes:
+- **`https://www.googleapis.com/auth/spreadsheets`** (full, NOT `spreadsheets.currentonly`) — required by `SpreadsheetApp.openById()` which the writeback library calls inside `RMLib.applyWriteback(envelope)`. Live testing confirmed `spreadsheets.currentonly` is insufficient even when the target ID is the bound spreadsheet's own ID; Apps Script's scope check fires before the spreadsheet-existence check ("Specified permissions are not sufficient to call SpreadsheetApp.openById. Required permissions: https://www.googleapis.com/auth/spreadsheets"). The narrower `spreadsheets.currentonly` was the original M2 C9 default for the snapshot extractor, which only uses `getActiveSpreadsheet()` and never `openById`; M4 C1's writeback path requires the broader scope.
+- **`https://www.googleapis.com/auth/script.external_request`** — required for `UrlFetchApp.fetch(...)` to call Cloud Run.
+- **`openid`** — required for `ScriptApp.getIdentityToken()` to issue a valid OIDC ID token.
+- **`https://www.googleapis.com/auth/userinfo.email`** — required to populate the OIDC token's `email` claim that Flask validates against the `ALLOWED_EMAILS` env var.
+- **`https://www.googleapis.com/auth/script.container.ui`** (existing, unchanged) — required for the menu / dialog UI affordances the bound shim exposes.
 
 These are operator-account scopes (no service account, no shared secret); each one is explicitly enumerated in the consent dialog the operator approves on first invocation of the "Solve Roster" menu. The launcher's own manifest is unchanged — the launcher does not invoke Cloud Run; the bound shim does.
 
-The writeback library (now hosted in the central library per `docs/decision_log.md` D-0052) calls `SpreadsheetApp.openById(envelope.runEnvelope.sourceSpreadsheetId)` to write into the source spreadsheet. In the cloud-mode flow, `sourceSpreadsheetId` always equals the bound spreadsheet's own ID (the bound shim is in that spreadsheet), so the existing `spreadsheets.currentonly` scope is expected to suffice. If runtime testing in M4 C1 Phase 2 finds that `openById` against the bound spreadsheet's own ID is rejected under `spreadsheets.currentonly`, broaden to `https://www.googleapis.com/auth/spreadsheets` (full) — captured as a Phase 2 finding, not a contract change.
-
 ### 7.4 Token freshness
-`ScriptApp.getIdentityToken()` issues short-lived tokens; the bound shim acquires a fresh token at each invocation. No token caching is required or expected at the Apps Script side. Cloud Run validates the token's expiry on each request.
+`ScriptApp.getIdentityToken()` issues short-lived tokens (~1 hour); the bound shim acquires a fresh token at each invocation. No token caching is required or expected at the Apps Script side. Flask validates the token's expiry on each request via the google-auth library.
 
-### 7.5 No fallback to public access
-The Cloud Run service is NOT public. There is no API key fallback, no shared-secret fallback. Unauthenticated or insufficiently-authorized requests are rejected directly by Cloud Run (the service code never runs); the response is `401 Unauthorized` (missing or malformed token) or `403 Forbidden` (valid token but caller lacks `roles/run.invoker` on the service). The bound shim's auth-error handling MUST treat both statuses as auth-failure surfaces and emit the corresponding bound-shim diagnostic per §10.5.
+### 7.5 Custom `X-Auth-Token` header (NOT `Authorization`)
+The standard `Authorization` header CANNOT be used with this auth model. Per Google's documentation (https://cloud.google.com/run/docs/securing/managing-access#allow-unauthenticated), Cloud Run drops the `Authorization` header on `--allow-unauthenticated` services to prevent token-leakage from public services. Using a custom `X-Auth-Token` header is the documented workaround — Cloud Run does not strip non-`Authorization` headers, so the bound shim's token arrives at Flask intact. This is a contract-level decision per `docs/decision_log.md` D-0054; clients of this contract MUST use `X-Auth-Token`.
+
+### 7.6 Service account flow remains future-work
+The cleanest long-term auth architecture is a service account with `roles/run.invoker` + the Apps Script OAuth2 library minting OIDC tokens with the correct audience (the Google-recommended Cloud Run + Apps Script pattern). Deferred for first release because (a) it requires storing service-account JSON in Apps Script Script Properties (a credential surface), (b) it requires importing the apps-script-oauth2 library, (c) operator-identity gating becomes service-account-mediated rather than direct (operator-attribution lost in Cloud Run logs without app-level email surfacing). Promote when pilot scope grows or formal least-privilege posture is required; the migration is backwards-compatible (token transport stays as `X-Auth-Token`, just becomes service-account-mediated).
 
 ## 8) Deployment posture
 Proposed in this checkpoint (normative):

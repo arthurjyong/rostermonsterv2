@@ -1,0 +1,40 @@
+# Files NOT uploaded to Cloud Build during `gcloud run deploy --source .`
+# per `docs/cloud_compute_contract.md` §8.5 (Cloud Run cold-start matters,
+# so keep build context small).
+
+.git/
+.gitignore
+.DS_Store
+**/.DS_Store
+**/__pycache__/
+**/*.pyc
+
+# Repo-level docs + decision log + delivery plan are not part of the
+# runtime image. Keeping them out shortens the upload + Cloud Build
+# step from megabytes to KB.
+docs/
+README.md
+CLAUDE.md
+
+# Apps Script projects are the operator-facing surface; the cloud
+# compute service has zero dependency on them.
+apps_script/
+
+# Test data (snapshot fixtures) is large and not needed at runtime.
+# Cloud Run service is fed snapshots via HTTP request body, not from
+# the filesystem.
+python/tests/
+
+# Experimental scratch dirs, dev-side media, etc.
+experimental/
+for_claude_code/
+
+# Local IDE / editor artifacts.
+.vscode/
+.idea/
+*.swp
+
+# Don't ship local cloud-deploy archives or build artifacts.
+build/
+dist/
+*.egg-info/

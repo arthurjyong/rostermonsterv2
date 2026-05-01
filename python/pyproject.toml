@@ -7,6 +7,17 @@ authors = [{ name = "Roster Monster maintainers" }]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# Cloud Run service runtime deps per `docs/cloud_compute_contract.md`
+# §8.5. Mirrors `cloud_compute_service/requirements.txt` for non-Docker
+# installations (local Flask dev server, test harness). google-auth +
+# requests are the ID-token verification stack per `docs/decision_log.md`
+# D-0054 (Flask-side operator-allowlist auth).
+service = [
+    "flask>=3.1,<4.0",
+    "gunicorn>=23.0,<24.0",
+    "google-auth>=2.30,<3.0",
+    "requests>=2.32,<3.0",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
