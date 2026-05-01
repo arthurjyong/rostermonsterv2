@@ -76,11 +76,26 @@ def create_app() -> Flask:
     return app
 
 
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _is_truthy_env(name: str) -> bool:
+    """Strict-parse a string env var as a boolean. Only `1`/`true`/`yes`/`on`
+    (case-insensitive) count as truthy; everything else (including
+    `0`/`false`/`no`/`off`/empty/unset) is falsy. Prevents the silent-
+    open-allowlist bug where `DISABLE_AUTH_FOR_LOCAL_TESTING=false` would
+    have read as truthy under a naive `os.environ.get(name)` check."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return False
+    return raw.strip().lower() in _TRUTHY_ENV_VALUES
+
+
 def _check_operator_allowlist() -> Response | None:
     """Validate the operator's ID token + check email allowlist per
     `docs/decision_log.md` D-0054. Returns a 200 INPUT_ERROR-shaped
     response on auth failure; returns None on success."""
-    if os.environ.get(_DISABLE_AUTH_ENV):
+    if _is_truthy_env(_DISABLE_AUTH_ENV):
         return None
 
     allowed = os.environ.get(_ALLOWED_EMAILS_ENV, "").strip()
@@ -115,6 +130,7 @@ def _check_operator_allowlist() -> Response | None:
         )
 
     try:
+        from google.auth import exceptions as google_auth_exceptions
         from google.auth.transport import requests as google_requests
         from google.oauth2 import id_token
     except ImportError as e:
@@ -138,6 +154,20 @@ def _check_operator_allowlist() -> Response | None:
         return _auth_error(
             "INVALID_TOKEN",
             f"Token failed Google verification: {e}",
+        )
+    except google_auth_exceptions.GoogleAuthError as e:
+        # Cert-fetch / transport / refresh failures from the google-auth
+        # library — distinct from the malformed-token ValueError branch
+        # above. These are typically transient (Google's JWKS endpoint
+        # transiently unreachable, etc.). Surface as INPUT_ERROR with a
+        # distinct code so the bound shim can offer a "retry" affordance
+        # later if needed; the structured envelope is preserved per
+        # `docs/cloud_compute_contract.md` §10.
+        log.exception("google-auth raised a non-ValueError verification error")
+        return _auth_error(
+            "TOKEN_VERIFICATION_TRANSPORT_ERROR",
+            f"Token verification backend failed (transient): "
+            f"{type(e).__name__}: {e}",
         )
 
     email = info.get("email", "").strip().lower()
