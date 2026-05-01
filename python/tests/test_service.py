@@ -141,6 +141,38 @@ def test_compute_input_error_optional_config_wrong_type() -> None:
     assert data["error"]["code"] == "INVALID_OPTIONAL_CONFIG"
 
 
+def test_compute_input_error_optional_config_falsy_non_object() -> None:
+    """Falsy non-dict values (false, 0, empty string, empty list) MUST
+    reject with INVALID_OPTIONAL_CONFIG instead of being silently
+    coerced to `{}` via `or {}` short-circuit. Catches the foot-gun
+    where `optionalConfig: false` would have run with server defaults
+    against the contract.
+
+    Note: `optionalConfig: null` is treated as absent (use defaults),
+    NOT as a violation — the contract permits omission, and JSON's
+    explicit-null is the cleanest way for clients to signal omission
+    when they assemble the payload programmatically."""
+    client = _client()
+    for bad in (False, 0, "", []):
+        body = {"snapshot": _load_snapshot_dict(), "optionalConfig": bad}
+        data = client.post("/compute", json=body).get_json()
+        assert data["state"] == "INPUT_ERROR", \
+            f"optionalConfig={bad!r} should be INPUT_ERROR; got {data['state']}"
+        assert data["error"]["code"] == "INVALID_OPTIONAL_CONFIG"
+
+    # Sanity: explicit null is permitted (treated as absent).
+    body = {"snapshot": _load_snapshot_dict(),
+            "optionalConfig": None,
+            "_extraConfig": {"maxCandidates": 2, "seed": 99}}  # ignored
+    data = client.post(
+        "/compute", json={"snapshot": _load_snapshot_dict(),
+                          "optionalConfig": None}
+    ).get_json()
+    # With null optionalConfig, server uses defaults — should reach OK.
+    assert data["state"] == "OK", \
+        f"optionalConfig=null should be treated as absent; got {data['state']}"
+
+
 def test_compute_input_error_max_candidates_wrong_type() -> None:
     """`maxCandidates` must be an integer; string / float / bool reject."""
     client = _client()
@@ -285,6 +317,8 @@ def _run() -> int:
          test_compute_input_error_non_object_snapshot),
         ("test_compute_input_error_optional_config_wrong_type",
          test_compute_input_error_optional_config_wrong_type),
+        ("test_compute_input_error_optional_config_falsy_non_object",
+         test_compute_input_error_optional_config_falsy_non_object),
         ("test_compute_input_error_max_candidates_wrong_type",
          test_compute_input_error_max_candidates_wrong_type),
         ("test_compute_input_error_max_candidates_zero_or_negative",

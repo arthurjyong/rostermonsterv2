@@ -250,11 +250,21 @@ def _compute_endpoint() -> Response:
         )
 
     # --- Stage 3: validate optionalConfig ---------------------------------
-    optional_raw = raw.get("optionalConfig", {}) or {}
+    # Treat absent / explicit-null as "use server defaults"; reject any
+    # other non-dict value (false, 0, "", [], etc.) at the validation
+    # boundary so falsy-but-present payloads can't slip through with
+    # `or {}` short-circuit semantics. The latter would silently coerce
+    # `optionalConfig: false` to `{}` and run with defaults instead of
+    # surfacing the contract violation as INVALID_OPTIONAL_CONFIG.
+    if "optionalConfig" not in raw or raw["optionalConfig"] is None:
+        optional_raw: dict[str, Any] = {}
+    else:
+        optional_raw = raw["optionalConfig"]
     if not isinstance(optional_raw, dict):
         return _input_error(
             "INVALID_OPTIONAL_CONFIG",
-            "`optionalConfig` must be a JSON object when present.",
+            "`optionalConfig` must be a JSON object when present "
+            "(got " + type(optional_raw).__name__ + ").",
         )
 
     try:
