@@ -230,6 +230,7 @@ def _compute_endpoint() -> Response:
     try:
         max_candidates = _coerce_optional_int(
             optional_raw.get("maxCandidates"), "maxCandidates",
+            min_val=1,
         )
         seed = _coerce_optional_int(
             optional_raw.get("seed"), "seed",
@@ -313,13 +314,19 @@ class _ConfigValidationError(ValueError):
     """Internal exception type for optionalConfig validation."""
 
 
-def _coerce_optional_int(value: Any, field_name: str) -> int | None:
+def _coerce_optional_int(value: Any, field_name: str, *,
+                          min_val: int | None = None) -> int | None:
     """Coerce an optionalConfig field to int | None.
 
     None passes through (caller resolves to default). Booleans are
     rejected — `True`/`False` would coerce to 1/0 which is almost
     certainly a client bug. Strings, floats, dicts, lists, etc. are
-    rejected.
+    rejected. When `min_val` is provided, integers below it are also
+    rejected — this keeps contract-invalid values like
+    `maxCandidates: 0` surfacing as `INPUT_ERROR` /
+    `INVALID_OPTIONAL_CONFIG` rather than slipping through into the
+    solver and surfacing later as `COMPUTE_ERROR` (which would
+    mis-classify a caller defect as a server-side compute failure).
     """
     if value is None:
         return None
@@ -328,12 +335,16 @@ def _coerce_optional_int(value: Any, field_name: str) -> int | None:
         raise _ConfigValidationError(
             f"`{field_name}` must be an integer; got bool ({value!r})."
         )
-    if isinstance(value, int):
-        return value
-    raise _ConfigValidationError(
-        f"`{field_name}` must be an integer; got "
-        f"{type(value).__name__} ({value!r})."
-    )
+    if not isinstance(value, int):
+        raise _ConfigValidationError(
+            f"`{field_name}` must be an integer; got "
+            f"{type(value).__name__} ({value!r})."
+        )
+    if min_val is not None and value < min_val:
+        raise _ConfigValidationError(
+            f"`{field_name}` must be >= {min_val}; got {value!r}."
+        )
+    return value
 
 
 # Module-level app for `flask --app rostermonster_service.app run` and

@@ -152,6 +152,23 @@ def test_compute_input_error_max_candidates_wrong_type() -> None:
     assert "maxCandidates" in data["error"]["message"]
 
 
+def test_compute_input_error_max_candidates_zero_or_negative() -> None:
+    """`maxCandidates` must be >= 1; zero and negative values are rejected
+    at the validation boundary (INPUT_ERROR / INVALID_OPTIONAL_CONFIG)
+    rather than slipping into the solver and surfacing later as
+    COMPUTE_ERROR. The latter would misclassify a caller defect as a
+    server-side compute failure."""
+    client = _client()
+    for bad in (0, -1, -100):
+        body = {"snapshot": _load_snapshot_dict(),
+                "optionalConfig": {"maxCandidates": bad}}
+        data = client.post("/compute", json=body).get_json()
+        assert data["state"] == "INPUT_ERROR", \
+            f"maxCandidates={bad} should be INPUT_ERROR; got {data['state']}"
+        assert data["error"]["code"] == "INVALID_OPTIONAL_CONFIG"
+        assert "maxCandidates" in data["error"]["message"]
+
+
 def test_compute_input_error_seed_wrong_type() -> None:
     """`seed` must be an integer; bool reject (subclass-of-int trap)."""
     client = _client()
@@ -270,6 +287,8 @@ def _run() -> int:
          test_compute_input_error_optional_config_wrong_type),
         ("test_compute_input_error_max_candidates_wrong_type",
          test_compute_input_error_max_candidates_wrong_type),
+        ("test_compute_input_error_max_candidates_zero_or_negative",
+         test_compute_input_error_max_candidates_zero_or_negative),
         ("test_compute_input_error_seed_wrong_type",
          test_compute_input_error_seed_wrong_type),
         ("test_compute_byte_identical_on_explicit_seed",
