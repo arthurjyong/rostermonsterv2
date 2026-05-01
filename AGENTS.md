@@ -31,9 +31,10 @@ Unless the repo explicitly says otherwise, assume:
 Read `docs/delivery_plan.md` before proposing non-trivial work.
 
 Current active focus at time of writing:
-- **Active milestone:** `Minimal local compute pipeline` (M2), activated at milestone level only on 2026-04-22 after M1.1 closure
-- **Active checkpoint:** none currently — deliberate exception pending M2 first-checkpoint scoping; see `docs/delivery_plan.md` §8
-- **Note:** M1.1 (`Operator-facing launcher`) closed on 2026-04-22 on hands-on validation; see `docs/delivery_plan.md` §11. Addendum-milestone convention remains recorded in `docs/decision_log.md` D-0021; launcher architecture in D-0022; auto-share additive scope in D-0023.
+- **Active milestone:** *(none)* — M1 / M1.1 / M2 / M3 / M4 are all closed; see `docs/delivery_plan.md` §6 / §11 / §15.
+- **Active checkpoint:** *(none)*.
+- **Next likely milestone:** solver-strategy optimization, per the forward-pointer in `docs/decision_log.md` D-0049. Activation is left to the maintainer's call.
+- **Closed-milestone trail:** D-0019..D-0054. Contracts settled across M2 + M3 + M4 are listed in `docs/delivery_plan.md` §15.
 
 If a task does not clearly support the active checkpoint, do not expand scope casually.
 

@@ -4,92 +4,27 @@ This document defines **milestone-level delivery order** for Roster Monster v2. 
 
 ## Milestone sequence
 
-### 1) Operator-ready request sheet generation
-- **Goal:** Deliver an operator-usable ICU/HD request sheet shell, backed by closed generation contract boundaries.
-- **Why it matters:** This is the immediate operational unblocker and anchors upstream/downstream contract usage.
-- **Likely checkpoints:**
-  - Close sheet-generation MVP boundary.
-  - Align template artifact surfaces with generation needs.
-  - Finalize generation acceptance criteria and handoff readiness.
-  - Implement operator-ready sheet generation.
-- **Main dependencies:**
-  - `docs/template_contract.md`
-  - `docs/template_artifact_contract.md`
-  - `docs/request_semantics_contract.md`
-  - `docs/sheet_generation_contract.md`
-- **Exit criteria:**
-  - Generation inputs, structural output surfaces, allowed operator edits, explicit non-goals, and acceptance criteria are closed and reviewable, and
-  - operator-ready ICU/HD sheet-shell generation is implemented for the empty-form use (new spreadsheet file or new tab in an existing spreadsheet), with intended editable/protected surfaces and practical validation in place.
+### 1) Operator-ready request sheet generation — *Completed 2026-04-21*
+Deliver an operator-usable ICU/HD request sheet shell backed by closed generation contract boundaries. Closed via M1 C1..C4 (contract closure + implementation) on operator delivery. See `docs/delivery_plan.md` §11; D-0019.
 
-### 1.1) Operator-facing launcher *(addendum to Milestone 1)*
-- **Goal:** Provide a narrow operator-facing launcher so named monthly-rotation pilot operators can invoke empty ICU/HD request-sheet generation without running Apps Script by hand.
-- **Why it matters:** Closes M1's operator-facing story end-to-end without expanding M1's compute scope.
-- **Likely checkpoints:**
-  - Implement operator launcher web app.
-- **Main dependencies:**
-  - Milestone 1 completion.
-  - `docs/sheet_generation_contract.md` §3A (spreadsheet reference input) and §12 (launcher surface).
-- **Exit criteria:**
-  - A non-maintainer test operator can, after one-time Google consent, load the launcher URL, submit the form, and receive a working generated sheet or tab in either output mode.
-- **Addendum framing:** Milestone 1.1 is the first addendum milestone under the `M<parent>.<n>` numbering convention (integer `n` only, no nested decimals) recorded in `docs/decision_log.md` D-0021. Milestone 1 itself stays `Completed`; Milestone 2 was returned to Planned while Milestone 1.1 was active and returned to active on Milestone 1.1 closure (2026-04-22). Milestone 1.1 itself closed on 2026-04-22 on hands-on validation — see `docs/delivery_plan.md` §11.
+### 1.1) Operator-facing launcher *(addendum to Milestone 1)* — *Completed 2026-04-22*
+Narrow operator-facing launcher so named monthly-rotation pilot operators can invoke empty ICU/HD request-sheet generation without running Apps Script by hand. Closed via M1.1 C1 on hands-on validation. M1 itself stays Completed (not reopened) per the addendum-milestone convention (D-0021); launcher architecture in D-0022; auto-share scope in D-0023.
 
-### 2) Minimal local compute pipeline
-- **Goal:** Establish a deterministic local parse → normalize → rule/scoring/solve execution path using closed contracts.
-- **Why it matters:** Enables end-to-end technical verification before external orchestration complexity.
-- **Likely checkpoints:**
-  - Parser/normalizer implementation against locked boundaries.
-  - Minimal rule/scorer/solver integration with deterministic run envelope.
-  - Local run artifact packaging for basic reviewability.
-- **Main dependencies:**
-  - Milestone 1 completion.
-  - `docs/snapshot_contract.md`
-  - `docs/parser_normalizer_contract.md`
-  - `docs/domain_model.md`
-- **Exit criteria:**
-  - Repeatable local runs can produce explainable outputs/artifacts for ICU/HD scenarios.
+### 2) Minimal local compute pipeline — *Completed 2026-04-29*
+Deterministic local parse → normalize → rule / scoring / solve execution path using closed contracts. Closed across nine checkpoints (M2 C1..C9): rule engine + scorer + solver + selector contracts (C1, C2); their Python implementations (C3, C4, C5); operator-tuneable scoring config surface end-to-end (C6, C7); v3 spacingPenalty geometric-decay curve (C8); production Apps Script snapshot extractor + Python CLI ingestion path (C9). D-0024..D-0043.
 
-### 3) Safe result/output and writeback
-- **Goal:** Define and implement safe result surfaces and sheet writeback behavior for operator consumption.
-- **Why it matters:** Output safety and clarity are required before routine operational use.
-- **Likely checkpoints:**
-  - Output/result surface definition for first release.
-  - Writeback mapping validation against sheet structure.
-  - Failure/unsatisfied-state handling in result delivery.
-- **Main dependencies:**
-  - Milestone 2 completion.
-  - Stable output/writeback contracts and sheet mappings.
-- **Exit criteria:**
-  - Outputs and writeback behavior are consistent, reviewable, and safe for controlled operator use.
+### 3) Safe result/output and writeback — *Completed 2026-04-30*
+Safe result surfaces and sheet writeback behavior for operator consumption. Closed at M3 C1 (writeback library + launcher route + Python CLI extension); M3 C2 (live-operator demo) dropped per D-0048 — round-trip already proven on the dev-copy. D-0044..D-0047.
 
-### 4) Parallel operational search and orchestration
-- **Goal:** Introduce reliable external worker/orchestration flow without changing compute semantics.
-- **Why it matters:** Supports operational reliability, throughput, and controlled scaling.
-- **Likely checkpoints:**
-  - Execution envelope and transport boundaries.
-  - Retry/failure behavior and idempotence expectations.
-  - Parallel run orchestration guardrails.
-- **Main dependencies:**
-  - Milestone 3 completion.
-  - Stable local pipeline semantics to preserve in external execution.
-- **Exit criteria:**
-  - External/parallel execution can run safely with traceable lifecycle behavior.
+### 4) Cloud end-to-end pipeline + dual-track preservation — *Completed 2026-05-01*
+Cloud-deployed end-to-end pipeline so operators can drive a one-click roster-generation flow without local Python tooling, while preserving the local CLI as a maintainer-side dev-velocity surface for solver-strategy experiments. Reframed from `Parallel operational search and orchestration` per D-0049; closed at M4 C1 as the only checkpoint (Cloud Run service + Apps Script library reorganization + bound shim's `Roster Monster → Solve Roster` menu). D-0048..D-0054. The original M4 framing (parallel orchestration) and original M5 framing (observability) parked as **FW-0027** + **FW-0028** — re-promotable to milestones when concrete drivers surface.
 
-### 5) Observability and benchmark hardening
-- **Goal:** Strengthen diagnostics, benchmarking confidence, and operational hardening.
-- **Why it matters:** Long-term reliability requires measurable behavior and regression discipline.
-- **Likely checkpoints:**
-  - Structured observability/event coverage.
-  - Benchmark campaign baselines and comparison workflow.
-  - Reliability hardening against expected failure classes.
-- **Main dependencies:**
-  - Milestone 4 completion.
-  - Stable execution and output surfaces.
-- **Exit criteria:**
-  - Benchmark and observability workflows are sufficient for ongoing operational confidence.
+### Next milestone slot — *Not yet activated*
+Solver-strategy optimization is the maintainer's stated post-M4 priority per D-0049's forward-pointer. Different in character from M4's "delivery surface" framing (changes core compute semantics rather than adding a delivery vehicle), so it lands as its own milestone slot rather than an M4 C2. Activation timing is left to the maintainer's call.
 
 ## Intentional later work (not near-term)
-The roadmap intentionally defers some work until core milestones are closed:
-- Advanced optimization sophistication beyond first-release operational needs.
-- Deep cloud hardening beyond initial external orchestration reliability.
-- Broader benchmark hardening until core execution surfaces stabilize.
+The roadmap intentionally defers some work until concrete drivers surface:
+- Parallel operational search and orchestration (FW-0027) — re-promotable to a milestone when scale or reliability drivers surface.
+- Observability and benchmark hardening (FW-0028) — re-promotable when long-term reliability or benchmark-comparison drivers surface.
 - Broad generalization to additional departments before ICU/HD-first learning is closed.
+- Pilot rollout to non-maintainer operators (broader pilot is a future milestone or operational rollout step, not currently scheduled).
