@@ -221,6 +221,8 @@ The architecture requires explicit contracts (to be defined in dedicated docs/sp
 - Result/output contract.
 - Log/event contract.
 - Writeback contract.
+- Cloud compute contract defining the HTTP wrapper boundary (`docs/cloud_compute_contract.md`).
+- Analysis contract defining the analyzer engine ↔ Apps Script renderer boundary (`docs/analysis_contract.md`).
 
 ## 9. Features to retain from v1
 - Google Sheets as the operational front end.
