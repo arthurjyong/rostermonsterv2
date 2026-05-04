@@ -25,7 +25,7 @@ Version bump rule (normative):
 - do **not** bump for wording cleanup, formatting, added examples, additive optional output fields that v1-targeted readers can ignore (per §14), or clarification that does not change behavior.
 
 ### 2.1 Version history
-- **v1 (2026-05-04, this PR):** initial analysis contract closure per `docs/decision_log.md` D-0056..D-0058. Input shape, `AnalyzerOutput` shape, pure top-K selection (no diversity heuristic), Tiers 1–6 emission scope.
+- **v1 (2026-05-04, this PR):** initial analysis contract closure per `docs/decision_log.md` D-0056..D-0058. Input shape, `AnalyzerOutput` shape, pure top-K selection with selector-cascade tiebreak, Tiers 1–5 emission scope (Tier 6 deferred to FW-0032; Tier 7 renderer-derived).
 
 ## 3) Status discipline used in this document
 Each normative statement is classified as one of:
@@ -60,7 +60,9 @@ Repo-settled:
 The portal-side single-file-upload property per `docs/decision_log.md` D-0055 sub-decision 6 is preserved: the analyzer engine consumes three input files locally on the operator's machine, but the portal only ever sees the one `AnalyzerOutput` JSON the analyzer emits.
 
 Proposed in this checkpoint:
-- The analyzer is a pure function of its declared inputs (§9). No solver coupling, no scorer coupling, no rule-engine coupling. The analyzer reads the snapshot's public surface, the wrapper envelope's `runEnvelope` ride-through, and the FULL sidecar's public surface. The wrapper envelope's `snapshot` sub-object (the writeback-only narrow subset per `docs/writeback_contract.md` §9) is NOT analyzer input — the analyzer reads the full snapshot directly to access fields the writeback subset does not project (e.g., the full `dayRecords` shape for weekend classification, the full `doctorRecords` shape for `displayName` resolution).
+- The analyzer is a pure function of its declared inputs (§9). No solver coupling, no rule-engine coupling. The analyzer reads the snapshot's public surface, the wrapper envelope's `runEnvelope` ride-through, and the FULL sidecar's public surface. The wrapper envelope's `snapshot` sub-object (the writeback-only narrow subset per `docs/writeback_contract.md` §9) is NOT analyzer input — the analyzer reads the full snapshot directly to access fields the writeback subset does not project (e.g., the full `dayRecords` shape for weekend classification, the full `doctorRecords` shape for `displayName` resolution).
+- **Parser-overlay module reuse is allowed.** The analyzer MAY (and for `cumulativeCallPoints` MUST per §10.6) import the parser overlay function (`python/rostermonster/parser/scoring_overlay.py`) and apply it to the snapshot to obtain the post-overlay scoring config — the same `pointRules` weights the scorer consumes. This is module reuse, not contract coupling: the parser overlay is itself a pure function of `(snapshot, template)` per `docs/parser_normalizer_contract.md` §9, so the analyzer remains a pure function of its declared inputs while internally delegating per-day weight resolution to the parser. The template-resolution path is the same one the rest of the pipeline uses (first release: ICU/HD only).
+- The analyzer is **scorer-output-consuming but not scorer-internal-coupled**: it reads `score.totalScore` + `score.components` from each candidate in the FULL sidecar (the scorer's authoritative emission per `docs/scorer_contract.md` §10), but does NOT call `score()` itself.
 - The analyzer is solver-agnostic by contract (§12). It MUST NOT inspect strategy-specific metadata such as `solverStrategyId` or strategy-specific `searchDiagnostics` fields to switch behavior.
 - The analyzer engine has no Apps Script coupling. The upload portal and renderer consume `AnalyzerOutput` by file; the analyzer engine never imports Apps Script libraries.
 
@@ -70,7 +72,7 @@ This contract governs:
 - the shape of analyzer output (the `AnalyzerOutput` JSON, §10),
 - the top-K selection rule and its tiebreaker (§11),
 - the solver-agnostic property (§12),
-- the comparison aggregates the analyzer emits — Tiers 1–6 of the M5 C1 emission set (§13),
+- the comparison aggregates the analyzer emits — Tiers 1–5 of the M5 C1 emission set (§13; Tier 6 deferred to FW-0032; Tier 7 renderer-derived per §10.9),
 - determinism guarantees (§15),
 - schema versioning (§14),
 - the analyzer engine's module placement at `python/rostermonster/analysis/`.
@@ -165,7 +167,6 @@ AnalyzerCandidate {
   scoreComponents: {
     [componentName: string]: ComponentBreakdown
   }
-  ruleViolations: ViolationSummary
   fillStats: { slotsFilled: int, slotsTotal: int }
   perDoctor: { [doctorId: string]: PerDoctorAggregates }
   assignment: AssignmentRefShape               // §10.5
@@ -173,6 +174,8 @@ AnalyzerCandidate {
 ```
 
 `scoreComponents` MUST include every first-release component identifier enumerated in `docs/domain_model.md` §11.2 (the nine ICU/HD components: `unfilledPenalty`, `pointBalanceWithinSection`, `pointBalanceGlobal`, `spacingPenalty`, `preLeavePenalty`, `crReward`, `dualEligibleIcuBonus`, `standbyAdjacencyPenalty`, `standbyCountFairnessPenalty`), even when a component contributes zero. This mirrors `docs/scorer_contract.md` §10 — analyzer cannot drop components the scorer was required to emit.
+
+**Rule-violation breakdown (`ViolationSummary`) is NOT a v1 field.** The analyzer's declared inputs (snapshot + envelope + FULL sidecar) do not carry per-candidate hard/soft rule-firing detail — `candidates_full.json` per `docs/selector_contract.md` §14.2 carries only `candidateId`, `assignments`, and `score` (no per-rule violation counts). Computing `softCount` / `softByRule` / `hardByRule` would require either (a) extending the FULL sidecar to carry rule-violation detail per candidate, or (b) integrating rule-engine evaluation into the analyzer (coupling analyzer to `docs/rule_engine_contract.md`). Both expand scope beyond M5 first-release. v1 of this contract therefore omits `ruleViolations` from `AnalyzerCandidate` entirely; per-candidate rule-violation surface is parked as `docs/future_work.md` FW-0032 and lands via additive bump per §14 once one of the two upstream paths is chosen. (`hardCount` is 0 by construction for any candidate in `candidates_full.json` since the upstream pipeline filters hard violations before emission, so the omission has no v1 information loss on the hard-violation axis; the `softCount` axis is the genuine v1 gap.)
 
 ### 10.3 `ComponentBreakdown`
 ```
@@ -185,16 +188,6 @@ ComponentBreakdown {
 ```
 
 The `raw` field's first-release semantics: implementations MAY emit `weighted / weights[componentName]` when `weights[componentName] != 0`, and MAY emit a sentinel (e.g., `0`) when the weight is zero. v1 readers MUST tolerate either. The `raw` field is a power-user convenience for operator re-prioritization mental math; it is NOT used by the renderer's default tab UX.
-
-### 10.4 `ViolationSummary`
-```
-ViolationSummary {
-  hardCount: int                                 // expected 0 for valid candidates; non-zero is a defect signal
-  softCount: int
-  softByRule: { [ruleId: string]: int }
-  hardByRule: { [ruleId: string]: int }          // for completeness; usually empty
-}
-```
 
 ### 10.5 `AssignmentRefShape`
 The renderer needs the per-day per-slot doctor assignment to write the K roster tabs. The analyzer rides this through from the FULL sidecar's `AssignmentUnit[]` shape (`{dateKey, slotType, unitIndex, doctorId}` per `python/rostermonster/selector/sidecars.py` and `docs/domain_model.md`). v1 ships the assignment as a list of records:
@@ -224,7 +217,7 @@ PerDoctorAggregates {
 
 **Public-holiday metrics deferred (no v1 field).** `snapshot.dayRecords[*]` does NOT carry an `isPublicHoliday` flag in v1, and no public-holiday calendar is wired into the analyzer. Rather than emit a hardcoded zero (which would make "no PHs in period" indistinguishable from "PH classification unavailable" and silently corrupt operator-facing equity comparisons whenever the period actually contains a PH), v1 of this contract OMITS the field entirely from `PerDoctorAggregates` and `EquityScalars`. PH support is parked as `docs/future_work.md` FW-0031 (snapshot-extension analyzer fields). When a future snapshot extension surfaces real PH metadata, an additive analyzer-contract bump per §14 adds `publicHolidayCallCount` back to both shapes — v1-targeted readers will still parse the augmented output by ignoring the new field per §14's tolerance rule.
 
-**Call-point source.** `cumulativeCallPoints` measures the load this candidate places on this doctor under the operative per-day call-point weights. The per-day weights flow from the operator-editable Call Point rows on the request sheet into `snapshot.scoringConfigRecords.callPointRecords` per the parser overlay path documented in `docs/parser_normalizer_contract.md` §9 + `docs/decision_log.md` D-0037. Carryover-from-prior-period or doctor-specific opening balances are NOT a v1 snapshot concept — `cumulativeCallPoints` is a within-cycle metric only. A future snapshot extension may introduce per-doctor opening balances; that would be an additive analyzer-contract bump under §14's rule.
+**Call-point source — uses parser overlay, NOT raw snapshot cells.** `cumulativeCallPoints` measures the load this candidate places on this doctor under the **post-overlay** per-day call-point weights — the same weights the scorer's `pointBalance*` components consume. Raw `snapshot.scoringConfigRecords.callPointRecords` cells are operator-editable and can be blank; scorer-equivalent weights require the parser overlay path per `docs/parser_normalizer_contract.md` §9 + `docs/decision_log.md` D-0037 (sheet-wins overlay on top of template defaults; D-0038's fail-loud `pointRules` cross-product cover applies). The analyzer MUST therefore compute `cumulativeCallPoints` against the post-overlay scoring config — concretely, by reusing the same parser overlay function the rest of the pipeline uses (`python/rostermonster/parser/scoring_overlay.py`) over the snapshot input — rather than over raw cell text. Computing against raw cells would silently disagree with the scorer whenever defaults or blank cells are involved, corrupting Tier 2/3 equity comparisons. The parser overlay's template dependency is satisfied by the same template-resolution path used elsewhere in the pipeline (first release: ICU/HD only); the analyzer is NOT required to take the template as a fourth `analyze()` argument. Carryover-from-prior-period or doctor-specific opening balances are NOT a v1 snapshot concept — `cumulativeCallPoints` is a within-cycle metric only. A future snapshot extension may introduce per-doctor opening balances; that would be an additive analyzer-contract bump under §14's rule.
 
 ### 10.7 `ComparisonAggregates`
 ```
@@ -302,17 +295,17 @@ The analyzer MUST NOT inspect `solverStrategyId` or any strategy-specific metada
 
 Strategy-aware diagnostics (e.g., LAHC iteration counts, simulated-annealing temperature curves) are explicitly out of analyzer scope. They belong in a separate strategy-aware diagnostic surface that future work may introduce.
 
-## 13) Comparison emission scope — Tiers 1–6
+## 13) Comparison emission scope — Tiers 1–5 in v1; Tier 6 deferred; Tier 7 renderer-derived
 Proposed in this checkpoint (normative):
 
-The analyzer's comparison emission set is partitioned into seven conceptual tiers (the M5 C1 design-thread organization). v1 emits Tiers 1–6; Tier 7 is renderer-derived per §10.9.
+The analyzer's comparison emission set is partitioned into seven conceptual tiers (the M5 C1 design-thread organization). v1 emits Tiers 1–5; Tier 6 is parked as `docs/future_work.md` FW-0032 (data not reachable from declared inputs without scope expansion); Tier 7 is renderer-derived per §10.9.
 
 - **Tier 1 — score decomposition** (`AnalyzerCandidate.totalScore` + `scoreComponents`): per-component weighted, raw, rank across K, gap to next-ranked.
 - **Tier 2 — per-doctor equity** (`PerDoctorAggregates`): CALL / STANDBY / weekend-CALL counts; `cumulativeCallPoints` (within-cycle load per doctor under operator-overlaid call-point weights); `maxConsecutiveDaysOff`. (No per-doctor opening-balance / end-of-cycle / delta breakdown in v1; v1 snapshot has no per-doctor opening call-point balance — see §10.6 call-point source note. **No public-holiday metrics in v1** — §10.6 PH-deferral note; PH support parked as `docs/future_work.md` FW-0031.)
 - **Tier 3 — equity scalars** (`EquityScalars`): per-candidate stdev / min-max gap / Gini for `callCount`, `weekendCallCount`, and `cumulativeCallPoints`. (`publicHolidayCallCount` equity scalars deferred in lockstep with the Tier 2 PH-field deferral.)
 - **Tier 4 — day-level** (`hotDays`, `lockedDays` + per-candidate `assignment`): per-day disagreement count and the underlying assignment matrix.
 - **Tier 5 — cross-candidate similarity** (`pairwiseHammingDistance`): pairwise cell-difference matrix.
-- **Tier 6 — constraint satisfaction** (`ViolationSummary`): hard / soft violation counts and per-rule rollups.
+- **Tier 6 — constraint satisfaction** (per-candidate hard/soft rule-violation breakdown): **NOT emitted in v1.** Per-candidate rule-violation detail is not reachable from the analyzer's declared inputs (`candidates_full.json` carries `candidateId`/`assignments`/`score` only — no rule-firing breakdown), and integrating rule-engine evaluation into the analyzer would expand scope beyond M5 first-release. Parked as `docs/future_work.md` FW-0032; lands via additive analyzer-contract bump per §14 once the upstream surface is chosen (selector-side sidecar extension carrying violation detail, OR analyzer-side rule-engine integration). The `hardCount` axis has no v1 information loss because successful candidates in `candidates_full.json` have already passed hard rules upstream by construction; the `softCount` axis is the genuine v1 gap.
 - **Tier 7 — decision-support tags** (NOT emitted; renderer-derived per §10.9).
 
 Snapshot-extension fields (senior-junior pairing, leave-history-aware analysis, rotation-conflict surfacing, public-holiday classification) are out of M5 scope per `docs/decision_log.md` D-0058 and `docs/future_work.md` FW-0031. They would require snapshot extensions to carry the underlying doctor-metadata or day-metadata; until those land, the analyzer cannot compute them from its declared inputs.
@@ -347,7 +340,7 @@ Concrete file-emission decisions live in the M5 C1 implementation slice: the pla
 - **Upstream snapshot** (`docs/snapshot_contract.md`): the analyzer reads the full Snapshot JSON the CLI was given as `--snapshot`. v1 of this contract is compatible with the v1 snapshot shape (`doctorRecords`, `dayRecords`, `scoringConfigRecords` as enumerated in §9 input #1). Future snapshot extensions (e.g., FW-0031's doctor-metadata fields; a future `dayRecords[*].isPublicHoliday` flag) are additive and do NOT require an analyzer bump unless the analyzer's emission set changes per §14.
 - **Upstream selector** (`docs/selector_contract.md`): the analyzer reads the FULL-retention output declared in §13.2 + §14. v1 of this contract is compatible with selector `contractVersion: 2` and any future selector version that preserves the FULL-retention output shape (§14.1 + §14.2 fields) and the `runEnvelope` ride-through requirement (§16).
 - **Upstream writeback** (`docs/writeback_contract.md`): the analyzer does NOT consume the wrapper envelope's writeback-specific fields (the nested `snapshot` narrow subset per §9, or `doctorIdMap` as a list-of-records). It reads only `finalResultEnvelope` from the wrapper envelope. v1 of this contract is therefore decoupled from the writeback contract's snapshot-subset shape — future writeback bumps that alter the §9 6-category subset do NOT trigger analyzer bumps.
-- **Upstream parser/normalizer** (`docs/parser_normalizer_contract.md`): per-day call-point weights flow through the parser overlay path declared in §9; the analyzer reads `snapshot.scoringConfigRecords.callPointRecords` for the post-overlay per-day weights used in `cumulativeCallPoints` per §10.6. v1 of this contract is compatible with the D-0037 + D-0038 fail-loud-on-missing-keys discipline.
+- **Upstream parser/normalizer** (`docs/parser_normalizer_contract.md`): the analyzer **reuses the parser overlay function** (`python/rostermonster/parser/scoring_overlay.py`, per `docs/parser_normalizer_contract.md` §9 + `docs/decision_log.md` D-0037) to compute the post-overlay scoring config from `snapshot.scoringConfigRecords` + the template; this is module reuse, not contract coupling. The post-overlay `pointRules` weights are the per-day call-point weights `cumulativeCallPoints` (§10.6) consumes. v1 of this contract is compatible with the D-0037 + D-0038 fail-loud-on-missing-keys discipline.
 - **Upstream scorer** (`docs/scorer_contract.md`): the analyzer reads `ScoreResult.components` whose first-release component identifiers are enumerated in §10 / `docs/domain_model.md` §11.2. v1 of this contract is compatible with scorer `contractVersion: 3`. Future scorer changes that alter the component-identifier set or break the `weighted / raw` correspondence MAY trigger an analyzer bump per §14.
 - **Upstream cloud_compute** (`docs/cloud_compute_contract.md`): unaffected; cloud-side FULL retention is `docs/future_work.md` FW-0030 and not in M5 scope.
 - **Downstream renderer** (M5 C2, future contract or library docstring): consumes `AnalyzerOutput` per §10. The renderer's tab layout, formatting, and comparison-tab UX are NOT governed by this contract.
@@ -357,6 +350,7 @@ Concrete file-emission decisions live in the M5 C1 implementation slice: the pla
 - **Diversity-aware top-K selection** (DPPs, submodular maximization, Hamming-distance thresholds, cluster grouping, max-min diversification): out of M5 scope per `docs/decision_log.md` D-0056. If C4 operator validation reveals top-K-by-score is consistently un-actionable (operator says "these K candidates are all the same"), that is signal to enrich solver-strategy exploration (M6 LAHC etc.), not to add diversity at the analyzer stage.
 - **Cloud-side FULL retention support**: deferred to `docs/future_work.md` FW-0030. M5 ships analysis tooling on top of today's CLI FULL retention output only.
 - **Snapshot-extension analyzer fields** (senior-junior pairing, leave-history-aware analysis, rotation-conflict surfacing, public-holiday classification + matching `publicHolidayCallCount` analyzer fields): deferred to `docs/future_work.md` FW-0031.
+- **Per-candidate rule-violation breakdown** (Tier 6 — `softCount` / `softByRule` / `hardByRule` / `hardCount`): deferred to `docs/future_work.md` FW-0032. v1 inputs do not carry per-candidate rule-firing detail; emitting these would require either a selector-side sidecar extension carrying violation breakdown OR analyzer-side rule-engine integration. Both expand scope beyond M5 first-release.
 - **Strategy-aware diagnostics** (LAHC iteration counts, simulated-annealing curves, etc.): out of analyzer scope by §12. Belongs in a separate strategy-aware diagnostic surface if future work surfaces a need.
 - **Decision-support tags** (Tier 7): renderer-derived per §10.9, not analyzer-emitted.
 - **Analyzer-side scoring-formulation rework** (lexicographic / threshold / Pareto ordering): explicitly NOT in M5 scope per `docs/decision_log.md` D-0055 sub-decision 9. If C4 surfaces that `totalScore`'s winner is consistently NOT the operator-preferred candidate, that opens an M5.5 or pre-M6 design thread on scoring formulation; the analyzer remains a passive consumer of whatever scoring discipline ships.
@@ -366,4 +360,4 @@ Concrete file-emission decisions live in the M5 C1 implementation slice: the pla
 ## 19) Current checkpoint status
 - This document is M5 C1's first deliverable — the analysis contract draft per `docs/decision_log.md` D-0055 sub-decision 11. It pins the analyzer-engine input/output, top-K rule, solver-agnostic property, and comparison emission scope sufficiently for M5 C1 Phase 2 implementation work to land against a stable contract surface.
 - The analyzer-engine implementation (`python/rostermonster/analysis/`) is M5 C1 Phase 2; the Apps Script analyzer renderer is M5 C2; the upload portal is M5 C3; live operator validation is M5 C4.
-- D-0056 (pure score-rank top-K), D-0057 (input + output shape), and D-0058 (Tiers 1–6 emission scope) are this contract's load-bearing direction-setting decisions and are recorded in `docs/decision_log.md`.
+- D-0056 (pure score-rank top-K with selector-cascade tiebreak), D-0057 (input + output shape — full snapshot + envelope + FULL sidecar in, single `AnalyzerOutput` JSON out), and D-0058 (Tiers 1–5 v1 emission scope; Tier 6 → FW-0032; Tier 7 renderer-derived; snapshot-extension fields → FW-0031) are this contract's load-bearing direction-setting decisions and are recorded in `docs/decision_log.md`.
