@@ -32,9 +32,9 @@ Read `docs/delivery_plan.md` before proposing non-trivial work.
 
 Current active focus at time of writing:
 - **Active milestone:** **M5 — Operator-side analysis & multi-roster delivery** *(activated 2026-05-04 per D-0055)*. Sibling-consumer architecture (Python analyzer engine + Apps Script renderer + upload portal) on top of the wrapper envelope; purely additive, no contract changes upstream of analysis. Sequencing rationale: analysis tooling first, solver-side score-aware search second (M6 territory).
-- **Active checkpoint:** **M5 C1 — Python analyzer engine + analysis contract draft.** Detailed scope (concrete `AnalyzerOutput` schema, aggregates, diversity criterion, comparison-tab UX) is in a dedicated design thread that opens after the M5 activation PR merges; see `docs/delivery_plan.md` §7 / §9.
+- **Active checkpoint:** **M5 C1 — Python analyzer engine + analysis contract draft.** Phase 1 docs landed `docs/analysis_contract.md` (`contractVersion: 1`) per D-0056..D-0058: pure score-rank top-K (no diversity heuristic; tunable `--top-k N` default 5 bounds `[1, 20]` fail-loud), full snapshot + wrapper envelope + `candidates_full.json` in / single `AnalyzerOutput` JSON out, Tiers 1–5 v1 emission scope (Tier 6 per-candidate rule-violation breakdown deferred to FW-0032; Tier 7 renderer-derived). FW-0031 parks snapshot-extension analyzer fields (senior pairing, leave history, rotation conflicts, public-holiday classification). Phase 2 implements the analyzer engine in `python/rostermonster/analysis/`. See `docs/delivery_plan.md` §7 / §9.
 - **Next likely milestone:** M6 (or its successor) — provisionally framed around solver-side score-aware search (LAHC + cloud Deep Solve + email-notification architecture + cloud-side FULL retention promotion of FW-0030). Not pre-committed.
-- **Closed-milestone trail:** D-0019..D-0054 (M1..M4); D-0055 activates M5. Contracts settled across M2 + M3 + M4 are listed in `docs/delivery_plan.md` §15.
+- **Closed-milestone trail:** D-0019..D-0054 (M1..M4); D-0055 activates M5; D-0056..D-0058 close M5 C1 Phase 1 design-thread items. Contracts settled across M2 + M3 + M4 + M5 C1 Phase 1 are listed in `docs/delivery_plan.md` §15.
 
 If a task does not clearly support the active checkpoint, do not expand scope casually.
 
