@@ -88,7 +88,7 @@ This contract does **not** govern:
 - file-system paths, output file naming, or where the `AnalyzerOutput` physically lands on disk (execution-layer concern; see §10.4),
 - analyzer renderer invocations, log format, or run lifecycle management,
 - broader observability, benchmarking, or campaign-level coordination (`docs/future_work.md` FW-0028),
-- doctor-metadata extensions to the snapshot (seniority, leave history, rotation conflicts) — out of M5 scope per `docs/future_work.md` FW-0031.
+- doctor-metadata + day-metadata extensions to the snapshot (seniority, leave history, rotation conflicts, public-holiday classification) — out of M5 scope per `docs/future_work.md` FW-0031.
 
 ## 9) Input shape
 Analyzer invocations are evaluated against the following inputs:
@@ -115,8 +115,17 @@ The analyzer MUST NOT read any state outside the declared inputs. No environment
 ### 9.4 CSV sidecar is NOT analyzer input
 The `candidates_summary.csv` sidecar is operator-debug-only (spreadsheet-grade inspection, per `docs/selector_contract.md` §14.1). The analyzer engine does NOT consume it; passing a `candidates_summary.csv` path to the analyzer is a no-op at best and a contract violation at worst. This is `docs/decision_log.md` D-0057.
 
-### 9.5 Snapshot–envelope coherence
-The analyzer MAY assert that `snapshot` and `envelope` describe the same run (e.g., the snapshot's identity matches the `runEnvelope.snapshotRef`) but is NOT required to enforce coherence as a fail-loud admission rule in v1; mismatched-input behavior is undefined. Callers (CLI subcommand or test harness) are responsible for supplying a coherent triple.
+### 9.5 Snapshot–envelope–sidecar coherence (fail-loud admission)
+Because the operator manually assembles the three input files locally, accidental cross-run mixes are realistic (e.g., yesterday's `final_envelope.json` paired with today's snapshot, or a sidecar from a different run). Without admission checks, the analyzer would emit a syntactically valid `AnalyzerOutput` with incorrect day classification and doctor labeling — silent corruption of comparison results.
+
+The analyzer MUST enforce the following two coherence checks at admission time and MUST fail-loud (raise a structured rejection) on any mismatch:
+
+1. **Snapshot ↔ envelope** — `envelope.finalResultEnvelope.runEnvelope.snapshotRef` MUST equal `snapshot.metadata.snapshotId` (per `docs/snapshot_contract.md` §6 — `SnapshotMetadata.snapshotId` is the canonical snapshot identity, conventionally `snapshot_<spreadsheetId>_<extractionTimestamp>` per `docs/decision_log.md` D-0042; the run envelope's `snapshotRef` is execution-layer-supplied at parser/normalizer ingestion and pinned by `docs/selector_contract.md` §9 / §16.2).
+2. **Envelope ↔ sidecar** — `fullSidecar.runId` (from `candidates_full.json` top-level fields per `docs/selector_contract.md` §14.2) MUST equal `envelope.finalResultEnvelope.runEnvelope.runId`.
+
+Both checks mirror the fail-loud admission discipline used at parser/normalizer per `docs/decision_log.md` D-0038 (missing `pointRules` keys fail-loud rather than silently fall back). The structured rejection MUST surface enough detail for the operator to identify which file is mismatched (e.g., "snapshot.metadata.snapshotId = X; envelope.runEnvelope.snapshotRef = Y") so they can re-run with the correct triple.
+
+The analyzer MAY perform additional sanity checks (e.g., that every `candidateId` referenced in the FULL sidecar's `candidates` map is internally consistent, or that the sidecar's `generationTimestamp` matches the envelope's) but the two checks above are the minimum admission rule v1 implementations MUST enforce.
 
 ## 10) Output shape
 The analyzer returns a single `AnalyzerOutput` JSON object. Concrete shape:
@@ -204,7 +213,6 @@ PerDoctorAggregates {
   callCount: int                          // count of CALL-slot assignments
   standbyCount: int                       // count of STANDBY-slot assignments
   weekendCallCount: int                   // count of CALL-slot assignments on weekend dates (analyzer-derived from snapshot.dayRecords[*].rawDateText)
-  publicHolidayCallCount: int             // first-release: 0 for every doctor (no PH calendar wired); see §10.6 PH note
   cumulativeCallPoints: number            // sum over the doctor's CALL assignments of the per-day call-point weight at (slotType, dayIndex), where the weight is derived from snapshot.scoringConfigRecords.callPointRecords after the parser overlay (D-0037)
   maxConsecutiveDaysOff: int              // longest run of consecutive snapshot.dayRecords with no assignment to this doctor
 }
@@ -212,7 +220,7 @@ PerDoctorAggregates {
 
 **Weekend-day source.** `snapshot.dayRecords[*]` carries `rawDateText` but NO precomputed `isWeekend` flag in the v1 snapshot shape (`docs/snapshot_contract.md`). The analyzer derives weekend classification by parsing `rawDateText` through Python's `datetime` library (Saturday + Sunday). Cross-region calendar variation is out of M5 first-release scope (ICU/HD pilots are Singapore-based and use the standard Saturday + Sunday weekend definition).
 
-**PH note.** `snapshot.dayRecords[*]` does NOT carry an `isPublicHoliday` flag in v1, and no public-holiday calendar is wired into the analyzer in M5 first release. v1 implementations MUST emit `publicHolidayCallCount: 0` for every doctor. A future analyzer-contract bump (or a snapshot extension) MAY introduce real PH classification — when it does, callers reading v1-emitted output MUST tolerate `0` as the "no PH calendar wired" signal versus the "PH calendar wired but no PH in period" signal. Both are emitted as `0` in v1.
+**Public-holiday metrics deferred (no v1 field).** `snapshot.dayRecords[*]` does NOT carry an `isPublicHoliday` flag in v1, and no public-holiday calendar is wired into the analyzer. Rather than emit a hardcoded zero (which would make "no PHs in period" indistinguishable from "PH classification unavailable" and silently corrupt operator-facing equity comparisons whenever the period actually contains a PH), v1 of this contract OMITS the field entirely from `PerDoctorAggregates` and `EquityScalars`. PH support is parked as `docs/future_work.md` FW-0031 (snapshot-extension analyzer fields). When a future snapshot extension surfaces real PH metadata, an additive analyzer-contract bump per §14 adds `publicHolidayCallCount` back to both shapes — v1-targeted readers will still parse the augmented output by ignoring the new field per §14's tolerance rule.
 
 **Call-point source.** `cumulativeCallPoints` measures the load this candidate places on this doctor under the operative per-day call-point weights. The per-day weights flow from the operator-editable Call Point rows on the request sheet into `snapshot.scoringConfigRecords.callPointRecords` per the parser overlay path documented in `docs/parser_normalizer_contract.md` §9 + `docs/decision_log.md` D-0037. Carryover-from-prior-period or doctor-specific opening balances are NOT a v1 snapshot concept — `cumulativeCallPoints` is a within-cycle metric only. A future snapshot extension may introduce per-doctor opening balances; that would be an additive analyzer-contract bump under §14's rule.
 
@@ -245,10 +253,11 @@ ComparisonAggregates {
 EquityScalars {
   callCount: { stdev: number, minMaxGap: int, gini: number }
   weekendCallCount: { stdev: number, minMaxGap: int, gini: number }
-  publicHolidayCallCount: { stdev: number, minMaxGap: int, gini: number }   // v1: all-zero distributions per §10.6 PH note → stdev=0, minMaxGap=0, gini=0
   cumulativeCallPoints: { stdev: number, minMaxGap: number, gini: number }
 }
 ```
+
+`publicHolidayCallCount` equity scalars are NOT emitted in v1 (paired with the §10.6 `PerDoctorAggregates` PH-deferral note). When a future snapshot extension surfaces real PH metadata, the additive bump adds the matching `publicHolidayCallCount: { stdev, minMaxGap, gini }` block here in lockstep with the §10.6 field.
 
 Equity scalars are computed across the doctor population for a single candidate. Lower stdev / lower min-max gap / lower Gini == more equitable. Renderer surfaces these as comparison-tab summary scalars; the operator-facing semantic is "candidate A is more equitable on weekend calls than candidate B even though A's totalScore is lower."
 
@@ -291,14 +300,14 @@ Proposed in this checkpoint (normative):
 The analyzer's comparison emission set is partitioned into seven conceptual tiers (the M5 C1 design-thread organization). v1 emits Tiers 1–6; Tier 7 is renderer-derived per §10.9.
 
 - **Tier 1 — score decomposition** (`AnalyzerCandidate.totalScore` + `scoreComponents`): per-component weighted, raw, rank across K, gap to next-ranked.
-- **Tier 2 — per-doctor equity** (`PerDoctorAggregates`): CALL / STANDBY / weekend-CALL / public-holiday-CALL counts; `cumulativeCallPoints` (within-cycle load per doctor under operator-overlaid call-point weights); `maxConsecutiveDaysOff`. (No per-doctor opening-balance / end-of-cycle / delta breakdown in v1; v1 snapshot has no per-doctor opening call-point balance — see §10.6 call-point source note.)
-- **Tier 3 — equity scalars** (`EquityScalars`): per-candidate stdev / min-max gap / Gini for `callCount`, `weekendCallCount`, `publicHolidayCallCount`, and `cumulativeCallPoints`.
+- **Tier 2 — per-doctor equity** (`PerDoctorAggregates`): CALL / STANDBY / weekend-CALL counts; `cumulativeCallPoints` (within-cycle load per doctor under operator-overlaid call-point weights); `maxConsecutiveDaysOff`. (No per-doctor opening-balance / end-of-cycle / delta breakdown in v1; v1 snapshot has no per-doctor opening call-point balance — see §10.6 call-point source note. **No public-holiday metrics in v1** — §10.6 PH-deferral note; PH support parked as `docs/future_work.md` FW-0031.)
+- **Tier 3 — equity scalars** (`EquityScalars`): per-candidate stdev / min-max gap / Gini for `callCount`, `weekendCallCount`, and `cumulativeCallPoints`. (`publicHolidayCallCount` equity scalars deferred in lockstep with the Tier 2 PH-field deferral.)
 - **Tier 4 — day-level** (`hotDays`, `lockedDays` + per-candidate `assignment`): per-day disagreement count and the underlying assignment matrix.
 - **Tier 5 — cross-candidate similarity** (`pairwiseHammingDistance`): pairwise cell-difference matrix.
 - **Tier 6 — constraint satisfaction** (`ViolationSummary`): hard / soft violation counts and per-rule rollups.
 - **Tier 7 — decision-support tags** (NOT emitted; renderer-derived per §10.9).
 
-Snapshot-extension fields (senior-junior pairing, leave-history-aware analysis, rotation-conflict surfacing) are out of M5 scope per `docs/decision_log.md` D-0058 and `docs/future_work.md` FW-0031. They would require snapshot extensions to carry the underlying doctor metadata; until those land, the analyzer cannot compute them from its declared inputs.
+Snapshot-extension fields (senior-junior pairing, leave-history-aware analysis, rotation-conflict surfacing, public-holiday classification) are out of M5 scope per `docs/decision_log.md` D-0058 and `docs/future_work.md` FW-0031. They would require snapshot extensions to carry the underlying doctor-metadata or day-metadata; until those land, the analyzer cannot compute them from its declared inputs.
 
 ## 14) Schema versioning
 Proposed in this checkpoint (normative):
@@ -339,7 +348,7 @@ Concrete file-emission decisions live in the M5 C1 implementation slice: the pla
 ## 18) Explicit deferrals
 - **Diversity-aware top-K selection** (DPPs, submodular maximization, Hamming-distance thresholds, cluster grouping, max-min diversification): out of M5 scope per `docs/decision_log.md` D-0056. If C4 operator validation reveals top-K-by-score is consistently un-actionable (operator says "these K candidates are all the same"), that is signal to enrich solver-strategy exploration (M6 LAHC etc.), not to add diversity at the analyzer stage.
 - **Cloud-side FULL retention support**: deferred to `docs/future_work.md` FW-0030. M5 ships analysis tooling on top of today's CLI FULL retention output only.
-- **Snapshot-extension analyzer fields** (senior-junior pairing, leave-history-aware analysis, rotation-conflict surfacing): deferred to `docs/future_work.md` FW-0031.
+- **Snapshot-extension analyzer fields** (senior-junior pairing, leave-history-aware analysis, rotation-conflict surfacing, public-holiday classification + matching `publicHolidayCallCount` analyzer fields): deferred to `docs/future_work.md` FW-0031.
 - **Strategy-aware diagnostics** (LAHC iteration counts, simulated-annealing curves, etc.): out of analyzer scope by §12. Belongs in a separate strategy-aware diagnostic surface if future work surfaces a need.
 - **Decision-support tags** (Tier 7): renderer-derived per §10.9, not analyzer-emitted.
 - **Analyzer-side scoring-formulation rework** (lexicographic / threshold / Pareto ordering): explicitly NOT in M5 scope per `docs/decision_log.md` D-0055 sub-decision 9. If C4 surfaces that `totalScore`'s winner is consistently NOT the operator-preferred candidate, that opens an M5.5 or pre-M6 design thread on scoring formulation; the analyzer remains a passive consumer of whatever scoring discipline ships.
