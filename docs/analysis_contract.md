@@ -175,7 +175,7 @@ TopKResult {
 ### 10.2 `AnalyzerCandidate`
 ```
 AnalyzerCandidate {
-  candidateId: string                          // matches sidecar candidateId
+  candidateId: int                             // matches sidecar candidateId — run-monotonic dense integer per docs/selector_contract.md §16.1
   rankByTotalScore: int                        // 1..returned; 1 == top
   recommended: boolean                         // true iff rankByTotalScore == 1 (the BEST_ONLY winner the selector would have picked); see §11.1
   totalScore: number
@@ -238,7 +238,7 @@ PerDoctorAggregates {
 ```
 ComparisonAggregates {
   pairwiseHammingDistance: {
-    [candidateIdA: string]: { [candidateIdB: string]: int }
+    [candidateIdA: int]: { [candidateIdB: int]: int }
   }
   hotDays: [
     { dateKey: string, distinctAssignments: int }
@@ -247,12 +247,12 @@ ComparisonAggregates {
     { dateKey: string }
   ]
   perCandidateEquity: {
-    [candidateId: string]: EquityScalars
+    [candidateId: int]: EquityScalars
   }
 }
 ```
 
-`pairwiseHammingDistance[a][b]` is the count of `(dateKey, slotType, unitIndex)` cells (the full assignment-cell key per §10.5) where candidate `a` and candidate `b` assign different doctors. The matrix is symmetric; implementations MAY emit only the upper triangle (`b > a` lexicographically) and v1 readers MUST tolerate either symmetric or upper-triangle layout, looking up `[a][b]` by trying both keys.
+`pairwiseHammingDistance[a][b]` is the count of `(dateKey, slotType, unitIndex)` cells (the full assignment-cell key per §10.5) where candidate `a` and candidate `b` assign different doctors. The matrix is symmetric; implementations MAY emit only the upper triangle (`b > a` numerically — `candidateId` is integer per §10.0 mapping rule and §10.2 schema, so triangle ordering is numeric, not lexicographic) and v1 readers MUST tolerate either symmetric or upper-triangle layout, looking up `[a][b]` by trying both keys.
 
 `hotDays[*].distinctAssignments` is the count of distinct doctor-tuples assigned across the K candidates on that date. A locked day has `distinctAssignments == 1`. Hot days are the complement: `distinctAssignments > 1`. The list MUST include only `dateKey`s within the run's period.
 
