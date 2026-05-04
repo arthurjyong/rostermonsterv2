@@ -5,7 +5,7 @@ Roster Monster v2 is a reusable roster-allocation core with department-specific 
 ## Current state
 - **Live end-to-end in two modes.** Operator-facing one-click cloud (`Roster Monster → Solve Roster` menu in the bound-template spreadsheet → Cloud Run service `roster-monster-compute` → writeback into a new tab) and maintainer-facing local CLI (Apps Script extracts a Snapshot JSON → `python -m rostermonster.run --snapshot file.json` → upload via the launcher's writeback form). Both modes share one Python compute core per D-0050 and produce byte-identical envelopes at the same input when seed is explicitly set per D-0053.
 - **All milestones M1 / M1.1 / M2 / M3 / M4 closed** (as of 2026-05-01). 164 Python tests pass; 17 Apps Script writeback unit tests.
-- **No active milestone.** Next likely is solver-strategy optimization per `docs/decision_log.md` D-0049's forward-pointer; activation is the maintainer's call.
+- **Active milestone: M5 — Operator-side analysis & multi-roster delivery** (activated 2026-05-04 per D-0055). Building a Python analyzer engine + Apps Script analyzer renderer + upload portal as **sibling consumers** of the wrapper envelope — purely additive to the existing pipeline (no contract changes upstream of analysis). Rationale: analysis tooling first, solver-side score-aware search second, so future LAHC / score-aware strategy work has a calibration framework to be measured against. M5 also doubles as the operator-side workaround for the weighted-sum scoring formulation pain (operator picks among K candidates with full component breakdowns rather than trusting a single scalar). M5 C1 active — Python analyzer engine + analysis contract draft; detailed scope in a dedicated design thread.
 
 ## Repo posture
 - **Architecture-first and contract-first.** Core boundaries are pinned in explicit contract docs before broad implementation work. The docs-first phased delivery cadence (Phase 1 docs → Phase 2 code → Phase 3 closure) held across M2..M4.
@@ -17,9 +17,9 @@ Roster Monster v2 is a reusable roster-allocation core with department-specific 
 - `docs/blueprint.md` — Stable architecture truth (what the system is, boundary invariants).
 - `docs/roadmap.md` — Milestone-level delivery order + closed-milestone trail.
 - `docs/delivery_plan.md` — Active execution guide (active milestone/checkpoint/tasks, recently completed checkpoints).
-- `docs/decision_log.md` — Accepted directional decisions (D-0001..D-0054).
-- `docs/future_work.md` — Non-normative parking lot for ideas (FW-0001..FW-0029).
-- `docs/open_decisions.md` — Pending decisions awaiting closure (empty as of 2026-05-01).
+- `docs/decision_log.md` — Accepted directional decisions (D-0001..D-0055).
+- `docs/future_work.md` — Non-normative parking lot for ideas (FW-0001..FW-0030).
+- `docs/open_decisions.md` — Pending decisions awaiting closure (empty as of 2026-05-04).
 - `docs/*_contract.md` — Normative technical boundary definitions.
 
 ## Code layout
