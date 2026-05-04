@@ -19,12 +19,16 @@ Safe result surfaces and sheet writeback behavior for operator consumption. Clos
 ### 4) Cloud end-to-end pipeline + dual-track preservation — *Completed 2026-05-01*
 Cloud-deployed end-to-end pipeline so operators can drive a one-click roster-generation flow without local Python tooling, while preserving the local CLI as a maintainer-side dev-velocity surface for solver-strategy experiments. Reframed from `Parallel operational search and orchestration` per D-0049; closed at M4 C1 as the only checkpoint (Cloud Run service + Apps Script library reorganization + bound shim's `Roster Monster → Solve Roster` menu). D-0048..D-0054. The original M4 framing (parallel orchestration) and original M5 framing (observability) parked as **FW-0027** + **FW-0028** — re-promotable to milestones when concrete drivers surface.
 
+### 5) Operator-side analysis & multi-roster delivery — *Active (activated 2026-05-04)*
+Give operators the tools to see what's actually in a roster and compare alternatives, without changing the solver. Three-piece architecture: Python analyzer engine + `AnalyzerOutput` + Apps Script analyzer renderer + upload portal — all sibling consumers of the wrapper envelope (writeback contract untouched, no new selector retention mode). Reframes the post-M4 priority by sequencing operator-side analysis tooling AHEAD of solver-side score-aware search, because analysis tooling is the calibration framework any future solver work needs to be measured against, AND it acts as the operator-side workaround for the weighted-sum scoring formulation pain (operator picks among K candidates with full component breakdowns rather than trusting a single scalar). M5 C1 active; subsequent checkpoints (Apps Script renderer, upload portal, live operator validation) outlined but not yet activated. D-0055.
+
 ### Next milestone slot — *Not yet activated*
-Solver-strategy optimization is the maintainer's stated post-M4 priority per D-0049's forward-pointer. Different in character from M4's "delivery surface" framing (changes core compute semantics rather than adding a delivery vehicle), so it lands as its own milestone slot rather than an M4 C2. Activation timing is left to the maintainer's call.
+M6 is provisionally framed around solver-side score-aware search (LAHC + cloud Deep Solve + email-notification architecture + cloud-side FULL retention promotion of FW-0030). Whether M6 is one milestone or split into multiple is left to its own framing decision and not pre-committed. Activation waits until M5 closes (or progresses far enough to surface concrete M6 drivers).
 
 ## Intentional later work (not near-term)
 The roadmap intentionally defers some work until concrete drivers surface:
 - Parallel operational search and orchestration (FW-0027) — re-promotable to a milestone when scale or reliability drivers surface.
-- Observability and benchmark hardening (FW-0028) — re-promotable when long-term reliability or benchmark-comparison drivers surface.
+- Observability and benchmark hardening (FW-0028) — re-promotable when long-term reliability or benchmark-comparison drivers surface. M5's analysis tooling overlaps the operator-facing slice but does not subsume the broader observability surface.
+- Cloud-side FULL retention support (FW-0030) — prerequisite for M6's Deep Solve auto-included analyzer path; not in M5 scope.
 - Broad generalization to additional departments before ICU/HD-first learning is closed.
 - Pilot rollout to non-maintainer operators (broader pilot is a future milestone or operational rollout step, not currently scheduled).

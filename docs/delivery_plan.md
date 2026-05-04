@@ -58,21 +58,32 @@ Roster Monster v2 builds a reusable roster-allocation core with department-speci
 - **Status:** **Completed** *(closed 2026-05-01 on M4 C1 closure as the only delivered checkpoint; solver-strategy optimization promotes to its own forthcoming milestone rather than M4 C2 — different in character)*
 - **Checkpoints:** C1 cloud end-to-end pipeline (minimum demo) (closed 2026-05-01).
 
-## 6. Current active milestone
-- **Active milestone:** *(none)*
+### M5 — Operator-side analysis & multi-roster delivery
+- **Goal:** Give operators the tools to see what's actually in a roster and compare alternatives, without changing the solver. Three-piece architecture (Python analyzer engine + `AnalyzerOutput` + Apps Script analyzer renderer) as a sibling consumer of the wrapper envelope, additive to the existing pipeline.
+- **Why it matters:** Without analysis tooling, "did a future score-aware strategy improve quality" is unmeasurable from the operator's seat — today's only operator-facing signal is `totalScore` and the writeback tab. Analysis tooling is also the operator-side workaround for the weighted-sum scoring formulation pain (operator picks among K candidates with full component breakdowns rather than trusting a single scalar). Sequencing analysis BEFORE solver-side score-aware search (LAHC etc., parked in M6) means the calibration framework exists when the search-strategy work needs to be evaluated.
+- **Status:** **Active** *(activated 2026-05-04 alongside M5 C1 per D-0055)*
+- **Checkpoints:** C1 Python analyzer engine + analysis contract draft (active; detailed scope deferred to dedicated design thread that opens after this PR merges); subsequent checkpoints (Apps Script analyzer renderer, upload portal, live operator validation) outlined in §7 but not yet activated.
+- **Dependencies:** M4 closed (cloud end-to-end live; CLI FULL retention already supported per M2 C5 closure).
+- **Exit criteria:** All planned checkpoints closed; analyzer-engine + renderer + upload-portal triad runs end-to-end on a real ICU/HD cycle; operator validation confirms the comparison-tab decision-support workflow.
 
-M4 closed at the milestone level on 2026-05-01 with M4 C1 as the only delivered checkpoint. The maintainer's stated post-M4 priority is solver-strategy optimization — different in character from M4's "delivery surface" framing, so it lands as its own milestone slot rather than an M4 C2. Activation timing is left to the maintainer's call. See §11's M4 closure note.
+## 6. Current active milestone
+- **Active milestone:** **M5 — Operator-side analysis & multi-roster delivery**
+
+M5 activated 2026-05-04 per D-0055 alongside M5 C1. M5 is purely additive — no contract changes to solver / scorer / selector / writeback / cloud_compute / wrapper envelope. New surface: `docs/analysis_contract.md` (drafted in M5 C1), Python `rostermonster.analysis` module, Apps Script analyzer renderer, upload portal. Forward-pointer: M6 (LAHC + cloud Deep Solve + email-notification architecture) is parked but not pre-committed.
 
 ## 7. Checkpoint plan for the active milestone
 
-*(no active milestone; checkpoint plan empty until the next milestone activates)*
+- **C1 — Python analyzer engine + analysis contract draft.** Standalone `analyze(envelope, sidecars) → AnalyzerOutput` function in new `python/rostermonster/analysis/` module. Drafts `docs/analysis_contract.md` (`contractVersion: 1`) defining input = wrapper envelope + sidecars, output = `AnalyzerOutput` (concrete shape designed in dedicated thread post-PR-merge), solver-agnostic by contract. **Active.**
+- **C2 — Apps Script analyzer renderer.** New Apps Script module (provisional `analyzer.js`; exact placement TBD). Reads `AnalyzerOutput`, writes K roster tabs + 1 comparison tab. Roster tabs use shared formatting utilities so visual identity matches writeback's roster tabs.
+- **C3 — Upload portal.** Thin Apps Script form accepting a single `AnalyzerOutput` file; hands it to the renderer. Operator workflow: run CLI locally with `--retention FULL` → run analyzer engine locally → upload `AnalyzerOutput` to portal → see K + 1 tabs.
+- **C4 — Live operator validation.** Run the analyzer + renderer + portal triad on a real ICU/HD cycle. Confirm comparison-tab fields actually drive operator decisions vs. are noise. Decision point: if scoring-formulation issues surface (e.g., totalScore winner consistently NOT the operator-preferred candidate), open M5.5 / pre-M6 thread on lexicographic / threshold / Pareto direction.
 
 ## 8. Current active checkpoint
-- **Active checkpoint:** *(none)*
+- **Active checkpoint:** **M5 C1 — Python analyzer engine + analysis contract draft**
 
 ## 9. Task list for the current checkpoint
 
-*(no active checkpoint; task list cleared)*
+Detailed task list deferred to the dedicated M5 C1 design thread that opens after this PR merges. Thread scope: concrete `AnalyzerOutput` schema, specific aggregates the analyzer computes (per-doctor / per-day / per-component shapes), top-K diversity criterion, comparison-tab UX, exact module placement for `analyzer.js`. Thread output: `docs/analysis_contract.md` draft + concrete C1 task list.
 
 ## 10. Explicitly deferred for now
 - Solver implementation details.
@@ -90,6 +101,9 @@ M4 closed at the milestone level on 2026-05-01 with M4 C1 as the only delivered 
 ## 11. Recently completed checkpoints
 
 > Closure entries are intentionally short — what closed, when, with which PRs and decisions, plus a one-line summary of what works now. Full audit detail (phase-by-phase narrative, Codex findings, implementation files, test counts, "Main affected surfaces" lists) lives in the merged PR descriptions and git history; one-time setup steps live in operator READMEs and project memory.
+
+### M5 activation note
+M5 (`Operator-side analysis & multi-roster delivery`) activated 2026-05-04 alongside M5 C1 per D-0055. The decision frames M5 as a purely additive milestone that builds an analyzer engine + Apps Script renderer + upload portal as **sibling consumers** of the wrapper envelope (per D-0045) — writeback contract stays untouched, no new selector retention mode, top-K + diversity is the analyzer's responsibility (not the selector's). Cloud-side FULL retention is explicitly deferred to FW-0030 (prerequisite for M6's eventual Deep Solve auto-included analyzer path). M5 ships analysis tooling on top of today's CLI FULL retention output (no upstream contract changes); the cloud-side route remains Quick-Solve-only / BEST_ONLY in M5. Forward-pointer: M6 picks up LAHC + cloud Deep Solve + email-notification architecture; sequencing rationale is "analysis-first as the calibration framework + multi-objective workaround" (without analysis tooling, future score-aware solver gains are unmeasurable from the operator's seat). No code changes in this activation PR — direction-setting docs only, mirroring the D-0049 pattern.
 
 ### M4 milestone closure note
 M4 (`Cloud end-to-end pipeline + dual-track preservation`) closed on 2026-05-01 with M4 C1 closure as its only delivered checkpoint. M4 was reframed from `Parallel operational search and orchestration` per D-0049 to prioritize a boss-clickable proof of concept and preserve the local CLI for forthcoming solver-strategy work. The reframing parked the original M4 scope (parallel orchestration) and the original M5 scope (observability) as future-work entries FW-0027 + FW-0028. Solver-strategy optimization is materially different in character (changes core compute semantics rather than adding a delivery vehicle) and lands as its own forthcoming milestone slot rather than an M4 C2. M3 stays Completed; M2 stays Completed.
@@ -197,6 +211,7 @@ M2 closed 2026-04-29. Across nine checkpoints (C1..C9), the milestone delivered:
 - **2026-04-29:** Activated M2 C9 (snapshot extraction Apps Script — D-0036 implementation; D-0040..D-0043; new contract `docs/snapshot_adapter_contract.md`). Closed M2 C9 + closed M2 (PRs #95, #96, #97). The `m1_template_bound_script/` and `m1_extractor_library/` directories created in Phase 2 were renamed to `m2_*` in the closure round to match the milestone-prefix-by-introduction convention.
 - **2026-04-30:** Activated M3 + M3 C1 same-day (writeback library + launcher route + Python CLI extension; D-0044..D-0047). Closed M3 C1 (PRs #100, #101, #102) — Phase 2 surfaced contract amendment growing writeback §9 from 5 to 6 categories (closes D-0045 Follow-up #2). Closed M3 at milestone level (M3 C2 dropped per D-0048 — round-trip already proven); activated M4 same-day per D-0049 reframing M4 to `Cloud end-to-end pipeline + dual-track preservation`; old M4/M5 → FW-0027 + FW-0028. Activated M4 C1.
 - **2026-05-01:** Closed M4 C1 + closed M4 (PRs #103, #104, #105, #106; D-0048..D-0054). D-0053 (random-seed default) and D-0054 (Cloud Run public-service + Flask-side X-Auth-Token allowlist; amends D-0051 sub-2 after `aud`-mismatch live-test failure) settled in-flight as accepted decisions. FW-0029 (template-aware label propagation in writeback library) added. Active milestone moves to *none*; solver-strategy optimization (D-0049's forward-pointer) lands as its own forthcoming milestone slot rather than M4 C2.
+- **2026-05-04:** Activated M5 (`Operator-side analysis & multi-roster delivery`) + M5 C1 same-day (D-0055). M5 reframes the post-M4 priority by sequencing operator-side analysis tooling AHEAD of solver-side score-aware search (LAHC etc., parked for M6) — analysis tooling acts as the calibration framework + multi-objective workaround. Three-piece architecture: Python analyzer engine + `AnalyzerOutput` + Apps Script analyzer renderer, sibling consumer of the wrapper envelope (writeback contract untouched, no new selector retention mode, top-K + diversity is analyzer's responsibility). FW-0030 (cloud-side FULL retention support) added as M6 prerequisite. M5 C1 detailed scope (`AnalyzerOutput` schema, aggregates, diversity criterion, comparison-tab UX) deferred to dedicated design thread that opens after this activation PR merges. No code changes in this PR — direction-setting docs only, mirroring the D-0049 pattern.
 
 ## 13. Relationship to other repo docs
 - `README.md` = front door orientation.
@@ -218,15 +233,16 @@ M2 closed 2026-04-29. Across nine checkpoints (C1..C9), the milestone delivered:
 - Cross-contract consistency audits MUST trace every producer-consumer seam in BOTH directions. Forward: when contract X says it consumes Y, verify Y's producer contract declares Y as a normative output. Reverse: when contract X references producing Y for a downstream consumer, verify the consumer's contract declares Y in its input shape. The reverse direction is the harder one to remember (the M2 C2 contract-surface audit missed `scorer_contract.md` §15 ↔ `parser_normalizer_contract.md` §9 because of it; the gap surfaced four contract-touches later, during M2 C4 T2 implementation, instead of at the C2 audit window).
 
 ## 15. Initial seed content
-Reflects the 2026-05-01 closure of M4 (`Cloud end-to-end pipeline + dual-track preservation`) on M4 C1, on top of the 2026-04-30 closure of M3 (`Safe result/output and writeback`).
+Reflects the 2026-05-04 activation of M5 (`Operator-side analysis & multi-roster delivery`) + M5 C1 per D-0055, on top of the 2026-05-01 closure of M4 (`Cloud end-to-end pipeline + dual-track preservation`) on M4 C1, on top of the 2026-04-30 closure of M3 (`Safe result/output and writeback`).
 
-- active milestone **none**; active checkpoint **none**.
+- active milestone **M5**; active checkpoint **M5 C1**.
 - closed milestones: **M1 (C1–C4) + M1.1 (C1) + M2 (C1–C9) + M3 (C1) + M4 (C1)**, anchored by **D-0019..D-0054** with closure entries in §11.
+- M5 activation: **D-0055** (M5 framing — operator-side analysis & multi-roster delivery; Python analyzer engine + Apps Script renderer + upload portal as sibling consumer of the wrapper envelope; purely additive, no upstream contract changes).
 - M4 architectural surface: **D-0048..D-0054** (close M3 early; reframe M4; dual-track Python; Cloud Run + consolidated GCP project; Apps Script library reorg; random-seed default; public-service auth via X-Auth-Token allowlist). New contract `docs/cloud_compute_contract.md` (`contractVersion: 1`).
 - Full **sheet → snapshot → Python compute → writeback** round-trip runs end-to-end on real ICU/HD data in **both modes**: local (browser-download Snapshot JSON → Python CLI → file upload via launcher form → writeback tab) and cloud (bound shim's `Roster Monster → Solve Roster` menu → POST to Cloud Run → in-memory writeback within one Apps Script invocation, ~30-90s sync wait). Both modes share the same Python compute core per D-0050 and produce byte-identical wrapper envelopes at same `(snapshot, optionalConfig)` when seed is explicitly set per D-0053's parity precondition.
 - **164/164 Python tests pass** via standalone runners. Apps Script tests run via `clasp run runAllTests_` on the launcher project (17 writeback-helper unit tests added under M3 C1).
 - scorer contract is at `contractVersion: 3` per D-0039; `ScoringConfig` public shape unchanged from v2. Writeback contract `contractVersion: 1`, §9 6 categories. Selector v2.
-- contracts settled across M2 + M3 + M4: snapshot, snapshot_adapter, parser_normalizer, template_artifact, sheet_generation, rule_engine, scorer (v3), solver, selector (v2), writeback (`contractVersion: 1`, §9 6 categories), cloud_compute (`contractVersion: 1`).
+- contracts settled across M2 + M3 + M4: snapshot, snapshot_adapter, parser_normalizer, template_artifact, sheet_generation, rule_engine, scorer (v3), solver, selector (v2), writeback (`contractVersion: 1`, §9 6 categories), cloud_compute (`contractVersion: 1`). M5 C1 will draft new contract `docs/analysis_contract.md` (`contractVersion: 1`) — analyzer engine input/output and solver-agnosticism property; concrete `AnalyzerOutput` schema is M5 C1 design work (not in the M5 activation PR).
 - transport: **local mode** — inbound = browser-download per D-0040; outbound = file upload via launcher form per D-0044 (no new OAuth scopes). **Cloud mode** — inbound = in-memory snapshot via central library entrypoint; outbound = HTTP request body + structured-response envelope per `docs/cloud_compute_contract.md`. Cloud mode required four bound-shim manifest scopes per D-0051 sub-3a + D-0054: `script.external_request`, `openid`, `userinfo.email`, and `spreadsheets` (broadened from `currentonly`). Cloud Run runs `--allow-unauthenticated`; operator-identity gating is via Flask-side `ALLOWED_EMAILS` per D-0054.
 - `docs/open_decisions.md` is empty.
-- explicit deferrals retained from M1.1 + M4: public signup, in-app allowlist, operator-editable template, persisted per-operator state, alternative launcher platforms; parallel orchestration → FW-0027; observability → FW-0028; template-aware label propagation in writeback library → FW-0029; service-account-based Cloud Run auth → D-0054 §7.6.
+- explicit deferrals retained from M1.1 + M4 + M5: public signup, in-app allowlist, operator-editable template, persisted per-operator state, alternative launcher platforms; parallel orchestration → FW-0027; observability → FW-0028; template-aware label propagation in writeback library → FW-0029; service-account-based Cloud Run auth → D-0054 §7.6; cloud-side FULL retention support → FW-0030 (added in this M5 activation PR; prerequisite for M6's eventual Deep Solve auto-included analyzer path); LAHC and any score-aware solver strategy → M6 (parked, not pre-committed).
