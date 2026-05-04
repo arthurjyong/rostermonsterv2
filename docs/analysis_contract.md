@@ -53,18 +53,20 @@ Repo-settled intent + checkpoint narrowing:
 
 ## 6) Boundary position
 Repo-settled:
-- Upstream: the analyzer consumes the wrapper envelope (`final_envelope.json` per `docs/decision_log.md` D-0044/D-0045) plus the FULL-retention sidecar `candidates_full.json` (per `docs/selector_contract.md` §14.2). Both are produced by the local CLI's `--retention FULL` + `--sidecar-dir` path (`python/rostermonster/run.py`).
-- Boundary: the analyzer is a pure function `analyze(envelope, fullSidecar, *, topK) → AnalyzerOutput`.
+- Upstream: the analyzer consumes (a) the full Snapshot JSON the CLI was given as `--snapshot` per `docs/snapshot_contract.md`, (b) the wrapper envelope `final_envelope.json` per `docs/decision_log.md` D-0044/D-0045, and (c) the FULL-retention sidecar `candidates_full.json` per `docs/selector_contract.md` §14.2. (b) and (c) are produced by the local CLI's `--retention FULL` + `--sidecar-dir` path (`python/rostermonster/run.py`); (a) is the same file the operator already has from the Apps Script extractor's browser-download flow per `docs/decision_log.md` D-0040.
+- Boundary: the analyzer is a pure function `analyze(snapshot, envelope, fullSidecar, *, topK, generatedAt, analysisConfig=None) → AnalyzerOutput`.
 - Downstream: the Apps Script analyzer renderer (M5 C2) consumes `AnalyzerOutput` and writes K roster tabs + 1 comparison tab. The upload portal (M5 C3) accepts a single `AnalyzerOutput` JSON file from the operator and hands it to the renderer.
 
+The portal-side single-file-upload property per `docs/decision_log.md` D-0055 sub-decision 6 is preserved: the analyzer engine consumes three input files locally on the operator's machine, but the portal only ever sees the one `AnalyzerOutput` JSON the analyzer emits.
+
 Proposed in this checkpoint:
-- The analyzer is a pure function of its declared inputs (§9). No solver coupling, no scorer coupling, no rule-engine coupling. The analyzer reads the wrapper envelope's public surface and the FULL sidecar's public surface only.
+- The analyzer is a pure function of its declared inputs (§9). No solver coupling, no scorer coupling, no rule-engine coupling. The analyzer reads the snapshot's public surface, the wrapper envelope's `runEnvelope` ride-through, and the FULL sidecar's public surface. The wrapper envelope's `snapshot` sub-object (the writeback-only narrow subset per `docs/writeback_contract.md` §9) is NOT analyzer input — the analyzer reads the full snapshot directly to access fields the writeback subset does not project (e.g., the full `dayRecords` shape for weekend classification, the full `doctorRecords` shape for `displayName` resolution).
 - The analyzer is solver-agnostic by contract (§12). It MUST NOT inspect strategy-specific metadata such as `solverStrategyId` or strategy-specific `searchDiagnostics` fields to switch behavior.
 - The analyzer engine has no Apps Script coupling. The upload portal and renderer consume `AnalyzerOutput` by file; the analyzer engine never imports Apps Script libraries.
 
 ## 7) What this contract governs
 This contract governs:
-- the shape of analyzer input (the wrapper envelope + the FULL sidecar JSON, §9),
+- the shape of analyzer input (the full Snapshot JSON + the wrapper envelope + the FULL sidecar JSON + caller-supplied `topK` + `generatedAt`, §9),
 - the shape of analyzer output (the `AnalyzerOutput` JSON, §10),
 - the top-K selection rule and its tiebreaker (§11),
 - the solver-agnostic property (§12),
@@ -91,13 +93,15 @@ This contract does **not** govern:
 ## 9) Input shape
 Analyzer invocations are evaluated against the following inputs:
 
-1. **`envelope`** — the wrapper envelope produced by the local CLI's `--writeback-ready` flow per `docs/decision_log.md` D-0045. Required top-level fields the analyzer consumes:
-   - `finalResultEnvelope` — a `FinalResultEnvelope` per `docs/selector_contract.md` §10 with `retentionMode == "FULL"` (§9.1 below).
-   - `snapshotSubset` — the six-category snapshot subset per `docs/writeback_contract.md` §9. The analyzer consumes `dayRecords` (for weekend / public-holiday classification per day), `slotTypes` (for `slotKind == "CALL"` vs `STANDBY` classification), `doctors` (for human-readable names), `pointRows` (for per-day call-point values when computing per-doctor cumulative weighted load, §13), and `outputAssignmentRows` (for `slotType ↔ rowOffset` binding the renderer needs to surface). The other categories are not consumed by the analyzer in v1.
-   - `doctorIdMap` — the doctor-identity map per `docs/decision_log.md` D-0044 sub-decision 5. The analyzer consumes it to translate sidecar `doctorId` values back to operator-facing names for output.
-2. **`fullSidecar`** — the `candidates_full.json` sidecar per `docs/selector_contract.md` §14.2. Required: indexed by `candidateId`, each entry carries the full `AssignmentUnit[]` and the full `ScoreResult` (total + components).
-3. **`topK`** — the operator-supplied K (§11). Default 5; bounds `[1, 20]` inclusive; values outside this range are a fail-loud caller defect.
-4. **(optional) `analysisConfig`** — reserved for future analyzer-strategy configuration; first release ships no required fields. Future additions MUST follow the additivity rule in §14.
+1. **`snapshot`** — the full Snapshot JSON the CLI was given as `--snapshot`, conforming to `docs/snapshot_contract.md`. Required top-level fields the analyzer consumes: `doctorRecords` (for `displayName` resolution and per-doctor iteration), `dayRecords` (for date iteration; the analyzer derives weekend classification from `rawDateText` itself per §10.6), `scoringConfigRecords.callPointRecords` (for per-day call-point values when computing per-doctor cumulative weighted load, §13). Other top-level snapshot fields are not consumed by the analyzer in v1.
+2. **`envelope`** — the wrapper envelope produced by the local CLI's `--writeback-ready` flow per `docs/decision_log.md` D-0045. Required top-level fields the analyzer consumes:
+   - `finalResultEnvelope` — a `FinalResultEnvelope` per `docs/selector_contract.md` §10 with `retentionMode == "FULL"` (§9.1 below). The analyzer reads `runEnvelope` (for `runId`, `seed`, `sourceSpreadsheetId`, `sourceTabName` ride-through into `AnalyzerOutput.source`) and `result.winnerAssignment` (only as a sanity check; the BEST_ONLY winner is also identifiable as the highest-`totalScore` candidate in the FULL sidecar — see §11.1 for the `recommended` flag derivation that does NOT require parsing `winnerAssignment`).
+   - The wrapper envelope's nested `snapshot` sub-object (the writeback-only narrow subset per `docs/writeback_contract.md` §9 — `columnADoctorNames` / `requestCells` / `callPointCells` / `prefilledFixedAssignmentCells` / `outputAssignmentRows` / `shellParameters`) is NOT analyzer input. The analyzer reads the full snapshot (§9 input #1) for the data writeback's narrow subset does not project.
+   - The wrapper envelope's `doctorIdMap` (a list of `{doctorId, sectionGroup, rowIndex}` records per `docs/decision_log.md` D-0044 sub-decision 5 — NOT a `{doctorId: name}` dict) is also NOT analyzer input. The analyzer constructs its own `doctorId → displayName` dict from the snapshot's `doctorRecords[*].displayName` and emits it as `AnalyzerOutput.doctorIdMap` per §10.
+3. **`fullSidecar`** — the `candidates_full.json` sidecar per `docs/selector_contract.md` §14.2. Required: indexed by `candidateId`, each entry carries the full `AssignmentUnit[]` and the full `ScoreResult` (total + components).
+4. **`topK`** — the operator-supplied K (§11). Default 5; bounds `[1, 20]` inclusive; values outside this range are a fail-loud caller defect.
+5. **`generatedAt`** — caller-supplied ISO-8601 timestamp string. Echoed into `AnalyzerOutput.generatedAt` per §10. Caller-supplied (rather than analyzer-synthesized) for the same reason `runEnvelope.generationTimestamp` is execution-layer-supplied per `docs/selector_contract.md` §16.2: the analyzer MUST NOT consume clocks (§15), so any timestamp embedded in the output must arrive on the input rather than be synthesized at emit time. Required because byte-identical determinism (§15) requires `generatedAt` to be part of the explicit input tuple.
+6. **(optional) `analysisConfig`** — reserved for future analyzer-strategy configuration; first release ships no required fields. Future additions MUST follow the additivity rule in §14.
 
 ### 9.1 FULL retention required
 The analyzer MUST be invoked against a FULL-retention envelope. Analyzer behavior under `BEST_ONLY` is undefined: the FULL sidecar is absent, the candidate population is one, and there is no top-K to compute. Callers that invoke the analyzer against a `BEST_ONLY` envelope MUST receive a fail-loud rejection — the analyzer MUST NOT silently degrade to "K=1, return the winner."
@@ -106,10 +110,13 @@ The analyzer MUST be invoked against a FULL-retention envelope. Analyzer behavio
 On the `UnsatisfiedResult` failure branch (`docs/selector_contract.md` §15), there is no scored-candidate set to analyze. Analyzer behavior on this input is also fail-loud: the analyzer MUST raise a structured rejection rather than emit a degenerate `AnalyzerOutput`. The operator workflow is "render the failure branch via writeback's diagnostic surface (`docs/writeback_contract.md` §17) — the analyzer is not in scope on the failure branch."
 
 ### 9.3 No filesystem reads beyond declared inputs
-The analyzer MUST NOT read any state outside the declared inputs. No environment variables, no clocks, no filesystem reads beyond the `envelope` and `fullSidecar` files supplied by the caller.
+The analyzer MUST NOT read any state outside the declared inputs. No environment variables, no clocks, no filesystem reads beyond the `snapshot`, `envelope`, and `fullSidecar` files supplied by the caller.
 
 ### 9.4 CSV sidecar is NOT analyzer input
 The `candidates_summary.csv` sidecar is operator-debug-only (spreadsheet-grade inspection, per `docs/selector_contract.md` §14.1). The analyzer engine does NOT consume it; passing a `candidates_summary.csv` path to the analyzer is a no-op at best and a contract violation at worst. This is `docs/decision_log.md` D-0057.
+
+### 9.5 Snapshot–envelope coherence
+The analyzer MAY assert that `snapshot` and `envelope` describe the same run (e.g., the snapshot's identity matches the `runEnvelope.snapshotRef`) but is NOT required to enforce coherence as a fail-loud admission rule in v1; mismatched-input behavior is undefined. Callers (CLI subcommand or test harness) are responsible for supplying a coherent triple.
 
 ## 10) Output shape
 The analyzer returns a single `AnalyzerOutput` JSON object. Concrete shape:
@@ -117,7 +124,7 @@ The analyzer returns a single `AnalyzerOutput` JSON object. Concrete shape:
 ```
 AnalyzerOutput {
   contractVersion: 1
-  generatedAt: ISO-8601 string                 // execution-layer-supplied; see §15
+  generatedAt: ISO-8601 string                 // ride-through from §9 input #5; caller-supplied
   source: {
     runId: string                              // from envelope.finalResultEnvelope.runEnvelope.runId
     seed: number | null                        // from envelope.finalResultEnvelope.runEnvelope.seed
@@ -126,7 +133,7 @@ AnalyzerOutput {
   }
   topK: TopKResult
   comparison: ComparisonAggregates
-  doctorIdMap: { [doctorId: string]: string }  // ride-through from envelope.doctorIdMap
+  doctorIdMap: { [doctorId: string]: string }  // analyzer-constructed dict {doctorId → displayName} from snapshot.doctorRecords; NOT a passthrough of envelope.doctorIdMap (which is a list-of-records, not a dict, and does not carry displayName)
 }
 ```
 
@@ -144,7 +151,7 @@ TopKResult {
 AnalyzerCandidate {
   candidateId: string                          // matches sidecar candidateId
   rankByTotalScore: int                        // 1..returned; 1 == top
-  recommended: boolean                         // true iff this candidate's candidateId == finalResultEnvelope.winnerCandidateId
+  recommended: boolean                         // true iff rankByTotalScore == 1 (the BEST_ONLY winner the selector would have picked); see §11.1
   totalScore: number
   scoreComponents: {
     [componentName: string]: ComponentBreakdown
@@ -196,19 +203,18 @@ AssignmentRefShape = [
 PerDoctorAggregates {
   callCount: int                          // count of CALL-slot assignments
   standbyCount: int                       // count of STANDBY-slot assignments
-  weekendCallCount: int                   // count of CALL-slot assignments on dayRecords[*].isWeekend == true
-  publicHolidayCallCount: int             // count of CALL-slot assignments on dayRecords[*].isPublicHoliday == true
-  callPointInitial: number                // from envelope.snapshotSubset.* opening doctor call-point state
-  callPointEndOfCycle: number             // initial + sum over CALL assignments of pointRules[(slotType, dateKey)]
-  callPointDelta: number                  // callPointEndOfCycle - callPointInitial
-  cumulativeWeightedLoad: number          // alias of callPointEndOfCycle for v1; reserved for future per-day weighting refinements
-  maxConsecutiveDaysOff: int              // longest run of consecutive dayRecords with no assignment to this doctor
+  weekendCallCount: int                   // count of CALL-slot assignments on weekend dates (analyzer-derived from snapshot.dayRecords[*].rawDateText)
+  publicHolidayCallCount: int             // first-release: 0 for every doctor (no PH calendar wired); see §10.6 PH note
+  cumulativeCallPoints: number            // sum over the doctor's CALL assignments of the per-day call-point weight at (slotType, dayIndex), where the weight is derived from snapshot.scoringConfigRecords.callPointRecords after the parser overlay (D-0037)
+  maxConsecutiveDaysOff: int              // longest run of consecutive snapshot.dayRecords with no assignment to this doctor
 }
 ```
 
-`callPointInitial` source: the analyzer reads the doctor's opening call-point value from the envelope's snapshot subset. The exact path is implementation-level (the snapshot subset projection from the snapshot is documented in `docs/snapshot_contract.md`); the analyzer MUST NOT synthesize this field.
+**Weekend-day source.** `snapshot.dayRecords[*]` carries `rawDateText` but NO precomputed `isWeekend` flag in the v1 snapshot shape (`docs/snapshot_contract.md`). The analyzer derives weekend classification by parsing `rawDateText` through Python's `datetime` library (Saturday + Sunday). Cross-region calendar variation is out of M5 first-release scope (ICU/HD pilots are Singapore-based and use the standard Saturday + Sunday weekend definition).
 
-`isPublicHoliday` source: `envelope.snapshotSubset.dayRecords[*].isPublicHoliday`. ICU/HD first-release pilots may not declare public holidays in the period; in that case `publicHolidayCallCount` is 0 for every doctor.
+**PH note.** `snapshot.dayRecords[*]` does NOT carry an `isPublicHoliday` flag in v1, and no public-holiday calendar is wired into the analyzer in M5 first release. v1 implementations MUST emit `publicHolidayCallCount: 0` for every doctor. A future analyzer-contract bump (or a snapshot extension) MAY introduce real PH classification — when it does, callers reading v1-emitted output MUST tolerate `0` as the "no PH calendar wired" signal versus the "PH calendar wired but no PH in period" signal. Both are emitted as `0` in v1.
+
+**Call-point source.** `cumulativeCallPoints` measures the load this candidate places on this doctor under the operative per-day call-point weights. The per-day weights flow from the operator-editable Call Point rows on the request sheet into `snapshot.scoringConfigRecords.callPointRecords` per the parser overlay path documented in `docs/parser_normalizer_contract.md` §9 + `docs/decision_log.md` D-0037. Carryover-from-prior-period or doctor-specific opening balances are NOT a v1 snapshot concept — `cumulativeCallPoints` is a within-cycle metric only. A future snapshot extension may introduce per-doctor opening balances; that would be an additive analyzer-contract bump under §14's rule.
 
 ### 10.7 `ComparisonAggregates`
 ```
@@ -239,8 +245,8 @@ ComparisonAggregates {
 EquityScalars {
   callCount: { stdev: number, minMaxGap: int, gini: number }
   weekendCallCount: { stdev: number, minMaxGap: int, gini: number }
-  publicHolidayCallCount: { stdev: number, minMaxGap: int, gini: number }
-  callPointEndOfCycle: { stdev: number, minMaxGap: number, gini: number }
+  publicHolidayCallCount: { stdev: number, minMaxGap: int, gini: number }   // v1: all-zero distributions per §10.6 PH note → stdev=0, minMaxGap=0, gini=0
+  cumulativeCallPoints: { stdev: number, minMaxGap: number, gini: number }
 }
 ```
 
@@ -265,13 +271,15 @@ The analyzer selects the K returned candidates as follows:
 This cleanly separates concerns: the solver is the exploration mechanism; the analyzer is the passive observer. Diversity-aware selection (DPPs, submodular maximization, max-min diversification) belongs in solver-strategy work (M6 territory), not at the analyzer stage.
 
 ### 11.1 `recommended` flag derivation
-The `AnalyzerCandidate.recommended` boolean is `true` iff the candidate's `candidateId` matches the winner candidate identified in `envelope.finalResultEnvelope` (the BEST_ONLY pick). At most one candidate in `topK.candidates` carries `recommended: true` (and exactly one when `requested ≥ 1` AND the winner candidate is among the top K by score-rank — which it always is, since the winner is the highest-score candidate by `HIGHEST_SCORE_WITH_CASCADE` per `docs/selector_contract.md` §12). Implementations MAY assert this invariant.
+The `AnalyzerCandidate.recommended` boolean is `true` iff `rankByTotalScore == 1` — the highest-`totalScore` candidate in the returned top K, with §11 step 2's `candidateId`-ascending tiebreak applied on ties. This is equivalent to "the BEST_ONLY winner the selector would have picked" because both `HIGHEST_SCORE_WITH_CASCADE` per `docs/selector_contract.md` §12 and the analyzer's pure score-rank rule (§11) use the same primary ordering (`totalScore` descending) and converge on the same first-place candidate when applied to the same FULL sidecar.
+
+The `FinalResultEnvelope.result.winnerAssignment` per `docs/selector_contract.md` §10.1 carries the winner's assignment-tuple shape but does NOT expose a separate `winnerCandidateId` field; the analyzer therefore derives the recommendation from rank rather than from a direct identifier match. Implementations MAY cross-check `winnerAssignment` content against the rank-1 candidate's `AssignmentUnit[]` for self-consistency and raise a structured rejection on mismatch (which would indicate selector ↔ FULL-sidecar drift — a defect upstream).
 
 ## 12) Solver-agnostic property
 Proposed in this checkpoint (normative):
 
 The analyzer MUST NOT inspect `solverStrategyId` or any strategy-specific metadata in `searchDiagnostics`, `runEnvelope`, or elsewhere on the envelope to switch behavior. Concretely:
-- The analyzer MUST produce the same `AnalyzerOutput` for any pair of envelopes whose `finalResultEnvelope.winnerAssignment`, `finalResultEnvelope.winnerScore`, `fullSidecar.candidates`, `snapshotSubset`, and `doctorIdMap` are identical, regardless of which solver strategy produced them.
+- The analyzer MUST produce the same `AnalyzerOutput` for any pair of input triples whose `snapshot`, `finalResultEnvelope.winnerAssignment`, `finalResultEnvelope.runEnvelope`, and `fullSidecar.candidates` are identical, regardless of which solver strategy produced them.
 - The analyzer MAY echo `runEnvelope` fields (e.g., `runId`, `seed`) into `AnalyzerOutput.source` for traceability, but MUST NOT branch on them.
 - Future solver strategies (LAHC etc., parked for M6) that produce a contract-compliant `FinalResultEnvelope` + FULL sidecar are analyzable without analyzer code changes.
 
@@ -305,9 +313,9 @@ Bump rule:
 ## 15) Determinism
 Proposed in this checkpoint (normative):
 
-- Given identical `(envelope, fullSidecar, topK, analysisConfig)` inputs, the analyzer MUST produce a byte-identical `AnalyzerOutput` JSON within a single implementation on a single platform.
+- Given identical `(snapshot, envelope, fullSidecar, topK, generatedAt, analysisConfig)` inputs (the full §9 input tuple), the analyzer MUST produce a byte-identical `AnalyzerOutput` JSON within a single implementation on a single platform. `generatedAt` is part of the input tuple (§9 input #5) precisely so the byte-identical guarantee holds — different `generatedAt` values produce different output bytes by construction, but identical inputs (including `generatedAt`) always produce identical bytes.
 - Determinism is required within a single implementation on a single platform. Cross-implementation or cross-platform determinism is not required and is not guaranteed; serialization library choices, hash-map iteration order, and floating-point string formatting differ across runtimes (`docs/future_work.md` FW-0011).
-- The analyzer MUST NOT consume clocks, environment variables, or filesystem state beyond reading the supplied input files. `AnalyzerOutput.generatedAt` is execution-layer-supplied (the caller — typically the `python/rostermonster/run.py` analyzer subcommand or a future `--analyze` flag — passes the timestamp in), the same way `runEnvelope.generationTimestamp` is supplied at selector entry per `docs/selector_contract.md` §16.2. The analyzer itself does not call `datetime.now()`.
+- The analyzer MUST NOT consume clocks, environment variables, or filesystem state beyond reading the supplied input files. `AnalyzerOutput.generatedAt` is caller-supplied (typically the `python/rostermonster/run.py` analyzer subcommand or a future `--analyze` flag passes the timestamp in), the same way `runEnvelope.generationTimestamp` is supplied at selector entry per `docs/selector_contract.md` §16.2. The analyzer itself does not call `datetime.now()`.
 - The analyzer MUST NOT perform side effects beyond returning the `AnalyzerOutput` JSON. File I/O is execution-layer-owned (§16).
 
 ## 16) Filesystem placement is execution-layer-owned
@@ -319,8 +327,10 @@ This contract does **not** govern:
 Concrete file-emission decisions live in the M5 C1 implementation slice: the planned `python/rostermonster/run.py` analyzer subcommand (or `--analyze` flag) is the execution-layer surface. The contract requires only that the `AnalyzerOutput` content, when persisted, conforms to §10.
 
 ## 17) Consistency with adjacent contracts
+- **Upstream snapshot** (`docs/snapshot_contract.md`): the analyzer reads the full Snapshot JSON the CLI was given as `--snapshot`. v1 of this contract is compatible with the v1 snapshot shape (`doctorRecords`, `dayRecords`, `scoringConfigRecords` as enumerated in §9 input #1). Future snapshot extensions (e.g., FW-0031's doctor-metadata fields; a future `dayRecords[*].isPublicHoliday` flag) are additive and do NOT require an analyzer bump unless the analyzer's emission set changes per §14.
 - **Upstream selector** (`docs/selector_contract.md`): the analyzer reads the FULL-retention output declared in §13.2 + §14. v1 of this contract is compatible with selector `contractVersion: 2` and any future selector version that preserves the FULL-retention output shape (§14.1 + §14.2 fields) and the `runEnvelope` ride-through requirement (§16).
-- **Upstream writeback** (`docs/writeback_contract.md`): the analyzer reads the wrapper envelope's `snapshotSubset` whose six categories are declared in §9. v1 of this contract is compatible with writeback `contractVersion: 1` (with the §9 6-category shape).
+- **Upstream writeback** (`docs/writeback_contract.md`): the analyzer does NOT consume the wrapper envelope's writeback-specific fields (the nested `snapshot` narrow subset per §9, or `doctorIdMap` as a list-of-records). It reads only `finalResultEnvelope` from the wrapper envelope. v1 of this contract is therefore decoupled from the writeback contract's snapshot-subset shape — future writeback bumps that alter the §9 6-category subset do NOT trigger analyzer bumps.
+- **Upstream parser/normalizer** (`docs/parser_normalizer_contract.md`): per-day call-point weights flow through the parser overlay path declared in §9; the analyzer reads `snapshot.scoringConfigRecords.callPointRecords` for the post-overlay per-day weights used in `cumulativeCallPoints` per §10.6. v1 of this contract is compatible with the D-0037 + D-0038 fail-loud-on-missing-keys discipline.
 - **Upstream scorer** (`docs/scorer_contract.md`): the analyzer reads `ScoreResult.components` whose first-release component identifiers are enumerated in §10 / `docs/domain_model.md` §11.2. v1 of this contract is compatible with scorer `contractVersion: 3`. Future scorer changes that alter the component-identifier set or break the `weighted / raw` correspondence MAY trigger an analyzer bump per §14.
 - **Upstream cloud_compute** (`docs/cloud_compute_contract.md`): unaffected; cloud-side FULL retention is `docs/future_work.md` FW-0030 and not in M5 scope.
 - **Downstream renderer** (M5 C2, future contract or library docstring): consumes `AnalyzerOutput` per §10. The renderer's tab layout, formatting, and comparison-tab UX are NOT governed by this contract.
