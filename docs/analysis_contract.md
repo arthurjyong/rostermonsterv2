@@ -197,13 +197,15 @@ ViolationSummary {
 ```
 
 ### 10.5 `AssignmentRefShape`
-The renderer needs the per-day per-slot doctor assignment to write the K roster tabs. The analyzer rides this through from the FULL sidecar's `AssignmentUnit[]` shape. v1 ships the assignment as a list of records:
+The renderer needs the per-day per-slot doctor assignment to write the K roster tabs. The analyzer rides this through from the FULL sidecar's `AssignmentUnit[]` shape (`{dateKey, slotType, unitIndex, doctorId}` per `python/rostermonster/selector/sidecars.py` and `docs/domain_model.md`). v1 ships the assignment as a list of records:
 
 ```
 AssignmentRefShape = [
-  { dateKey: string, slotType: string, doctorId: string }
+  { dateKey: string, slotType: string, unitIndex: int, doctorId: string }
 ]
 ```
+
+`unitIndex` is the multiplicity key from `docs/domain_model.md` — when a template declares `requiredCount > 1` for a slot type on a given day (e.g., two MICU CALL slots on a single date), `(dateKey, slotType)` alone is not unique; `unitIndex` disambiguates the slot occurrences. The analyzer MUST preserve `unitIndex` from the sidecar so the renderer can correctly resolve which slot occurrence each doctor fills, and so cross-candidate Hamming distance per §10.7 compares `(dateKey, slotType, unitIndex)` triples rather than `(dateKey, slotType)` pairs (collapsing on the latter would miss legitimate cross-candidate disagreements when `requiredCount > 1`).
 
 `doctorId` is the canonical sidecar identifier; the renderer translates to operator-facing names via `AnalyzerOutput.doctorIdMap`. v1 readers MUST tolerate the list-of-records shape.
 
@@ -242,7 +244,7 @@ ComparisonAggregates {
 }
 ```
 
-`pairwiseHammingDistance[a][b]` is the count of `(dateKey, slotType)` cells where candidate `a` and candidate `b` assign different doctors. The matrix is symmetric; implementations MAY emit only the upper triangle (`b > a` lexicographically) and v1 readers MUST tolerate either symmetric or upper-triangle layout, looking up `[a][b]` by trying both keys.
+`pairwiseHammingDistance[a][b]` is the count of `(dateKey, slotType, unitIndex)` cells (the full assignment-cell key per §10.5) where candidate `a` and candidate `b` assign different doctors. The matrix is symmetric; implementations MAY emit only the upper triangle (`b > a` lexicographically) and v1 readers MUST tolerate either symmetric or upper-triangle layout, looking up `[a][b]` by trying both keys.
 
 `hotDays[*].distinctAssignments` is the count of distinct doctor-tuples assigned across the K candidates on that date. A locked day has `distinctAssignments == 1`. Hot days are the complement: `distinctAssignments > 1`. The list MUST include only `dateKey`s within the run's period.
 
