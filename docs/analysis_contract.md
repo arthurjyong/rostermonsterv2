@@ -93,7 +93,7 @@ This contract does **not** govern:
 ## 9) Input shape
 Analyzer invocations are evaluated against the following inputs:
 
-1. **`snapshot`** — the full Snapshot JSON the CLI was given as `--snapshot`, conforming to `docs/snapshot_contract.md`. Required top-level fields the analyzer consumes: `doctorRecords` (for `displayName` resolution and per-doctor iteration), `dayRecords` (for date iteration; the analyzer derives weekend classification from `rawDateText` itself per §10.6), `scoringConfigRecords.callPointRecords` (for per-day call-point values when computing per-doctor cumulative weighted load, §13). Other top-level snapshot fields are not consumed by the analyzer in v1.
+1. **`snapshot`** — the full Snapshot JSON the CLI was given as `--snapshot`, conforming to `docs/snapshot_contract.md`. Required top-level fields the analyzer consumes: `doctorRecords` (for `displayName` resolution and per-doctor iteration), `dayRecords` (for date iteration; the analyzer derives weekend classification from `rawDateText` itself per §10.6), `scoringConfigRecords.callPointRecords` (for per-day call-point weights when computing per-doctor `cumulativeCallPoints`, §10.6 + §13). Other top-level snapshot fields are not consumed by the analyzer in v1.
 2. **`envelope`** — the wrapper envelope produced by the local CLI's `--writeback-ready` flow per `docs/decision_log.md` D-0045. Required top-level fields the analyzer consumes:
    - `finalResultEnvelope` — a `FinalResultEnvelope` per `docs/selector_contract.md` §10 with `retentionMode == "FULL"` (§9.1 below). The analyzer reads `runEnvelope` (for `runId`, `seed`, `sourceSpreadsheetId`, `sourceTabName` ride-through into `AnalyzerOutput.source`) and `result.winnerAssignment` (only as a sanity check; the BEST_ONLY winner is also identifiable as the highest-`totalScore` candidate in the FULL sidecar — see §11.1 for the `recommended` flag derivation that does NOT require parsing `winnerAssignment`).
    - The wrapper envelope's nested `snapshot` sub-object (the writeback-only narrow subset per `docs/writeback_contract.md` §9 — `columnADoctorNames` / `requestCells` / `callPointCells` / `prefilledFixedAssignmentCells` / `outputAssignmentRows` / `shellParameters`) is NOT analyzer input. The analyzer reads the full snapshot (§9 input #1) for the data writeback's narrow subset does not project.
@@ -260,7 +260,7 @@ Proposed in this checkpoint (normative):
 
 The analyzer selects the K returned candidates as follows:
 1. Sort the FULL sidecar's candidates by `ScoreResult.totalScore` descending.
-2. Tiebreak ties on equal `totalScore` by ascending `candidateId` (lexicographic ASCII order). `candidateId` is run-monotonic and dense per `docs/selector_contract.md` §16.1, so the tiebreak is well-defined for any equal-score pair.
+2. Tiebreak ties on equal `totalScore` by **numerically** ascending `candidateId` (lowest integer wins). `candidateId` is a run-monotonic dense integer per `docs/selector_contract.md` §16.1, and selector tie-breaks under `HIGHEST_SCORE_WITH_CASCADE` use the same lowest-numeric-`candidateId` rule per `docs/selector_contract.md` §12 — the analyzer mirrors that ordering precisely so its rank-1 candidate is always the same as the selector's BEST_ONLY winner under §11.1's equivalence claim. Lexicographic / ASCII string comparison MUST NOT be used: it can invert numeric order on equal scores (e.g., `"10"` would precede `"2"` lexicographically) and cause the analyzer's rank-1 to disagree with the selector's winner.
 3. Take the first `min(requested, candidatesAvailable)` entries.
 4. If `candidatesAvailable < requested`, set `topK.returned = candidatesAvailable` (the analyzer returns fewer than `requested` rather than padding or failing). v1 readers MUST tolerate `returned < requested`.
 5. If `requested > 20`, the analyzer MUST raise a structured rejection ("K must be ≤ 20"). This is fail-loud per `docs/decision_log.md` D-0056.
@@ -291,8 +291,8 @@ Proposed in this checkpoint (normative):
 The analyzer's comparison emission set is partitioned into seven conceptual tiers (the M5 C1 design-thread organization). v1 emits Tiers 1–6; Tier 7 is renderer-derived per §10.9.
 
 - **Tier 1 — score decomposition** (`AnalyzerCandidate.totalScore` + `scoreComponents`): per-component weighted, raw, rank across K, gap to next-ranked.
-- **Tier 2 — per-doctor equity** (`PerDoctorAggregates`): CALL / STANDBY / weekend-CALL / public-holiday-CALL counts; call-point initial / end-of-cycle / delta; cumulative weighted load; max consecutive days-off.
-- **Tier 3 — equity scalars** (`EquityScalars`): per-candidate stdev / min-max gap / Gini for call counts, weekend calls, public-holiday calls, and call-point end-of-cycle.
+- **Tier 2 — per-doctor equity** (`PerDoctorAggregates`): CALL / STANDBY / weekend-CALL / public-holiday-CALL counts; `cumulativeCallPoints` (within-cycle load per doctor under operator-overlaid call-point weights); `maxConsecutiveDaysOff`. (No per-doctor opening-balance / end-of-cycle / delta breakdown in v1; v1 snapshot has no per-doctor opening call-point balance — see §10.6 call-point source note.)
+- **Tier 3 — equity scalars** (`EquityScalars`): per-candidate stdev / min-max gap / Gini for `callCount`, `weekendCallCount`, `publicHolidayCallCount`, and `cumulativeCallPoints`.
 - **Tier 4 — day-level** (`hotDays`, `lockedDays` + per-candidate `assignment`): per-day disagreement count and the underlying assignment matrix.
 - **Tier 5 — cross-candidate similarity** (`pairwiseHammingDistance`): pairwise cell-difference matrix.
 - **Tier 6 — constraint satisfaction** (`ViolationSummary`): hard / soft violation counts and per-rule rollups.
