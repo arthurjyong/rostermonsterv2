@@ -144,9 +144,18 @@ AnalyzerOutput {
   }
   topK: TopKResult
   comparison: ComparisonAggregates
-  doctorIdMap: { [doctorId: string]: string }  // analyzer-constructed dict {doctorId → displayName} from snapshot.doctorRecords; NOT a passthrough of envelope.doctorIdMap (which is a list-of-records, not a dict, and does not carry displayName)
+  doctorIdMap: { [doctorId: string]: string }  // analyzer-constructed dict {doctorId → displayName} per the §10 doctorId-to-displayName mapping rule below; NOT a passthrough of envelope.doctorIdMap (which is a list-of-records, not a dict, and does not carry displayName)
 }
 ```
+
+### 10.0 `doctorId` ↔ `displayName` mapping rule
+The FULL sidecar's `assignments[*].doctorId` and the analyzer's emitted `AnalyzerOutput.doctorIdMap` keys MUST resolve via the **first-release identity rule**: `doctorId == snapshot.doctorRecords[*].sourceDoctorKey`. The first-release parser passes `sourceDoctorKey` through unchanged as `Doctor.doctorId` per `docs/parser_normalizer_contract.md` (the same rule the existing `_build_doctor_id_map` helper at `python/rostermonster/run.py` / `pipeline.py` documents in-source: "First-release parser passes `sourceDoctorKey` through unchanged as `Doctor.doctorId`, so doctorId = sourceDoctorKey here"). The analyzer therefore builds `AnalyzerOutput.doctorIdMap` as `{ rec.sourceDoctorKey: rec.displayName for rec in snapshot.doctorRecords }`.
+
+Concrete admission checks (fail-loud):
+- Every `doctorId` referenced by any candidate's `assignments[*].doctorId` in the FULL sidecar MUST appear as a key in the analyzer's constructed `doctorIdMap`. If a sidecar `doctorId` is missing from `snapshot.doctorRecords`, that is a contract violation by the producer (snapshot ↔ sidecar doctor-identity drift) and the analyzer MUST raise a structured rejection — same fail-loud discipline as §9.5.
+- Duplicate `displayName` values across distinct `sourceDoctorKey`s are tolerated: the dict's key is `doctorId` (not `displayName`), so duplicates collapse only at the rendering layer (M5 C2 territory). Renderer is responsible for any disambiguation policy on duplicate names.
+
+Future extensions: if a future parser bump introduces a non-identity `sourceDoctorKey → doctorId` mapping (e.g., normalized doctor identity for cross-roster operator handling), that bump WILL require an additive analyzer-contract bump per §14 to update this rule. The first-release identity is locked here so Phase 2 implementations don't drift.
 
 ### 10.1 `TopKResult`
 ```
