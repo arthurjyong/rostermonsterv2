@@ -236,9 +236,9 @@ Tabular per-candidate summary suitable for spreadsheet-grade inspection.
 
 ### 14.2 `candidates_full.json`
 Full per-candidate payload suitable for programmatic round-trip.
-- Top-level fields MUST include `runId`, `schemaVersion: 1`, and `generationTimestamp` (carried from `runEnvelope.generationTimestamp` per §16; execution-layer-supplied, never selector-synthesized, so byte-identical determinism per §18 holds across re-runs of identical inputs).
-- The candidate payload MUST be indexed by `candidateId` and MUST include the full `AssignmentUnit[]` of each retained candidate.
-- The candidate payload MUST include the full `ScoreResult` (total + components) for each retained candidate; `candidates_full.json` is the authoritative per-candidate scoring artifact under `FULL` retention.
+- Top-level fields MUST include `runId`, `schemaVersion: 1`, and `generationTimestamp` (carried from `runEnvelope.generationTimestamp` per §16; execution-layer-supplied, never selector-synthesized, so byte-identical determinism per §18 holds across re-runs of identical inputs), plus a `candidates` field carrying the per-candidate payload.
+- The `candidates` field MUST be a JSON **array** of per-candidate objects, each object carrying its own `candidateId` field plus the full `AssignmentUnit[]` of that retained candidate. Downstream readers identify candidates by scanning the array on the per-object `candidateId` value rather than dict-style key lookup; the producer MUST NOT emit `candidates` as a dict-style `{candidateId → object}` map. (Wording clarification landed in M5 C1 Phase 1 docs PR #110 round-12 amendment after Codex review surfaced two-contract disagreement on the wire shape — the actual emission at `python/rostermonster/selector/sidecars.py` has always been array-shaped; this paragraph now matches reality. No `schemaVersion` bump is required because no byte content changed; editorial precision only, same pattern as PR #67's M2-contract polish sweep.)
+- Each per-candidate object MUST include the full `ScoreResult` (total + components) for the candidate; `candidates_full.json` is the authoritative per-candidate scoring artifact under `FULL` retention.
 - The serialization format details (key ordering, whitespace, Unicode normalization) are implementation-level concerns, but the selector MUST emit byte-identical files under identical inputs on a single implementation on a single platform. See §18.
 
 ### 14.3 Filesystem placement is execution-layer-owned
