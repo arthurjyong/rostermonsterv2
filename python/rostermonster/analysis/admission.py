@@ -116,6 +116,11 @@ def validate_coherence(
     envelope_snapshot_ref = run_env.get("snapshotRef")
     envelope_run_id = run_env.get("runId")
 
+    if not envelope_snapshot_ref:
+        raise AnalyzerInputError(
+            "envelope.finalResultEnvelope.runEnvelope.snapshotRef is "
+            "missing; cannot validate snapshot↔envelope coherence"
+        )
     if envelope_snapshot_ref != snapshot_id:
         raise AnalyzerInputError(
             f"snapshot↔envelope coherence violated: "
@@ -124,7 +129,17 @@ def validate_coherence(
             f"{envelope_snapshot_ref!r}"
         )
 
+    if not envelope_run_id:
+        raise AnalyzerInputError(
+            "envelope.finalResultEnvelope.runEnvelope.runId is missing; "
+            "cannot validate envelope↔sidecar coherence"
+        )
     sidecar_run_id = full_sidecar.get("runId")
+    if not sidecar_run_id:
+        raise AnalyzerInputError(
+            "fullSidecar.runId is missing; cannot validate "
+            "envelope↔sidecar coherence"
+        )
     if sidecar_run_id != envelope_run_id:
         raise AnalyzerInputError(
             f"envelope↔sidecar coherence violated: "

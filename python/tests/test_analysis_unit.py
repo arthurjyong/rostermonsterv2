@@ -219,6 +219,35 @@ def test_validate_coherence_rejects_sidecar_run_mismatch() -> None:
                    match="envelope↔sidecar")
 
 
+def test_validate_coherence_rejects_missing_envelope_run_id() -> None:
+    """Both-`None` should NOT silently pass equality; presence is
+    required separately so analyze() doesn't crash later on
+    KeyError reading run_env['runId']."""
+    snapshot = {"metadata": {"snapshotId": "snap_X"}}
+    envelope = {
+        "finalResultEnvelope": {
+            "runEnvelope": {"snapshotRef": "snap_X"}  # no runId
+        }
+    }
+    sidecar = {}  # no runId either
+    _expect_raises(AnalyzerInputError, validate_coherence,
+                   snapshot, envelope, sidecar,
+                   match="runId is missing")
+
+
+def test_validate_coherence_rejects_missing_envelope_snapshot_ref() -> None:
+    snapshot = {"metadata": {"snapshotId": "snap_X"}}
+    envelope = {
+        "finalResultEnvelope": {
+            "runEnvelope": {}  # no snapshotRef
+        }
+    }
+    sidecar = {"runId": "r"}
+    _expect_raises(AnalyzerInputError, validate_coherence,
+                   snapshot, envelope, sidecar,
+                   match="snapshotRef is missing")
+
+
 # -- admission: §10.0 doctor resolvability --
 
 def test_validate_doctor_resolvability_accepts_known_ids() -> None:
