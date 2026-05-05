@@ -118,7 +118,19 @@ def build_component_breakdowns(
     for idx, cand in enumerate(selected_candidates):
         components = cand.get("score", {}).get("components", {})
         for cn in component_names:
-            weighted_by_component[cn].append((float(components.get(cn, 0.0)), idx))
+            if cn not in components:
+                # Scorer §10 contractually requires every first-release
+                # component on every emitted ScoreResult. Silent zero-
+                # fill would corrupt rank/gap calculations on a partial
+                # sidecar; fail-loud surfaces upstream defect cleanly.
+                raise AnalyzerInputError(
+                    f"candidate {cand.get('candidateId')!r} score.components "
+                    f"is missing required component {cn!r} — scorer "
+                    f"contract §10 violation upstream"
+                )
+            weighted_by_component[cn].append(
+                (float(components[cn]), idx)
+            )
 
     # Rank within K per component (descending by weighted value).
     rank_table: dict[str, list[int]] = {cn: [0] * len(selected_candidates)
@@ -138,13 +150,14 @@ def build_component_breakdowns(
             else:
                 gap_table[cn][idx] = None
 
-    # Build per-candidate breakdowns.
+    # Build per-candidate breakdowns. Component presence already verified
+    # in the collection loop above — `components[cn]` is safe here.
     out: list[dict[str, ComponentBreakdown]] = []
     for idx, cand in enumerate(selected_candidates):
-        components = cand.get("score", {}).get("components", {})
+        components = cand["score"]["components"]
         per_candidate: dict[str, ComponentBreakdown] = {}
         for cn in component_names:
-            weighted = float(components.get(cn, 0.0))
+            weighted = float(components[cn])
             weight = float(scoring_config.weights.get(cn, 0.0))
             raw = (weighted / weight) if weight != 0.0 else 0.0
             per_candidate[cn] = ComponentBreakdown(

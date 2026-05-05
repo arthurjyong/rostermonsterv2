@@ -134,6 +134,32 @@ def validate_coherence(
         )
 
 
+def validate_non_empty_candidates(full_sidecar: dict[str, Any]) -> None:
+    """Reject success-branch envelopes paired with empty
+    `fullSidecar.candidates`.
+
+    A coherent FULL-retention success-branch envelope never emits zero
+    candidates — the upstream pipeline routes empty results to the
+    failure branch (UnsatisfiedResultEnvelope) which §9.2 already
+    rejects. An empty `candidates` array therefore signals a
+    truncated/manually-mixed sidecar that slipped past `runId`
+    coherence; the analyzer fails-loud rather than producing
+    degenerate output (e.g., misclassifying every day as HOT with
+    `distinctAssignments=0`).
+    """
+    candidates = full_sidecar.get("candidates")
+    if not isinstance(candidates, list):
+        raise AnalyzerInputError(
+            "fullSidecar.candidates is missing or not a list"
+        )
+    if len(candidates) == 0:
+        raise AnalyzerInputError(
+            "fullSidecar.candidates is empty; success-branch envelope "
+            "cannot have zero candidates (failure branch is rejected "
+            "separately per §9.2). Likely a truncated or mixed sidecar."
+        )
+
+
 def validate_doctor_resolvability(
     snapshot: dict[str, Any],
     full_sidecar: dict[str, Any],
@@ -189,4 +215,5 @@ def admit(
     validate_full_retention(envelope)
     validate_success_branch(envelope)
     validate_coherence(snapshot, envelope, full_sidecar)
+    validate_non_empty_candidates(full_sidecar)
     validate_doctor_resolvability(snapshot, full_sidecar)

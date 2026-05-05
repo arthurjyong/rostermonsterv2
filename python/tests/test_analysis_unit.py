@@ -26,6 +26,7 @@ from rostermonster.analysis.admission import (  # noqa: E402
     validate_coherence,
     validate_doctor_resolvability,
     validate_full_retention,
+    validate_non_empty_candidates,
     validate_success_branch,
     validate_top_k,
 )
@@ -243,6 +244,24 @@ def test_validate_doctor_resolvability_rejects_unknown_id() -> None:
     _expect_raises(AnalyzerInputError, validate_doctor_resolvability,
                    snapshot, sidecar,
                    match="doctor-identity drift")
+
+
+# -- admission: non-empty candidates --
+
+def test_validate_non_empty_candidates_accepts_one_or_more() -> None:
+    validate_non_empty_candidates({"candidates": [{"assignments": []}]})
+
+
+def test_validate_non_empty_candidates_rejects_empty_list() -> None:
+    _expect_raises(AnalyzerInputError, validate_non_empty_candidates,
+                   {"candidates": []},
+                   match="cannot have zero candidates")
+
+
+def test_validate_non_empty_candidates_rejects_missing_field() -> None:
+    _expect_raises(AnalyzerInputError, validate_non_empty_candidates,
+                   {"runId": "x"},
+                   match="missing or not a list")
 
 
 # -- admission: full admit pipeline order --
