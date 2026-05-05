@@ -335,6 +335,46 @@ def test_validate_doctor_resolvability_rejects_unknown_id() -> None:
                    match="doctor-identity drift")
 
 
+def test_validate_doctor_resolvability_rejects_non_list_doctor_records() -> None:
+    snapshot = {"doctorRecords": "oops"}
+    sidecar = {"candidates": [{"assignments": []}]}
+    _expect_raises(AnalyzerInputError, validate_doctor_resolvability,
+                   snapshot, sidecar,
+                   match="doctorRecords is missing or not a list")
+
+
+def test_validate_doctor_resolvability_rejects_non_dict_doctor_record() -> None:
+    snapshot = {"doctorRecords": ["bad_string"]}
+    sidecar = {"candidates": [{"assignments": []}]}
+    _expect_raises(AnalyzerInputError, validate_doctor_resolvability,
+                   snapshot, sidecar,
+                   match="doctorRecords[0] is not a JSON object")
+
+
+def test_validate_doctor_resolvability_rejects_non_dict_candidate() -> None:
+    snapshot = {"doctorRecords": [{"sourceDoctorKey": "A"}]}
+    sidecar = {"candidates": ["bad_candidate"]}
+    _expect_raises(AnalyzerInputError, validate_doctor_resolvability,
+                   snapshot, sidecar,
+                   match="candidates[0] is not a JSON object")
+
+
+def test_validate_doctor_resolvability_rejects_non_dict_assignment() -> None:
+    snapshot = {"doctorRecords": [{"sourceDoctorKey": "A"}]}
+    sidecar = {"candidates": [{"assignments": ["bad_assignment"]}]}
+    _expect_raises(AnalyzerInputError, validate_doctor_resolvability,
+                   snapshot, sidecar,
+                   match="assignments[0] is not a JSON object")
+
+
+def test_validate_doctor_resolvability_rejects_non_list_assignments() -> None:
+    snapshot = {"doctorRecords": [{"sourceDoctorKey": "A"}]}
+    sidecar = {"candidates": [{"assignments": "not_a_list"}]}
+    _expect_raises(AnalyzerInputError, validate_doctor_resolvability,
+                   snapshot, sidecar,
+                   match="assignments is not a list")
+
+
 # -- admission: non-empty candidates --
 
 def test_validate_non_empty_candidates_accepts_one_or_more() -> None:

@@ -217,18 +217,41 @@ def validate_doctor_resolvability(
     analyzer's constructed `doctorIdMap`. Snapshot↔sidecar doctor-
     identity drift is a producer defect; analyzer surfaces it fail-loud.
     """
-    doctor_keys = {
-        rec.get("sourceDoctorKey")
-        for rec in snapshot.get("doctorRecords", [])
-    }
+    doctor_records = snapshot.get("doctorRecords")
+    if not isinstance(doctor_records, list):
+        raise AnalyzerInputError(
+            "snapshot.doctorRecords is missing or not a list"
+        )
+    doctor_keys: set[Any] = set()
+    for idx, rec in enumerate(doctor_records):
+        if not isinstance(rec, dict):
+            raise AnalyzerInputError(
+                f"snapshot.doctorRecords[{idx}] is not a JSON object"
+            )
+        doctor_keys.add(rec.get("sourceDoctorKey"))
+
     candidates = full_sidecar.get("candidates", [])
     if not isinstance(candidates, list):
         raise AnalyzerInputError(
             "fullSidecar.candidates is missing or not a list"
         )
     seen: set[Any] = set()
-    for cand in candidates:
-        for assignment in cand.get("assignments", []):
+    for idx, cand in enumerate(candidates):
+        if not isinstance(cand, dict):
+            raise AnalyzerInputError(
+                f"fullSidecar.candidates[{idx}] is not a JSON object"
+            )
+        assignments = cand.get("assignments", [])
+        if not isinstance(assignments, list):
+            raise AnalyzerInputError(
+                f"fullSidecar.candidates[{idx}].assignments is not a list"
+            )
+        for a_idx, assignment in enumerate(assignments):
+            if not isinstance(assignment, dict):
+                raise AnalyzerInputError(
+                    f"fullSidecar.candidates[{idx}].assignments"
+                    f"[{a_idx}] is not a JSON object"
+                )
             doctor_id = assignment.get("doctorId")
             if doctor_id is None:
                 continue
