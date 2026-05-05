@@ -139,10 +139,10 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
 # Apps Script local clasp config (contains real scriptId)
-apps_script/m1_sheet_generator/.clasp.json
+apps_script/launcher/.clasp.json
 
 # Apps Script local operator metadata (deployment IDs, execution URLs)
-apps_script/m1_sheet_generator/.ops.local.json
+apps_script/launcher/.ops.local.json
 
 # Local-only scratch folder for Claude Code context (screenshots, old-repo clones, papers)
 for_claude_code/
