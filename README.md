@@ -23,9 +23,9 @@ Roster Monster v2 is a reusable roster-allocation core with department-specific 
 - `docs/*_contract.md` — Normative technical boundary definitions.
 
 ## Code layout
-- `apps_script/m1_sheet_generator/` — Operator-facing launcher Web App (sheet generation + writeback form).
-- `apps_script/m2_template_bound_script/` — Bound shim attached to the template spreadsheet (Extract Snapshot + Solve Roster menus).
-- `apps_script/m2_extractor_library/` — Central Apps Script library (snapshot extractor + writeback library + cloud-mode orchestration).
+- `apps_script/launcher/` — Operator-facing launcher Web App (sheet generation + writeback form).
+- `apps_script/bound_shim/` — Bound shim attached to the template spreadsheet (Extract Snapshot + Solve Roster menus).
+- `apps_script/central_library/` — Central Apps Script library (snapshot extractor + writeback library + cloud-mode orchestration).
 - `python/rostermonster/` — Shared Python compute core (parser, normalizer, rule engine, scorer, solver, selector, pipeline entrypoint).
 - `python/rostermonster_service/` — Flask HTTP wrapper for Cloud Run (D-0050 dual-track).
 - `cloud_compute_service/` — Dockerfile + deployment bundle for Cloud Run.

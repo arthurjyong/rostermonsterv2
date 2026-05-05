@@ -75,7 +75,7 @@ sheetName, periodStartDate, periodEndDate, doctorCountByGroup, mode }`.
 ## Layout
 
 ```
-apps_script/m1_sheet_generator/
+apps_script/launcher/
 ├── .clasp.json                 # local-only, gitignored; points at the real Apps Script project
 ├── .clasp.json.example         # committed template
 ├── README.md
@@ -115,7 +115,7 @@ clasp login
 Then from this folder:
 
 ```
-cd apps_script/m1_sheet_generator
+cd apps_script/launcher
 clasp status
 clasp push
 clasp open
