@@ -25,7 +25,7 @@ Repo-settled:
 - `docs/decision_log.md` D-0017 / D-0018 — stack split: compute core lives in Python; Apps Script is the sheet-facing adapter. Cloud compute is the Python side delivered as an HTTP service.
 - `docs/decision_log.md` D-0023 — M1.1 OAuth posture: launcher executes as user, scoped via `https://www.googleapis.com/auth/drive` and friends. Cloud compute does NOT add new OAuth scopes; the `ScriptApp.getIdentityToken()` mechanic uses the existing user-side authentication.
 - `docs/decision_log.md` D-0040 — inbound transport (snapshot extraction) = browser-saved JSON file. Cloud compute receives the snapshot via HTTP request body, NOT via a Drive read or other side channel.
-- `docs/decision_log.md` D-0041 — Apps Script project layout: launcher (`m1_sheet_generator`), bound shim (`m2_template_bound_script`), central library (`m2_extractor_library`). Cloud compute is invoked from the bound shim per D-0052.
+- `docs/decision_log.md` D-0041 — Apps Script project layout: launcher (`launcher`), bound shim (`bound_shim`), central library (`central_library`). Cloud compute is invoked from the bound shim per D-0052.
 - `docs/decision_log.md` D-0044 — writeback transport = file upload via launcher form. Cloud compute is parallel to that path: same Python code, same wrapper envelope shape, but invoked over HTTP from the bound shim instead of consumed from a JSON file via the local CLI.
 - `docs/decision_log.md` D-0045 — writeback envelope wrapper shape (`schemaVersion` + `finalResultEnvelope` + `snapshot` subset + `doctorIdMap`). The cloud compute service produces this same shape; the bound shim hands it directly to `RMLib.applyWriteback(envelope)` per D-0052 without a file boundary in between.
 - `docs/decision_log.md` D-0049 — M4 reframed to "Cloud end-to-end pipeline + dual-track preservation". This contract is M4 C1's principal contract surface.
@@ -45,7 +45,7 @@ Pin the cloud-deployed compute service's HTTP boundary so:
 
 ## 6) Boundary position
 Repo-settled:
-- **Upstream** (caller): bound shim's "Solve Roster" handler in `apps_script/m2_template_bound_script/`, invoked from the in-spreadsheet menu. The launcher's writeback Web App does NOT call this service — the launcher's writeback path remains file-upload-only per D-0046.
+- **Upstream** (caller): bound shim's "Solve Roster" handler in `apps_script/bound_shim/`, invoked from the in-spreadsheet menu. The launcher's writeback Web App does NOT call this service — the launcher's writeback path remains file-upload-only per D-0046.
 - **Boundary**: HTTP POST request from Apps Script's `UrlFetchApp.fetch(...)` to a Cloud Run service URL. Single endpoint per service deployment.
 - **Downstream** (callee): Cloud Run service running the Flask HTTP wrapper around `python/rostermonster/run.py`'s shared compute core per D-0050.
 
@@ -75,7 +75,7 @@ The service runs `--allow-unauthenticated` at the Cloud Run platform layer. Oper
 `ALLOWED_EMAILS` env var on the Cloud Run service is the operator allowlist. Adding a new pilot operator: `gcloud run services update roster-monster-compute --update-env-vars=ALLOWED_EMAILS=existing,new@example.com --region=asia-southeast1`. Single-knob configuration; no IAM ceremony, no service account creation. The same email must also be on the OAuth consent screen Test Users list for the operator's bound shim consent flow to succeed.
 
 ### 7.3 Required manifest OAuth scopes on the bound shim
-The bound shim's `apps_script/m2_template_bound_script/src/appsscript.json` MUST declare the following scopes:
+The bound shim's `apps_script/bound_shim/src/appsscript.json` MUST declare the following scopes:
 - **`https://www.googleapis.com/auth/spreadsheets`** (full, NOT `spreadsheets.currentonly`) — required by `SpreadsheetApp.openById()` which the writeback library calls inside `RMLib.applyWriteback(envelope)`. Live testing confirmed `spreadsheets.currentonly` is insufficient even when the target ID is the bound spreadsheet's own ID; Apps Script's scope check fires before the spreadsheet-existence check ("Specified permissions are not sufficient to call SpreadsheetApp.openById. Required permissions: https://www.googleapis.com/auth/spreadsheets"). The narrower `spreadsheets.currentonly` was the original M2 C9 default for the snapshot extractor, which only uses `getActiveSpreadsheet()` and never `openById`; M4 C1's writeback path requires the broader scope.
 - **`https://www.googleapis.com/auth/script.external_request`** — required for `UrlFetchApp.fetch(...)` to call Cloud Run.
 - **`openid`** — required for `ScriptApp.getIdentityToken()` to issue a valid OIDC ID token.

@@ -2,7 +2,7 @@
 // Public entrypoint of the snapshot-extractor library per
 // `docs/decision_log.md` D-0041 + `docs/snapshot_adapter_contract.md`.
 //
-// The bound shim (`apps_script/m2_template_bound_script/`) calls
+// The bound shim (`apps_script/bound_shim/`) calls
 // `extractSnapshotForActiveSheet()` from its menu handler. We:
 //
 //   1. Identify the active request-entry tab (§6 step 1).

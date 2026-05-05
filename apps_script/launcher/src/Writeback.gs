@@ -1,7 +1,7 @@
 // Writeback.gs
 // Thin delegate shim per `docs/decision_log.md` D-0052: the writeback
 // library implementation moved to the central library
-// (`apps_script/m2_extractor_library/src/Writeback.gs`) so the bound
+// (`apps_script/central_library/src/Writeback.gs`) so the bound
 // shim's "Solve Roster" menu can invoke it inline without a launcher
 // Web App round-trip. The launcher's existing writeback Web App route
 // (per D-0046, file-upload-via-launcher-form path) keeps its

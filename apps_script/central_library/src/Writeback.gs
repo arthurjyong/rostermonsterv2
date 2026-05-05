@@ -203,7 +203,7 @@ function _utcWritebackTimestamp_() {
 // --- success-branch rendering (§10.1) --------------------------------------
 
 // M1.1 visual palette — identical hex values to
-// `apps_script/m1_sheet_generator/src/Layout.gs` LAYOUT_COLORS_ so the
+// `apps_script/launcher/src/Layout.gs` LAYOUT_COLORS_ so the
 // writeback tab matches the operator-input shell aesthetically. ICU/HD-
 // specific label maps below are first-release hardcodes per the M4 C1
 // "minimum demo" quality bar (D-0049); template-aware label propagation
@@ -219,7 +219,7 @@ var _WB_COLORS_ = Object.freeze({
 });
 
 // ICU/HD first-release section header labels per
-// `apps_script/m1_sheet_generator/src/TemplateData.gs`'s sections. Falls
+// `apps_script/launcher/src/TemplateData.gs`'s sections. Falls
 // back to the raw sectionKey if a key isn't in the map (defensive — the
 // M2 C9 snapshot extractor and the M1.1 generator share the same
 // sectionKey vocabulary, so all keys should be present).
@@ -252,7 +252,7 @@ var _WB_SLOT_LABELS_ = Object.freeze({
 //   finalResultEnvelope.result.winnerAssignment rendered with the
 //   column-A cell value of the resolved doctor (§12).
 //
-// Visual styling matches `apps_script/m1_sheet_generator/src/Layout.gs`'s
+// Visual styling matches `apps_script/launcher/src/Layout.gs`'s
 // empty-shell generation per the M4 C1 Phase 2 polish pass — same color
 // palette, same friendly labels, weekend column shading, frozen panes.
 // Label maps live in `_WB_SECTION_LABELS_` / `_WB_POINT_ROW_LABELS_` /
@@ -269,7 +269,7 @@ function _renderSuccessBranch_(sheet, envelope) {
 
   var currentRow = 1;
   // Track rows whose intentional bg color must "win" over weekend-column
-  // shading (same pattern as `apps_script/m1_sheet_generator/src/Layout.gs`'s
+  // shading (same pattern as `apps_script/launcher/src/Layout.gs`'s
   // bandedRows mechanism). Weekend shading is applied last per column,
   // then these row-level backgrounds are reapplied to overwrite.
   var bandedRows = [];
