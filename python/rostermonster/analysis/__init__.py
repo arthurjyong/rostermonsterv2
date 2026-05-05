@@ -91,7 +91,18 @@ def _resolve_scoring_config(
     outputs and the pipeline filters NON_CONSUMABLE before it ever
     produces a sidecar.
     """
-    snapshot = _snapshot_from_dict(snapshot_dict)
+    try:
+        snapshot = _snapshot_from_dict(snapshot_dict)
+    except (KeyError, TypeError, ValueError) as e:
+        # `_snapshot_from_dict` is strict per snapshot_contract.md §6
+        # and raises bare exceptions on missing/malformed fields. Wrap
+        # them so admission's fail-loud surface stays uniform — CLI
+        # exits with "analyzer rejected input" rather than a Python
+        # traceback.
+        raise AnalyzerInputError(
+            f"snapshot does not satisfy docs/snapshot_contract.md "
+            f"shape: {type(e).__name__}: {e}"
+        ) from e
     template = _resolve_template(snapshot_dict)
     parser_result = parse(snapshot, template)
     if parser_result.consumability is not Consumability.CONSUMABLE:
@@ -142,6 +153,20 @@ def analyze(
 
     # Top-K selection over the FULL sidecar.
     candidates = list(fullSidecar.get("candidates", []))
+    seen_ids: set[int] = set()
+    for cand in candidates:
+        cid = cand.get("candidateId")
+        if cid in seen_ids:
+            # Duplicate candidateId would silently overwrite map-keyed
+            # aggregates (perCandidateEquity, pairwiseHammingDistance);
+            # surface as upstream sidecar defect per the same fail-loud
+            # discipline as §10.0 doctor-resolvability.
+            raise AnalyzerInputError(
+                f"fullSidecar.candidates contains duplicate candidateId "
+                f"{cid!r}; sidecar is malformed (run-monotonic dense "
+                f"integer per selector_contract §16.1)"
+            )
+        seen_ids.add(cid)
     selected = select_top_k(candidates, topK)
 
     # Tier 1: per-component breakdowns.
@@ -203,14 +228,27 @@ def analyze(
         for rec in snapshot.get("doctorRecords", [])
     }
 
-    # Source ride-through.
+    # Source ride-through. `sourceSpreadsheetId` + `sourceTabName` are
+    # REQUIRED per selector_contract §9 item 3 (added in selector v2 per
+    # D-0032); missing values signal an upstream defect — fail-loud
+    # rather than fabricate empty strings into the operator-facing
+    # `AnalyzerOutput.source`. `seed` is optional (None for failure-
+    # branch envelopes which §9.2 already rejects, plus future
+    # strategies that may not use a seed).
     final = envelope["finalResultEnvelope"]
     run_env = final["runEnvelope"]
+    for required_field in ("runId", "sourceSpreadsheetId", "sourceTabName"):
+        if not run_env.get(required_field):
+            raise AnalyzerInputError(
+                f"envelope.finalResultEnvelope.runEnvelope.{required_field} "
+                f"is missing or empty — required per selector_contract "
+                f"§9 item 3 (selector v2 / D-0032)"
+            )
     source = AnalyzerSource(
         runId=run_env["runId"],
         seed=run_env.get("seed"),
-        sourceSpreadsheetId=run_env.get("sourceSpreadsheetId", ""),
-        sourceTabName=run_env.get("sourceTabName", ""),
+        sourceSpreadsheetId=run_env["sourceSpreadsheetId"],
+        sourceTabName=run_env["sourceTabName"],
     )
 
     return AnalyzerOutput(

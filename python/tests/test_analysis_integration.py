@@ -186,6 +186,58 @@ def test_analyzer_rejects_coherence_mismatch() -> None:
     assert raised, "coherence mismatch should have been rejected"
 
 
+def test_analyzer_rejects_duplicate_candidate_id() -> None:
+    """Duplicate candidateId in the sidecar would silently overwrite
+    map-keyed aggregates; analyzer fails-loud."""
+    snap, env, sidecar = _run_pipeline_full(max_candidates=3)
+    # Inject a duplicate by appending a copy of the first candidate.
+    sidecar["candidates"].append(dict(sidecar["candidates"][0]))
+    raised = False
+    try:
+        analyze(snap, env, sidecar,
+                topK=1, generatedAt="2026-05-04T10:00:00Z")
+    except AnalyzerInputError as e:
+        raised = True
+        assert "duplicate candidateId" in str(e), \
+            f"expected duplicate-rejection message; got {e!r}"
+    assert raised, "duplicate candidateId should have been rejected"
+
+
+def test_analyzer_rejects_missing_source_spreadsheet_id() -> None:
+    """§9 input #2: runEnvelope.sourceSpreadsheetId is required per
+    selector_contract §9 item 3. Missing → fail-loud, not empty-string
+    fabrication."""
+    snap, env, sidecar = _run_pipeline_full(max_candidates=2)
+    env["finalResultEnvelope"]["runEnvelope"]["sourceSpreadsheetId"] = ""
+    raised = False
+    try:
+        analyze(snap, env, sidecar,
+                topK=1, generatedAt="2026-05-04T10:00:00Z")
+    except AnalyzerInputError as e:
+        raised = True
+        assert "sourceSpreadsheetId" in str(e)
+    assert raised, "missing sourceSpreadsheetId should have been rejected"
+
+
+def test_analyzer_rejects_malformed_snapshot_shape() -> None:
+    """_snapshot_from_dict raises bare exceptions on malformed
+    snapshots; analyzer wraps them as AnalyzerInputError so CLI surfaces
+    a structured rejection instead of a Python traceback."""
+    snap, env, sidecar = _run_pipeline_full(max_candidates=2)
+    # Strip a required snapshot field that admission doesn't check
+    # (admission only checks metadata.snapshotId / templateId; doctor
+    # records' shape is _snapshot_from_dict's territory).
+    del snap["doctorRecords"]
+    raised = False
+    try:
+        analyze(snap, env, sidecar,
+                topK=1, generatedAt="2026-05-04T10:00:00Z")
+    except AnalyzerInputError as e:
+        raised = True
+        assert "snapshot" in str(e).lower()
+    assert raised, "malformed snapshot should have been rejected"
+
+
 # -- standalone runner ------------------------------------------------
 
 def _all_tests():
