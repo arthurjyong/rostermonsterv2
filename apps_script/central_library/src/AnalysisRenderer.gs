@@ -22,20 +22,29 @@
 // - §16 structured AnalysisRendererResult.error codes
 // - §17 byte-identical determinism on identical input + state
 
-// Public API surface — invoked by the launcher's analysis-render route
-// per D-0063. Parameter is the JSON string the operator uploaded
-// (the AnalyzerOutput per `docs/analysis_contract.md` §10). Returns
-// AnalysisRendererResult per `docs/analysis_renderer_contract.md` §10.
-function renderAnalysis(outputJsonString) {
-  var output;
-  try {
-    output = JSON.parse(outputJsonString);
-  } catch (e) {
-    return _ar_failed_(
-      'INVALID_INPUT_VERSION',
-      'Could not parse uploaded JSON as AnalyzerOutput: ' +
-      (e && e.message ? e.message : String(e))
-    );
+// Public API surface — `RMLib.renderAnalysis(output)` per
+// `docs/analysis_renderer_contract.md` §6 + §9. The contract boundary
+// is an in-memory `AnalyzerOutput` object (§9 input #1); the launcher's
+// delegate shim per `docs/analysis_renderer_contract.md` §11.3 is
+// expected to `JSON.parse(...)` the operator-uploaded string before
+// calling this function.
+//
+// Defensive resilience: callers that pass a JSON string instead of an
+// object are accepted — the library parses internally and surfaces the
+// same `AnalysisRendererResult` shape per §10. This keeps the contract
+// intent (object boundary) authoritative while not breaking call sites
+// that haven't yet been updated.
+function renderAnalysis(output) {
+  if (typeof output === 'string') {
+    try {
+      output = JSON.parse(output);
+    } catch (e) {
+      return _ar_failed_(
+        'INVALID_INPUT_VERSION',
+        'Could not parse uploaded JSON as AnalyzerOutput: ' +
+        (e && e.message ? e.message : String(e))
+      );
+    }
   }
   return _renderAnalysisInner_(output);
 }

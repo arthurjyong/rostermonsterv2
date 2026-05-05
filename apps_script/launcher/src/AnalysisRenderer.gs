@@ -17,6 +17,29 @@
 // `RMLib` is the central library declared in `appsscript.json` under
 // `dependencies.libraries[].userSymbol = "RMLib"` — the same symbol
 // the bound shim uses.
+//
+// Per `docs/analysis_renderer_contract.md` §11.3, the launcher's route
+// is the layer that deserializes the operator-uploaded JSON string
+// before calling `RMLib.renderAnalysis(output)`. The library's
+// boundary is the in-memory `AnalyzerOutput` object per §6 + §9.
+// On parse failure we surface the structured `AnalysisRendererResult`
+// shape per §16 directly so the form's response handler renders the
+// failure card consistently with library-side admission failures.
 function renderAnalysis(outputJsonString) {
-  return RMLib.renderAnalysis(outputJsonString);
+  var output;
+  try {
+    output = JSON.parse(outputJsonString);
+  } catch (e) {
+    return {
+      state: 'FAILED',
+      newTabIds: [],
+      newTabNames: [],
+      error: {
+        code: 'INVALID_INPUT_VERSION',
+        message: 'Could not parse uploaded JSON as AnalyzerOutput: ' +
+          (e && e.message ? e.message : String(e)),
+      },
+    };
+  }
+  return RMLib.renderAnalysis(output);
 }
