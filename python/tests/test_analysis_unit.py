@@ -284,6 +284,30 @@ def test_validate_coherence_rejects_non_dict_metadata() -> None:
                    match="metadata is missing or not")
 
 
+def test_validate_full_retention_rejects_non_dict_envelope() -> None:
+    """Defend against malformed JSON root (`[]`, `"..."`, etc.) at
+    the top of admission so the CLI surfaces a structured rejection
+    instead of a Python AttributeError traceback."""
+    _expect_raises(AnalyzerInputError, validate_full_retention,
+                   "not_a_dict",
+                   match="envelope is missing or not a JSON object")
+    _expect_raises(AnalyzerInputError, validate_full_retention,
+                   ["array", "root"],
+                   match="envelope is missing or not a JSON object")
+
+
+def test_validate_success_branch_rejects_non_dict_envelope() -> None:
+    _expect_raises(AnalyzerInputError, validate_success_branch,
+                   None,
+                   match="envelope is missing or not a JSON object")
+
+
+def test_validate_coherence_rejects_non_dict_top_level() -> None:
+    _expect_raises(AnalyzerInputError, validate_coherence,
+                   "not_a_dict", {}, {},
+                   match="snapshot is missing or not a JSON object")
+
+
 # -- admission: §10.0 doctor resolvability --
 
 def test_validate_doctor_resolvability_accepts_known_ids() -> None:

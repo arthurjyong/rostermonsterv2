@@ -44,10 +44,27 @@ def validate_top_k(requested: int) -> None:
         )
 
 
+def _ensure_dict(value: Any, label: str) -> None:
+    """Top-level shape check used by the admission entrypoints.
+
+    Defends against malformed JSON roots (`[]`, `"string"`, numbers,
+    `null`) that would otherwise crash with `AttributeError` on the
+    first `.get(...)` call. Surfaces the failure as a structured
+    `AnalyzerInputError` instead, so the CLI's exit-code dispatch
+    per `__main__.py` reports "analyzer rejected input" rather than a
+    Python traceback.
+    """
+    if not isinstance(value, dict):
+        raise AnalyzerInputError(
+            f"{label} is missing or not a JSON object"
+        )
+
+
 def validate_full_retention(envelope: dict[str, Any]) -> None:
     """§9.1: analyzer MUST be invoked against a FULL-retention envelope.
     BEST_ONLY is fail-loud — the FULL sidecar would be absent and there
     is no top-K to compute."""
+    _ensure_dict(envelope, "envelope")
     final = envelope.get("finalResultEnvelope")
     if not isinstance(final, dict):
         raise AnalyzerInputError(
@@ -69,6 +86,7 @@ def validate_success_branch(envelope: dict[str, Any]) -> None:
     `winnerAssignment` + `winnerScore`. If `winnerAssignment` is absent
     we treat that as the failure branch.
     """
+    _ensure_dict(envelope, "envelope")
     final = envelope.get("finalResultEnvelope")
     if not isinstance(final, dict):
         raise AnalyzerInputError(
@@ -104,6 +122,9 @@ def validate_coherence(
     surface both sides of the mismatch so the operator can diagnose
     which file is wrong.
     """
+    _ensure_dict(snapshot, "snapshot")
+    _ensure_dict(envelope, "envelope")
+    _ensure_dict(full_sidecar, "fullSidecar")
     snapshot_meta = snapshot.get("metadata")
     if not isinstance(snapshot_meta, dict):
         raise AnalyzerInputError(

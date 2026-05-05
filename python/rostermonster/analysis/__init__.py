@@ -50,17 +50,27 @@ __all__ = [
 def _resolve_template(snapshot_dict: dict[str, Any]):
     """Look up the template by `snapshot.metadata.templateId` per §10.6.
 
+    `metadata.templateId` is REQUIRED per `docs/analysis_contract.md`
+    §9 input #1 — missing-templateId is fail-loud rather than silently
+    defaulting to ICU/HD, because parser-overlay call-point resolution
+    depends on the template the pipeline used; defaulting here would
+    let the analyzer compute against the wrong template's defaults
+    when the snapshot is from a future second template.
+
     First-release ICU/HD-only — `cgh_icu_hd` is the only registered
     template per `docs/decision_log.md` D-0019 / `templates/__init__.py`.
-    Future templates would extend this lookup.
+    Future templates extend this lookup.
     """
-    md = snapshot_dict.get("metadata", {})
+    md = snapshot_dict.get("metadata") or {}
     template_id = md.get("templateId")
-    if template_id == "cgh_icu_hd" or template_id is None:
-        # `None` falls back to the same default `pipeline._snapshot_from_dict`
-        # uses (`cgh_icu_hd`); kept tolerant for snapshots without explicit
-        # templateId in legacy-fixture cases. A future bump would tighten
-        # this to require explicit templateId.
+    if not template_id:
+        raise AnalyzerInputError(
+            "snapshot.metadata.templateId is missing — required per "
+            "analysis_contract §9 input #1 so the analyzer's parser-"
+            "overlay reuse resolves call-point defaults against the "
+            "same template the pipeline used"
+        )
+    if template_id == "cgh_icu_hd":
         return icu_hd_template_artifact()
     raise AnalyzerInputError(
         f"unknown templateId {template_id!r}; first release supports "
