@@ -101,32 +101,44 @@ function _renderAnalysisInner_(output) {
   var rankPadWidth = (k >= 10) ? 2 : 1;
 
   try {
-    // K roster tabs (rank 1 → rank K), then comparison tab last per §14
+    // K roster tabs (rank 1 → rank K), then comparison tab last per §14.
+    //
+    // newTabIds + newTabNames are appended IMMEDIATELY after insertSheet
+    // succeeds, BEFORE rendering / footer / metadata / protection / flush
+    // run. This is intentional partial-state discipline: if any of those
+    // later steps throws (most likely cause: SpreadsheetApp transient),
+    // the partially-rendered tab is still in the spreadsheet, and the
+    // §14 cleanup-on-failure rule explicitly says do NOT delete it. The
+    // catch block's RENDER_EXCEPTION result must therefore include it
+    // in newTabNames so the operator's failure card surfaces every tab
+    // that exists in the spreadsheet (including partial ones) — without
+    // this, the operator gets a "render failed, no tab written" report
+    // even though an orphan tab is sitting there needing inspection.
     for (var i = 0; i < k; i++) {
       var cand = output.topK.candidates[i];
       var rankStr = _ar_padRank_(cand.rankByTotalScore, rankPadWidth);
       var baseName = 'Analysis ' + runShort + ' ' + rankStr;
       var tabName = _ar_uniqueTabName_(ss, baseName);
       var sheet = ss.insertSheet(tabName);
+      newTabIds.push(String(sheet.getSheetId()));
+      newTabNames.push(tabName);
       _ar_renderRosterTab_(sheet, output, cand, k, resolvedDoctorIdMap);
       _ar_attachRendererFooter_(sheet, output, 'roster', cand.rankByTotalScore);
       _ar_attachRendererMetadata_(sheet, output, 'roster', cand.candidateId);
       _ar_protectRendererTab_(sheet);
       SpreadsheetApp.flush();
-      newTabIds.push(String(sheet.getSheetId()));
-      newTabNames.push(tabName);
     }
 
     var compBaseName = 'Analysis ' + runShort + ' Comparison';
     var compName = _ar_uniqueTabName_(ss, compBaseName);
     var compSheet = ss.insertSheet(compName);
+    newTabIds.push(String(compSheet.getSheetId()));
+    newTabNames.push(compName);
     _ar_renderComparisonTab_(compSheet, output);
     _ar_attachRendererFooter_(compSheet, output, 'comparison', null);
     _ar_attachRendererMetadata_(compSheet, output, 'comparison', null);
     _ar_protectRendererTab_(compSheet);
     SpreadsheetApp.flush();
-    newTabIds.push(String(compSheet.getSheetId()));
-    newTabNames.push(compName);
 
     return {
       state: 'OK',
@@ -138,7 +150,11 @@ function _renderAnalysisInner_(output) {
     var which = newTabNames.length;
     var msg = (e && e.message) ? e.message : String(e);
     // §14: do NOT delete already-written tabs — operator inspects partial
-    // state via newTabIds + newTabNames + spreadsheetUrl.
+    // state via newTabIds + newTabNames + spreadsheetUrl. The current
+    // (in-progress) tab is included in newTabNames per the immediate-
+    // append discipline above, so the failure card surfaces every tab
+    // that exists in the spreadsheet, including the one that failed
+    // mid-render.
     return {
       state: 'FAILED',
       newTabIds: newTabIds,
@@ -146,7 +162,8 @@ function _renderAnalysisInner_(output) {
       spreadsheetUrl: spreadsheetUrl,
       error: {
         code: 'RENDER_EXCEPTION',
-        message: 'Render failed at tab #' + (which + 1) + ': ' + msg,
+        message: 'Render failed at tab #' + which + ' (' +
+          (newTabNames[which - 1] || '?') + '): ' + msg,
       },
     };
   }
