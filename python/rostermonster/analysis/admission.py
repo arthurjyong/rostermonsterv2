@@ -104,15 +104,28 @@ def validate_coherence(
     surface both sides of the mismatch so the operator can diagnose
     which file is wrong.
     """
-    snapshot_meta = snapshot.get("metadata", {})
+    snapshot_meta = snapshot.get("metadata")
+    if not isinstance(snapshot_meta, dict):
+        raise AnalyzerInputError(
+            "snapshot.metadata is missing or not a JSON object"
+        )
     snapshot_id = snapshot_meta.get("snapshotId")
     if not snapshot_id:
         raise AnalyzerInputError(
             "snapshot is missing metadata.snapshotId"
         )
 
-    final = envelope.get("finalResultEnvelope", {})
-    run_env = final.get("runEnvelope", {})
+    final = envelope.get("finalResultEnvelope")
+    if not isinstance(final, dict):
+        raise AnalyzerInputError(
+            "envelope.finalResultEnvelope is missing or not a JSON object"
+        )
+    run_env = final.get("runEnvelope")
+    if not isinstance(run_env, dict):
+        raise AnalyzerInputError(
+            "envelope.finalResultEnvelope.runEnvelope is missing or "
+            "not a JSON object"
+        )
     envelope_snapshot_ref = run_env.get("snapshotRef")
     envelope_run_id = run_env.get("runId")
 

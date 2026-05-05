@@ -248,6 +248,42 @@ def test_validate_coherence_rejects_missing_envelope_snapshot_ref() -> None:
                    match="snapshotRef is missing")
 
 
+def test_validate_coherence_rejects_non_dict_run_envelope() -> None:
+    """Defend against malformed envelopes where `runEnvelope` is a
+    non-object (string, list, etc.). Should fail-loud rather than
+    AttributeError on `.get()`."""
+    snapshot = {"metadata": {"snapshotId": "snap_X"}}
+    envelope = {
+        "finalResultEnvelope": {"runEnvelope": "not_a_dict"}
+    }
+    sidecar = {"runId": "r"}
+    _expect_raises(AnalyzerInputError, validate_coherence,
+                   snapshot, envelope, sidecar,
+                   match="runEnvelope is missing or not a JSON object")
+
+
+def test_validate_coherence_rejects_non_dict_final_envelope() -> None:
+    snapshot = {"metadata": {"snapshotId": "snap_X"}}
+    envelope = {"finalResultEnvelope": ["not", "a", "dict"]}
+    sidecar = {"runId": "r"}
+    _expect_raises(AnalyzerInputError, validate_coherence,
+                   snapshot, envelope, sidecar,
+                   match="finalResultEnvelope is missing or not")
+
+
+def test_validate_coherence_rejects_non_dict_metadata() -> None:
+    snapshot = {"metadata": "oops"}
+    envelope = {
+        "finalResultEnvelope": {
+            "runEnvelope": {"snapshotRef": "x", "runId": "y"}
+        }
+    }
+    sidecar = {"runId": "y"}
+    _expect_raises(AnalyzerInputError, validate_coherence,
+                   snapshot, envelope, sidecar,
+                   match="metadata is missing or not")
+
+
 # -- admission: §10.0 doctor resolvability --
 
 def test_validate_doctor_resolvability_accepts_known_ids() -> None:
