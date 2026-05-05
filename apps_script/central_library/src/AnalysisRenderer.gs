@@ -85,6 +85,14 @@ function _renderAnalysisInner_(output) {
   }
   var spreadsheetUrl = ss.getUrl();
 
+  // §10.0 mapping rule + analysis_contract §10.0 duplicate-name tolerance:
+  // when two distinct doctorIds share the same display name, append the
+  // stable doctorId in parentheses so operators can distinguish them in
+  // the roster grid + per-doctor summary + comparison tab. Pre-resolve
+  // once so all per-tab rendering uses the same disambiguated map.
+  var resolvedDoctorIdMap = _ar_resolveDoctorDisplayNames_(
+    output.doctorIdMap || {});
+
   // §10 + §13 render
   var newTabIds = [];
   var newTabNames = [];
@@ -100,7 +108,7 @@ function _renderAnalysisInner_(output) {
       var baseName = 'Analysis ' + runShort + ' ' + rankStr;
       var tabName = _ar_uniqueTabName_(ss, baseName);
       var sheet = ss.insertSheet(tabName);
-      _ar_renderRosterTab_(sheet, output, cand, k);
+      _ar_renderRosterTab_(sheet, output, cand, k, resolvedDoctorIdMap);
       _ar_attachRendererFooter_(sheet, output, 'roster', cand.rankByTotalScore);
       _ar_attachRendererMetadata_(sheet, output, 'roster', cand.candidateId);
       _ar_protectRendererTab_(sheet);
@@ -202,13 +210,18 @@ var _AR_COLORS_ = Object.freeze({
 
 // Render one candidate's roster tab. Per §13.1: header, per-day grid,
 // per-doctor summary, per-component score block, footer.
-function _ar_renderRosterTab_(sheet, output, cand, k) {
+//
+// `resolvedDoctorIdMap` is the duplicate-disambiguated `doctorId →
+// displayName` map per `docs/analysis_contract.md` §10.0 + the §13.1
+// duplicate-name tolerance discipline (renderer is responsible for
+// distinguishing doctors with shared display names).
+function _ar_renderRosterTab_(sheet, output, cand, k, resolvedDoctorIdMap) {
   var row = 1;
   row = _ar_writeRosterHeader_(sheet, output, cand, k, row);
   row += 1;  // blank spacer row
-  row = _ar_writeAssignmentGrid_(sheet, output, cand, row);
+  row = _ar_writeAssignmentGrid_(sheet, output, cand, row, resolvedDoctorIdMap);
   row += 1;
-  row = _ar_writePerDoctorSummary_(sheet, output, cand, row);
+  row = _ar_writePerDoctorSummary_(sheet, output, cand, row, resolvedDoctorIdMap);
   row += 1;
   row = _ar_writePerComponentScores_(sheet, output, cand, row);
   // Footer is added separately per §13.1 item 5 via _ar_attachRendererFooter_.
@@ -260,12 +273,12 @@ function _ar_collectBestOnTags_(cand) {
 }
 
 // §13.1 item 2 — per-day assignment grid: rows = days, columns = slots,
-// cells = doctor display names. Multi-unit slots collapse via comma-join
-// per writeback's existing convention.
-function _ar_writeAssignmentGrid_(sheet, output, cand, startRow) {
+// cells = doctor display names (disambiguated per §10.0 when display
+// names collide across doctorIds). Multi-unit slots collapse via
+// comma-join per writeback's existing convention.
+function _ar_writeAssignmentGrid_(sheet, output, cand, startRow, resolvedDoctorIdMap) {
   // Collect unique slotTypes + dateKeys from this candidate's
   // assignment ride-through.
-  var doctorIdMap = output.doctorIdMap || {};
   var assignments = cand.assignment || [];
   var slotTypeSet = {};
   var dateKeySet = {};
@@ -312,7 +325,7 @@ function _ar_writeAssignmentGrid_(sheet, output, cand, startRow) {
         if (id == null) {
           names.push('(unfilled)');
         } else {
-          names.push(doctorIdMap[id] || id);
+          names.push(resolvedDoctorIdMap[id] || id);
         }
       }
       sheet.getRange(rowNum, 2 + s2).setValue(names.join(', '));
@@ -322,9 +335,9 @@ function _ar_writeAssignmentGrid_(sheet, output, cand, startRow) {
 }
 
 // §13.1 item 3 — per-doctor summary block: doctor → callCount, standby,
-// weekendCall, cumulativeCallPoints, maxConsecutiveDaysOff.
-function _ar_writePerDoctorSummary_(sheet, output, cand, startRow) {
-  var doctorIdMap = output.doctorIdMap || {};
+// weekendCall, cumulativeCallPoints, maxConsecutiveDaysOff. Doctor names
+// disambiguated via `resolvedDoctorIdMap` per §10.0.
+function _ar_writePerDoctorSummary_(sheet, output, cand, startRow, resolvedDoctorIdMap) {
   var perDoctor = cand.perDoctor || {};
   var doctorIds = Object.keys(perDoctor).sort();
   if (doctorIds.length === 0) return startRow;
@@ -345,7 +358,7 @@ function _ar_writePerDoctorSummary_(sheet, output, cand, startRow) {
   for (var i = 0; i < doctorIds.length; i++) {
     var id = doctorIds[i];
     var d = perDoctor[id];
-    var displayName = doctorIdMap[id] || id;
+    var displayName = resolvedDoctorIdMap[id] || id;
     sheet.getRange(startRow + i, 1, 1, headers.length).setValues([[
       displayName,
       d.callCount,
@@ -689,6 +702,43 @@ function _ar_protectRendererTab_(sheet) {
   } catch (e) {
     throw e;
   }
+}
+
+// --- doctor identity helpers -----------------------------------------------
+
+// Resolve `doctorId → displayName` map with duplicate-name disambiguation
+// per `docs/analysis_renderer_contract.md` §13.1 + `docs/analysis_contract.md`
+// §10.0 ("Duplicate displayName values across distinct sourceDoctorKeys
+// are tolerated: the dict's key is doctorId — duplicates collapse only
+// at the rendering layer; renderer is responsible for any disambiguation
+// policy on duplicate names").
+//
+// When two distinct doctorIds share the same display name, append the
+// stable doctorId in parentheses: `Smith, John` (D_001) vs `Smith, John`
+// (D_023). Operators reading the roster grid + per-doctor summary +
+// comparison tab can distinguish them. When the display name is unique,
+// the original name is returned unchanged.
+function _ar_resolveDoctorDisplayNames_(doctorIdMap) {
+  // First pass — count display-name occurrences across distinct doctorIds.
+  var nameCount = {};
+  var ids = Object.keys(doctorIdMap || {});
+  for (var i = 0; i < ids.length; i++) {
+    var name = doctorIdMap[ids[i]];
+    if (name == null) continue;
+    nameCount[name] = (nameCount[name] || 0) + 1;
+  }
+  // Second pass — emit either the bare display name or the disambiguated form.
+  var resolved = {};
+  for (var j = 0; j < ids.length; j++) {
+    var id = ids[j];
+    var dn = doctorIdMap[id];
+    if (dn == null) {
+      resolved[id] = id;  // No display name at all — fall back to doctorId.
+      continue;
+    }
+    resolved[id] = (nameCount[dn] > 1) ? (dn + ' (' + id + ')') : dn;
+  }
+  return resolved;
 }
 
 // --- formatting helpers ----------------------------------------------------
