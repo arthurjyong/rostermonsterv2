@@ -73,7 +73,7 @@ M5 activated 2026-05-04 per D-0055 alongside M5 C1. M5 is purely additive — no
 
 ## 7. Checkpoint plan for the active milestone
 
-- **C1 — Python analyzer engine + analysis contract draft.** *Closed 2026-05-05.* `docs/analysis_contract.md` pinned (`contractVersion: 1`) and `python/rostermonster/analysis/` engine + 56 tests landed across PR #110 (contract draft) and PR #111 (implementation). See §11 closure entry.
+- **C1 — Python analyzer engine + analysis contract draft.** *Closed 2026-05-05.* `docs/analysis_contract.md` pinned (`contractVersion: 1`) and `python/rostermonster/analysis/` engine + 61 analyzer tests (52 unit + 9 integration) landed across PR #110 (contract draft) and PR #111 (implementation). See §11 closure entry.
 - **C2 — Apps Script analyzer renderer.** New Apps Script module (provisional `analyzer.js`; exact placement TBD in C2 design). Reads `AnalyzerOutput`, writes K roster tabs + 1 comparison tab. Roster tabs use shared formatting utilities so visual identity matches writeback's roster tabs. **Active.**
 - **C3 — Upload portal.** Thin Apps Script form accepting a single `AnalyzerOutput` file; hands it to the renderer. Operator workflow: run CLI locally with `--retention FULL` → run analyzer engine locally → upload `AnalyzerOutput` to portal → see K + 1 tabs.
 - **C4 — Live operator validation.** Run the analyzer + renderer + portal triad on a real ICU/HD cycle. Confirm comparison-tab fields actually drive operator decisions vs. are noise. Decision point: if scoring-formulation issues surface (e.g., totalScore winner consistently NOT the operator-preferred candidate), open M5.5 / pre-M6 thread on lexicographic / threshold / Pareto direction.
