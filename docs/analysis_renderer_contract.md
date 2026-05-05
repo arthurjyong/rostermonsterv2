@@ -111,14 +111,23 @@ The renderer returns an `AnalysisRendererResult` to the launcher Web App caller:
 ```
 AnalysisRendererResult {
   state: "OK" | "FAILED"
-  newTabIds: string[]              // newly-created sheetGid values; ordered by render order
-  newTabNames: string[]            // 1:1 with newTabIds
-  spreadsheetUrl: string           // operator-facing URL of the source spreadsheet (open the spreadsheet to see new tabs)
+  newTabIds: string[]                  // newly-created sheetGid values; ordered by render order
+  newTabNames: string[]                // 1:1 with newTabIds
+  spreadsheetUrl?: string | null       // operator-facing URL of the source spreadsheet; OPTIONAL — see §10.2
   error?: { code: string, message: string }   // present iff state == "FAILED"
 }
 ```
 
-`spreadsheetUrl` exists because the upload portal's success page surfaces a clickable link "open your roster spreadsheet to see the analysis tabs"; the URL is constructed from `SpreadsheetApp.openById(...).getUrl()` so it points at the operator's actual sheet, not a Drive folder.
+### 10.2 `spreadsheetUrl` field semantics
+`spreadsheetUrl` is the operator-facing URL of the source spreadsheet, constructed from `SpreadsheetApp.openById(...).getUrl()` so it points at the operator's actual sheet (not a Drive folder). The upload portal's success page surfaces it as a clickable "open your roster spreadsheet to see the analysis tabs" link.
+
+Presence rules:
+- `state == "OK"`: `spreadsheetUrl` MUST be present and non-empty (the spreadsheet was successfully opened to write tabs into, so a URL is reachable).
+- `state == "FAILED"` with `error.code == "RENDER_EXCEPTION"`: `spreadsheetUrl` MUST be present (the spreadsheet was opened before mid-render failure, so a URL is reachable; the partial-state surface in `newTabIds` + `newTabNames` plus the URL lets the operator inspect what was written).
+- `state == "FAILED"` with `error.code ∈ { "INVALID_INPUT_VERSION", "MISSING_SOURCE_SPREADSHEET_ID", "EMPTY_TOPK" }`: `spreadsheetUrl` MAY be absent or `null` (admission failed before the spreadsheet was ever opened; no URL to surface).
+- `state == "FAILED"` with `error.code == "OPEN_BY_ID_FAILED"`: `spreadsheetUrl` MAY be absent or `null` (`openById(...).getUrl()` itself failed; no URL is reachable).
+
+Renderer implementations MUST omit the field (or emit `null`) rather than fabricate a placeholder URL when no real URL is reachable. v1 readers (the launcher Web App route + tests) MUST tolerate both omission and `null`.
 
 ### 10.1 Tabs written
 On `state == "OK"`:
