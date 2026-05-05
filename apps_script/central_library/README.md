@@ -1,12 +1,21 @@
-# Roster Monster — Extractor Library
+# Roster Monster — Central Library
 
-A central Apps Script Library carrying the snapshot-extractor logic that
-operator sheets call into via the bound template shim
-(`apps_script/bound_shim/`). When the bound shim's menu
-handler fires, it delegates to `RMLib.extractSnapshotForActiveSheet()`
-declared here.
+A central Apps Script Library carrying the consumer-side surfaces of the
+roster pipeline that the bound shim and the launcher Web App call into.
+Cloud-side project name: `Roster Monster Central Library` per
+`docs/decision_log.md` D-0059.
 
-Per `docs/decision_log.md` D-0041 + `docs/snapshot_adapter_contract.md` §3.
+Three responsibilities (each its own role-named source file):
+
+1. **Snapshot extraction** — `src/Extractor.gs` + `SnapshotBuilder.gs` +
+   `CompletenessValidator.gs` + `DownloadBlob.gs`. Invoked by the bound
+   shim's menu handler. Per D-0041 + `docs/snapshot_adapter_contract.md`.
+2. **Writeback** — `src/Writeback.gs`. Invoked by the launcher's
+   writeback Web App route AND by the bound shim's "Solve Roster"
+   menu (per D-0046 + D-0052). Per `docs/writeback_contract.md`.
+3. **Analysis rendering** — `src/AnalysisRenderer.gs`. Invoked by the
+   launcher's analysis-render Web App route per D-0063. Per
+   `docs/analysis_renderer_contract.md`.
 
 ## Why this is a separate Apps Script Library (not a bound-script-only design)
 
@@ -35,6 +44,17 @@ to this project propagates immediately to every operator on next click.
 - `src/DownloadBlob.gs` — `Utilities.newBlob` + `HtmlService` payload that
   serves the JSON as a browser download per
   `docs/snapshot_adapter_contract.md` §7.
+- `src/Writeback.gs` — public entrypoint `applyWriteback(envelopeJsonString)`
+  invoked by the launcher's writeback Web App route per D-0046 + the bound
+  shim's "Solve Roster" menu per D-0052. Implements `docs/writeback_contract.md`
+  §10–§17 (always-new-tab, success/failure branches, traceability footer +
+  DeveloperMetadata, whole-tab read-only protection).
+- `src/AnalysisRenderer.gs` — public entrypoint `renderAnalysis(outputJsonString)`
+  invoked by the launcher's analysis-render Web App route per D-0063. Implements
+  `docs/analysis_renderer_contract.md` §9 admission, §11 source-spreadsheet
+  target, §12 always-new-tab collision policy, §13 K roster tabs + 1
+  comparison tab, §14 best-effort sequential `SpreadsheetApp.flush`, §16
+  structured `AnalysisRendererResult.error` codes.
 - `src/appsscript.json` — minimal scopes per D-0041 sub-decision 7.
 
 ## One-time setup
@@ -64,13 +84,22 @@ menu item, new trigger declaration), the bound shim ALSO needs a `clasp push`
 — but already-distributed operator sheets won't pick up bound-shim changes
 until they regenerate via the launcher.
 
-## API surface (called by the bound shim)
+## API surface
+
+Public entrypoints exposed under the `RMLib` symbol (per launcher / bound
+shim manifest dependencies):
 
 - `RMLib.extractSnapshotForActiveSheet()` → `HtmlService` output that the
   bound shim can hand to `SpreadsheetApp.getUi().showModalDialog(...)`.
   Triggers a browser download of the snapshot JSON file.
+- `RMLib.applyWriteback(envelopeJsonString)` → `{state, tabName, spreadsheetUrl}`
+  per `docs/writeback_contract.md` §17. Invoked by the launcher's writeback
+  route (D-0046) + the bound shim's `Solve Roster` menu (D-0052).
+- `RMLib.renderAnalysis(outputJsonString)` → `AnalysisRendererResult`
+  per `docs/analysis_renderer_contract.md` §10. Invoked by the launcher's
+  analysis-render route (D-0063).
 
-Future entrypoints (not in M2 C9 scope) will be declared here when needed:
+Future entrypoints (not in current scope) will be declared here when needed:
 
 - `RMLib.handleCallPointEdit(e)` — FW-0024 onEdit logic, called from the
   bound shim's `onEdit(e)` trigger.

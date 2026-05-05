@@ -1,10 +1,21 @@
-# M1 Sheet Generator (Apps Script)
+# Roster Monster Launcher (Apps Script)
 
-This folder owns the M1 Apps Script generator core for the ICU/HD empty
-request-sheet shell. It is the only Apps Script project in the repo and is
-scoped to the sheet-facing generation slice. Compute-heavy core logic —
-parsing, normalization, solving — does **not** live here; it belongs outside
-Apps Script.
+This folder owns the operator-facing Web App launcher for the ICU/HD pipeline.
+Three Web App routes are served from `Launcher.gs`'s `doGet`:
+
+1. **Default** (no `action` param) — empty request-sheet shell generation
+   (M1 / sheet-generation contract).
+2. **`?action=writeback`** — wrapper-envelope JSON upload form per
+   `docs/decision_log.md` D-0046; delegates to `RMLib.applyWriteback`.
+3. **`?action=analysis-render`** — `AnalyzerOutput` JSON upload form per
+   `docs/decision_log.md` D-0063; delegates to `RMLib.renderAnalysis`.
+
+Compute-heavy core logic — parsing, normalization, solving, scoring,
+analysis — does **not** live here; it belongs outside Apps Script (Python
+core per D-0050; analyzer engine per `docs/analysis_contract.md`).
+
+Cloud-side Apps Script project name: `Roster Monster Launcher` per
+`docs/decision_log.md` D-0059.
 
 ## What this project does today
 

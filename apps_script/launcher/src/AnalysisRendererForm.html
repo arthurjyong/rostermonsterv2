@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        max-width: 640px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+        color: #202124;
+        line-height: 1.45;
+      }
+      h1 { font-size: 1.4rem; margin: 0 0 0.25rem; }
+      p.description { color: #5f6368; margin-top: 0; }
+      fieldset {
+        border: 1px solid #dadce0;
+        border-radius: 6px;
+        margin: 1rem 0;
+        padding: 0.75rem 1.25rem 1rem;
+      }
+      legend { padding: 0 0.5rem; font-weight: 600; }
+      label.field-label { display: block; margin: 0.75rem 0 0.25rem; font-weight: 500; }
+      input[type="file"] { display: block; margin: 0.5rem 0; }
+      .file-meta {
+        color: #5f6368;
+        font-size: 0.9rem;
+        margin: 0.25rem 0 0.5rem;
+        min-height: 1.1rem;
+      }
+      button#submit-btn {
+        background: #1a73e8;
+        color: white;
+        border: 0;
+        border-radius: 4px;
+        padding: 0.6rem 1.25rem;
+        font-size: 1rem;
+        cursor: pointer;
+        margin-top: 0.5rem;
+      }
+      button#submit-btn[disabled] { background: #9aa0a6; cursor: not-allowed; }
+      .status { margin-top: 1rem; min-height: 1.25rem; white-space: pre-wrap; }
+      .status.pending { color: #5f6368; }
+      .status.error   { color: #c5221f; }
+      .status.success { color: #137333; }
+      .status.failed  { color: #b06000; }
+      .result-card {
+        margin-top: 1rem;
+        padding: 0.75rem 1rem;
+        border-radius: 6px;
+        border: 1px solid #dadce0;
+      }
+      .result-card.success { background: #e6f4ea; border-color: #b8e0c2; }
+      .result-card.failed  { background: #fff8e1; border-color: #ffe0a1; }
+      .result-card.error   { background: #fce8e6; border-color: #f6c4c1; }
+      .result-card h2 { font-size: 1.05rem; margin: 0 0 0.5rem; }
+      .result-card dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0; }
+      .result-card dt { font-weight: 600; color: #5f6368; }
+      .result-card dd { margin: 0; word-break: break-word; }
+      .result-card a  { color: #1a73e8; }
+      .result-card ul { margin: 0.25rem 0 0; padding-left: 1.25rem; }
+      .hidden { display: none; }
+      pre.error-detail {
+        margin: 0.5rem 0 0;
+        padding: 0.5rem 0.75rem;
+        background: #fce8e6;
+        color: #c5221f;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.85rem;
+        white-space: pre-wrap;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>CGH ICU/HD Analysis Renderer</h1>
+    <p class="description">
+      Upload the <code>AnalyzerOutput</code> JSON file produced by
+      <code>python -m rostermonster.analysis</code>. The renderer adds K
+      roster tabs (one per candidate) plus 1 comparison tab to the source
+      spreadsheet. Existing tabs are never modified — re-running this for
+      the same run produces fresh tabs with a numeric suffix.
+    </p>
+
+    <form id="analysis-form" novalidate>
+      <fieldset>
+        <legend>Analyzer output file</legend>
+        <label class="field-label" for="analyzer-output-file">
+          AnalyzerOutput JSON file
+        </label>
+        <input id="analyzer-output-file" name="outputFile" type="file"
+               accept=".json,application/json" required>
+        <div id="file-meta" class="file-meta">No file selected.</div>
+      </fieldset>
+
+      <button type="submit" id="submit-btn" disabled>Render analysis</button>
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+    </form>
+
+    <div id="result-view" class="hidden"></div>
+
+    <script>
+      (function () {
+        var form = document.getElementById('analysis-form');
+        var fileInput = document.getElementById('analyzer-output-file');
+        var fileMeta = document.getElementById('file-meta');
+        var submitBtn = document.getElementById('submit-btn');
+        var statusEl = document.getElementById('status');
+        var resultView = document.getElementById('result-view');
+
+        var loadedJsonString = null;
+
+        fileInput.addEventListener('change', function () {
+          loadedJsonString = null;
+          submitBtn.disabled = true;
+          setStatus('', '');
+          var file = fileInput.files && fileInput.files[0];
+          if (!file) {
+            fileMeta.textContent = 'No file selected.';
+            return;
+          }
+          fileMeta.textContent = file.name + ' (' + Math.round(file.size / 1024) + ' KB)';
+          var reader = new FileReader();
+          reader.onload = function () {
+            try {
+              JSON.parse(reader.result);
+              loadedJsonString = reader.result;
+              submitBtn.disabled = false;
+              setStatus('pending',
+                'File loaded — click "Render analysis" to continue.');
+            } catch (e) {
+              setStatus('error',
+                'Could not parse the selected file as JSON: ' +
+                ((e && e.message) ? e.message : String(e)));
+            }
+          };
+          reader.onerror = function () {
+            setStatus('error', 'Could not read file: ' +
+              ((reader.error && reader.error.message)
+                ? reader.error.message : 'unknown error'));
+          };
+          reader.readAsText(file);
+        });
+
+        form.addEventListener('submit', function (e) {
+          e.preventDefault();
+          if (!loadedJsonString) {
+            setStatus('error',
+              'Please select an AnalyzerOutput JSON file first.');
+            return;
+          }
+          setStatus('pending',
+            'Rendering analysis tabs into source spreadsheet — this can take 10–30 seconds for K=5.');
+          submitBtn.disabled = true;
+          fileInput.disabled = true;
+
+          google.script.run
+            .withSuccessHandler(onSuccess)
+            .withFailureHandler(onFailure)
+            .renderAnalysis(loadedJsonString);
+        });
+
+        function onSuccess(response) {
+          submitBtn.disabled = false;
+          fileInput.disabled = false;
+          if (!response || typeof response !== 'object') {
+            setStatus('error',
+              'Unexpected empty response from analysis renderer.');
+            return;
+          }
+          renderResult(response);
+        }
+
+        function onFailure(err) {
+          submitBtn.disabled = false;
+          fileInput.disabled = false;
+          // Infrastructure-level failure (sandbox, network). The server-side
+          // `renderAnalysis` catches admission + render-stage errors and
+          // surfaces them as `{state: 'FAILED', error}` via onSuccess per
+          // `docs/analysis_renderer_contract.md` §16.
+          setStatus('error', (err && err.message) ? err.message : String(err));
+        }
+
+        function setStatus(cls, text) {
+          statusEl.className = 'status ' + cls;
+          statusEl.textContent = text;
+        }
+
+        function renderResult(response) {
+          // 2-state result per `docs/analysis_renderer_contract.md` §10:
+          //   OK → §10.1 success, FAILED → §16 failure (with error.code).
+          var state = response.state;
+          if (state === 'OK') {
+            renderOkBranch(response);
+          } else if (state === 'FAILED') {
+            renderFailedBranch(response);
+          } else {
+            setStatus('error', 'Unknown response state: ' + JSON.stringify(state));
+          }
+        }
+
+        function renderOkBranch(response) {
+          var k = (response.newTabNames || []).length;
+          setStatus('success',
+            'Rendered ' + k + ' tabs into the source spreadsheet.');
+          var card = document.createElement('div');
+          card.className = 'result-card success';
+          var html = '<h2>Analysis rendered successfully</h2><dl>';
+          if (response.spreadsheetUrl) {
+            html += '<dt>Spreadsheet</dt><dd><a target="_blank" rel="noopener" href="' +
+              escapeAttr(response.spreadsheetUrl) + '">' +
+              escapeHtml(response.spreadsheetUrl) + '</a></dd>';
+          }
+          html += '<dt>New tabs</dt><dd><ul>';
+          var names = response.newTabNames || [];
+          for (var i = 0; i < names.length; i++) {
+            html += '<li>' + escapeHtml(names[i]) + '</li>';
+          }
+          html += '</ul></dd>';
+          html += '</dl>';
+          card.innerHTML = html;
+          resultView.innerHTML = '';
+          resultView.appendChild(card);
+          resultView.classList.remove('hidden');
+        }
+
+        function renderFailedBranch(response) {
+          var hasPartial = (response.newTabNames || []).length > 0;
+          if (hasPartial) {
+            setStatus('failed',
+              'Render failed mid-way; some tabs were written. See partial state below.');
+          } else {
+            setStatus('failed', 'Render failed before any tab was written.');
+          }
+          var card = document.createElement('div');
+          card.className = 'result-card ' + (hasPartial ? 'failed' : 'error');
+          var err = response.error || {};
+          var html = '<h2>Render failed (' +
+            escapeHtml(err.code || 'UNKNOWN') + ')</h2>';
+          var pre = document.createElement('pre');
+          pre.className = 'error-detail';
+          pre.textContent = err.message || '(no error message)';
+          card.innerHTML = html;
+          card.appendChild(pre);
+          if (response.spreadsheetUrl) {
+            var p = document.createElement('p');
+            p.innerHTML = 'Spreadsheet: <a target="_blank" rel="noopener" href="' +
+              escapeAttr(response.spreadsheetUrl) + '">' +
+              escapeHtml(response.spreadsheetUrl) + '</a>';
+            card.appendChild(p);
+          }
+          if (hasPartial) {
+            var partial = document.createElement('p');
+            partial.innerHTML = '<strong>Tabs written before failure:</strong>';
+            card.appendChild(partial);
+            var ul = document.createElement('ul');
+            var names = response.newTabNames || [];
+            for (var i = 0; i < names.length; i++) {
+              var li = document.createElement('li');
+              li.textContent = names[i];
+              ul.appendChild(li);
+            }
+            card.appendChild(ul);
+          }
+          resultView.innerHTML = '';
+          resultView.appendChild(card);
+          resultView.classList.remove('hidden');
+        }
+
+        function escapeHtml(s) {
+          return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+        }
+        function escapeAttr(s) { return escapeHtml(s); }
+      })();
+    </script>
+  </body>
+</html>

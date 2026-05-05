@@ -26,6 +26,16 @@ function doGet(e) {
       .setTitle('CGH ICU/HD Roster Writeback')
       .addMetaTag('viewport', 'width=device-width, initial-scale=1');
   }
+  if (action === 'analysis-render') {
+    // M5 C2 analysis renderer route per `docs/decision_log.md` D-0063.
+    // Operator uploads the AnalyzerOutput JSON file produced by
+    // `python -m rostermonster.analysis`; server-side entry point is
+    // `renderAnalysis(outputJsonString)` (delegate shim → RMLib).
+    return HtmlService.createTemplateFromFile('AnalysisRendererForm')
+      .evaluate()
+      .setTitle('CGH ICU/HD Analysis Renderer')
+      .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+  }
   return HtmlService.createTemplateFromFile('LauncherForm')
     .evaluate()
     .setTitle('CGH ICU/HD Roster Launcher')
