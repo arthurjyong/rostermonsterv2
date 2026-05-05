@@ -222,10 +222,10 @@ Proposed in this checkpoint (normative):
 On any admission failure (§9.1) or render-time exception, the renderer returns:
 
 ```
-{ state: "FAILED", newTabIds: [...], newTabNames: [...], spreadsheetUrl: "...", error: { code, message } }
+{ state: "FAILED", newTabIds: [...], newTabNames: [...], spreadsheetUrl?: string | null, error: { code, message } }
 ```
 
-`newTabIds` + `newTabNames` carry the tabs that WERE successfully written before failure (best-effort partial-state surface per §14).
+`newTabIds` + `newTabNames` carry the tabs that WERE successfully written before failure (best-effort partial-state surface per §14). `spreadsheetUrl` follows §10.2 presence rules — present on `RENDER_EXCEPTION` failures (the spreadsheet was opened before mid-render failure, so the URL is reachable for partial-state inspection); absent or `null` on early-admission failures (`INVALID_INPUT_VERSION` / `MISSING_SOURCE_SPREADSHEET_ID` / `EMPTY_TOPK` / `OPEN_BY_ID_FAILED`).
 
 `error.code` enumerates known failure modes:
 - `INVALID_INPUT_VERSION` — `output.contractVersion != 1`.
