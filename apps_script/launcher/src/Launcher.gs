@@ -16,13 +16,21 @@
 function doGet(e) {
   var params = (e && e.parameter) ? e.parameter : {};
   var action = (params.action == null ? '' : String(params.action)).trim().toLowerCase();
+  // Each route's nav header (per the cross-page navigation UX) needs the
+  // absolute Web App deployment URL — relative `?action=...` hrefs do
+  // NOT work because Apps Script renders the HTML inside Google's
+  // iframe, so a relative href would resolve against the iframe URL
+  // and never reach this `doGet` dispatch. `ScriptApp.getService().getUrl()`
+  // returns the `/exec` deployment URL of the currently-running script.
+  var rootUrl = ScriptApp.getService().getUrl();
   if (action === 'writeback') {
     // M3 C1 writeback route per `docs/decision_log.md` D-0044 sub-decision 3.
     // Operator uploads the wrapper-envelope JSON file produced by the Python
     // CLI; client-side FileReader serializes the file content; server-side
     // entry point is `applyWriteback(envelopeJsonString)` in Writeback.gs.
-    return HtmlService.createTemplateFromFile('WritebackForm')
-      .evaluate()
+    var wbTpl = HtmlService.createTemplateFromFile('WritebackForm');
+    wbTpl.rootUrl = rootUrl;
+    return wbTpl.evaluate()
       .setTitle('CGH ICU/HD Roster Writeback')
       .addMetaTag('viewport', 'width=device-width, initial-scale=1');
   }
@@ -31,13 +39,15 @@ function doGet(e) {
     // Operator uploads the AnalyzerOutput JSON file produced by
     // `python -m rostermonster.analysis`; server-side entry point is
     // `renderAnalysis(outputJsonString)` (delegate shim → RMLib).
-    return HtmlService.createTemplateFromFile('AnalysisRendererForm')
-      .evaluate()
+    var arTpl = HtmlService.createTemplateFromFile('AnalysisRendererForm');
+    arTpl.rootUrl = rootUrl;
+    return arTpl.evaluate()
       .setTitle('CGH ICU/HD Analysis Renderer')
       .addMetaTag('viewport', 'width=device-width, initial-scale=1');
   }
-  return HtmlService.createTemplateFromFile('LauncherForm')
-    .evaluate()
+  var tpl = HtmlService.createTemplateFromFile('LauncherForm');
+  tpl.rootUrl = rootUrl;
+  return tpl.evaluate()
     .setTitle('CGH ICU/HD Roster Launcher')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
