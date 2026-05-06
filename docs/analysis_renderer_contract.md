@@ -74,7 +74,7 @@ This contract governs:
 ## 8) What this contract does not govern
 This contract does **not** govern:
 - analyzer engine behavior, top-K selection, or `AnalyzerOutput` field semantics (see `docs/analysis_contract.md`),
-- the upload portal Web App route — request validation, multipart parsing, or session UX (see M5 C3 / forthcoming sub-PR),
+- the upload portal Web App route — request validation, multipart parsing, or session UX (the portal landed as a route on the launcher Web App per `docs/decision_log.md` D-0063; implementation in PR #115's `Launcher.gs` `doGet` + `AnalysisRendererForm.html`. Not normatively governed by this contract; if the portal is later refactored, this contract surface stays unchanged),
 - writeback library behavior or its single-tab output (see `docs/writeback_contract.md`),
 - template-generation behavior (see `docs/sheet_generation_contract.md`),
 - file-level Apps Script project structure beyond placement of `AnalysisRenderer.gs` (clasp configs, manifest scopes, library version-pinning — see `docs/decision_log.md` D-0041 / D-0051 / D-0052),
