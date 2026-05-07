@@ -162,7 +162,7 @@ The contract anticipates future strategies — for example, hill-climbing, simul
 - No future strategy MAY override scorer-owned logic, rule-engine-owned logic, or retention-owned logic. The strategy-interface extension clause is additive only.
 - Adding a future strategy that conforms to this extension clause does not require a `contractVersion` bump. Changes to the strategy-interface contract itself (for example, introducing a new mutation channel) do require a bump.
 
-First release does not activate the `scoringConsultation: "READ_ONLY_ORACLE"` mode; see `docs/future_work.md`.
+First release (M2 C1 closure 2026-04-25 per `docs/decision_log.md` D-0026) did not activate the `scoringConsultation: "READ_ONLY_ORACLE"` mode. M6 C1 (2026-05-07 per `docs/decision_log.md` D-0067) activated it for `LAHC`; see §12A.6.
 
 ## 12) First-release composite strategy: `SEEDED_RANDOM_BLIND`
 Proposed in this checkpoint (normative):
@@ -194,16 +194,17 @@ Proposed in this checkpoint (M6 C1 per `docs/decision_log.md` D-0067) (normative
 `LAHC` is a score-aware local-search strategy that escapes local optima via a history-list accept criterion. It is the second registered strategy alongside §12's `SEEDED_RANDOM_BLIND`. LAHC conforms to the §11 strategy-interface contract and activates the §11.2 `scoringConsultation: "READ_ONLY_ORACLE"` extension clause (no `contractVersion` bump per §2 + §11.2; the strategy-interface itself is unchanged).
 
 ### 12A.1 Algorithm
-Per LAHC trajectory:
-1. **Seed roster.** Produce an initial valid roster via `SEEDED_RANDOM_BLIND`'s two-phase composite (§12 Phase 1 CR seeding + §12 Phase 2 most-constrained-first fill). This guarantees the LAHC starting point is rule-engine-valid; the seed roster's score is the initial `currentScore`.
-2. **Initialize history list.** A queue of length `L` (default `1000` per §12A.5) initialized with the seed roster's `currentScore` in every slot.
-3. **Inner loop.** Iterate (`currentIter` increments per pass):
-   - **Move generation.** Generate a candidate move via seeded random selection. Move types are strategy-internal — implementation-specific (e.g., pairwise doctor swap on the same date, single-doctor reassignment to a different date, section-aware swap). The move generator MUST: (a) be deterministic given `trajectorySeed_i` + iteration order, (b) consult the rule engine to filter rule-engine-invalid moves before evaluation, (c) be ergodic over the rule-engine-valid roster space (no unreachable configurations).
-   - **Evaluation.** Compute the proposed roster's score via the read-only scoring oracle (§12A.6).
-   - **Accept criterion.** Accept iff `proposedScore >= historyList[currentIter mod L]`.
-   - **Roster update.** If accepted, advance current roster to the proposed roster; else leave current roster unchanged.
-   - **History list update.** `historyList[currentIter mod L] = max(currentScore, historyList[currentIter mod L])`. (Standard LAHC update — preserves the highest-recent-score envelope per Burke & Bykov 2017.)
-   - **Idle counter.** If `currentScore` improved over the trajectory's best-so-far, reset `idleIters = 0`; else `idleIters += 1`.
+Per LAHC trajectory, state variables are: `currentRoster`, `currentScore`, `historyList[L]`, `bestSoFar`, `idleIters`, `currentIter`. Steps:
+1. **Seed roster.** Produce an initial valid roster via `SEEDED_RANDOM_BLIND`'s two-phase composite (§12 Phase 1 CR seeding + §12 Phase 2 most-constrained-first fill). Initialize `currentRoster := seedRoster`, `currentScore := score(seedRoster)` (via the read-only oracle, §12A.6), `bestSoFar := currentScore`, `idleIters := 0`, `currentIter := 0`.
+2. **Initialize history list.** A queue of length `L` (default `1000` per §12A.5) initialized with `currentScore` in every slot.
+3. **Inner loop.** Iterate per pass:
+   - **a. Move generation.** Generate a candidate move via seeded random selection. Move types are strategy-internal — implementation-specific (e.g., pairwise doctor swap on the same date, single-doctor reassignment to a different date, section-aware swap). The move generator MUST: (i) be deterministic given `trajectorySeed_i` + iteration order, (ii) consult the rule engine to filter rule-engine-invalid moves before evaluation, (iii) be ergodic over the rule-engine-valid roster space (no unreachable configurations).
+   - **b. Evaluation.** Compute `proposedScore := score(proposedRoster)` via the read-only scoring oracle (§12A.6).
+   - **c. Accept criterion.** Accept iff `proposedScore >= historyList[currentIter mod L]`.
+   - **d. State update.** If accepted, set `currentRoster := proposedRoster` AND `currentScore := proposedScore`; else leave `currentRoster` and `currentScore` unchanged. (Both must update together so steps e + f see the post-acceptance score.)
+   - **e. History list update.** `historyList[currentIter mod L] := max(currentScore, historyList[currentIter mod L])`. (Standard LAHC update — preserves the highest-recent-score envelope per Burke & Bykov 2017.)
+   - **f. Best-so-far + idle counter.** If `currentScore > bestSoFar`, set `bestSoFar := currentScore` and reset `idleIters := 0`; else `idleIters += 1`. (`bestSoFar` advances only on strict improvement to keep the idle counter monotone in "no-improvement" iterations.)
+   - **g. Increment.** `currentIter += 1`.
 4. **Inner loop termination.** Stop when EITHER `idleIters >= idleThreshold` OR `currentIter >= maxIters` (§12A.3).
 5. **Emit.** The trajectory's terminal `currentRoster` is emitted as a single `TrialCandidate`.
 
