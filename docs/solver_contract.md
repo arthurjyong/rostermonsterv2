@@ -245,7 +245,9 @@ Default values for `additionalInputs.lahcParams`:
 - `idleThreshold = 5,000` (= 5 × `L`).
 - `maxIters = 100,000`.
 
-Rationale: `L = 1000` is a literature default for combinatorial problems at roster scale (Burke & Bykov 2017's LAHC study across NRP-like domains used `L ∈ [500, 10000]`). `idleThreshold = 5L` is a common LAHC convention — gives the algorithm a chance to escape multiple local optima before declaring convergence. `maxIters = 100k` fits within Cloud Run's `UrlFetchApp` 6-minute synchronous budget per `docs/decision_log.md` D-0051 at ICU/HD scale (~30-60s per trajectory empirically, K trajectories sequential). Defaults are tunable via the maintainer-only surface per §12A.7.
+Rationale: `L = 1000` is a literature default for combinatorial problems at roster scale (Burke & Bykov 2017's LAHC study across NRP-like domains used `L ∈ [500, 10000]`). `idleThreshold = 5L` is a common LAHC convention — gives the algorithm a chance to escape multiple local optima before declaring convergence. `maxIters = 100k` is the documented v1 ceiling per trajectory; actual per-trajectory wall-clock runtime depends on per-iteration scoring cost and is unknown until M6 C2 implementation benchmarks land.
+
+**Cloud sync-budget caveat**: K trajectories run sequentially per §12A.2. With cloud-mode default `maxCandidates = 32` (per `docs/cloud_compute_contract.md` §9.3) and `maxIters = 100k` per trajectory, the worst-case sequential runtime can exceed Cloud Run's `UrlFetchApp` 6-minute synchronous budget (per `docs/decision_log.md` D-0051). M6 C3 (cloud / CLI integration) settles cloud-specific defaults — likely a smaller `maxCandidates` and/or smaller per-trajectory `maxIters` — based on M6 C2 implementation benchmarks. The defaults specified here (`L=1000`, `idleThreshold=5000`, `maxIters=100k`) are the LAHC algorithm's v1 ceiling; the cloud-mode operator-default for `maxCandidates` + LAHC inner-loop bounds is a M6 C3 deliverable, not pinned in M6 C1. Defaults are tunable via the maintainer-only surface per §12A.7.
 
 ### 12A.6 Scoring oracle activation (D-0067 sub-decision 5)
 LAHC opts into the §11.2 extension clause:
@@ -264,10 +266,11 @@ Per `docs/decision_log.md` D-0066 sub-decision 6 + D-0067 sub-decision 6, LAHC p
 - The active `lahcParams` (effective values used) MUST be logged in `SearchDiagnostics` at run start per §12A.9.
 
 ### 12A.8 Failure semantics
-- If the seed roster step (§12A.1 step 1) fails (`SEEDED_RANDOM_BLIND` returns `UnsatisfiedResult` because rule-engine-invalid demand cannot be filled), LAHC propagates that failure as `UnsatisfiedResult` per §10.2 — same discipline as `SEEDED_RANDOM_BLIND` standalone.
+- **Per-trajectory seed-roster failure**: if a single trajectory's seed roster step (§12A.1 step 1, which invokes `SEEDED_RANDOM_BLIND` Phase 1 + Phase 2 with `trajectorySeed_i`) returns `UnsatisfiedResult`, **that trajectory drops** and does NOT contribute a `TrialCandidate`. Other trajectories continue independently — different `trajectorySeed_j` values lead to different `SEEDED_RANDOM_BLIND` exploration paths and may succeed where seed `i` failed. Per-trajectory pass/fail status MUST be logged in `SearchDiagnostics` per §12A.9.
 - If a LAHC trajectory's inner loop terminates by `idleThreshold` or `maxIters` without strict improvement over the seed score (`bestSoFar == seedScore` at termination), the trajectory's terminal roster is the `currentRoster` at termination time per §12A.1 step 5 — which **may differ from the seed roster** if the trajectory accepted any late-acceptance moves (sideways or worse moves that satisfied the §12A.1.c accept criterion against an aged-out history-list slot but did not strictly improve `bestSoFar` per §12A.1.f). The terminal roster is rule-engine-valid by construction (the move generator filters rule-engine-invalid moves before evaluation per §12A.1.a step iii); emitted as a `TrialCandidate`.
-- LAHC trajectories are independent. A move-generator implementation defect that fails one trajectory's inner loop is a contract-breaking defect (§10.1's empty `CandidateSet` prohibition); it MUST fail loudly, NOT silently degrade other trajectories.
-- Empty `CandidateSet` is a contract-breaking defect per §10.1. Since `terminationBounds.maxCandidates >= 1` per §9, LAHC MUST emit at least one `TrialCandidate` on the success branch. If all `K` trajectories' seed roster steps fail (every Phase 1+Phase 2 returns `UnsatisfiedResult`), LAHC returns `UnsatisfiedResult` per §10.3.
+- LAHC trajectories are independent. A move-generator implementation defect that fails one trajectory's inner loop is a contract-breaking defect (distinct from the legitimate seed-roster-failure case above); it MUST fail loudly, NOT silently degrade other trajectories.
+- **Whole-run failure (`UnsatisfiedResult`)**: LAHC returns `UnsatisfiedResult` per §10.2 / §10.3 if and only if ALL `K` trajectories' seed roster steps fail (every `SEEDED_RANDOM_BLIND` invocation returns `UnsatisfiedResult` for `trajectorySeed_0..K-1`). The `unfilledDemand` and `reasons` fields surface the union (or implementation-chosen representative subset) of the per-trajectory `SEEDED_RANDOM_BLIND` failure data per §10.2. If at least one trajectory succeeds, LAHC emits a non-empty `CandidateSet` containing the successful trajectories' terminal rosters — `K' = K - dropped_count` candidates, where `K' >= 1`. Empty `CandidateSet` on the success branch is a contract-breaking defect per §10.1.
+- **Successful CandidateSet ordering**: emitted candidates are ordered by trajectory index `i` (ascending), skipping failed trajectories. If `K=5` and trajectories `0, 2, 4` succeed while `1, 3` fail their seed step, the emitted `candidates[0..2]` correspond to trajectory indices `0, 2, 4` in that order. Determinism per §16 holds — same seed + inputs → same per-trajectory pass/fail outcome → same emission ordering.
 
 ### 12A.9 Diagnostics
 Per §18.1, LAHC's `SearchDiagnostics` MUST include strategy-specific transparency fields:
@@ -275,9 +278,10 @@ Per §18.1, LAHC's `SearchDiagnostics` MUST include strategy-specific transparen
 - `lahcMaxIters` — the per-trajectory iteration cap.
 - `lahcIdleThreshold` — the per-trajectory idle-iteration cutoff.
 - `seedDerivationFunction` — string identifier of the `derive(seed, i)` function used (e.g., `"splitmix64"`).
-- `perTrajectoryIters[i]` — actual iteration count per trajectory `i` ∈ `[0, K)` (variable due to `idleThreshold` / `maxIters` termination).
-- `perTrajectoryAcceptedMoves[i]` — count of accepted moves per trajectory.
-- `perTrajectoryFinalScore[i]` — terminal score per trajectory (post-§12A.4 determinism check).
+- `perTrajectoryStatus[i]` — enum per trajectory `i` ∈ `[0, K)`: `"SUCCEEDED"` (seed roster + inner loop completed; emitted as `candidates[k]` for some `k <= i`) or `"SEED_FAILED"` (seed roster step returned `UnsatisfiedResult`; trajectory dropped per §12A.8). Implementations MAY add additional enum values for future failure modes.
+- `perTrajectoryIters[i]` — actual iteration count per trajectory `i` (variable due to `idleThreshold` / `maxIters` termination; `0` for `SEED_FAILED` trajectories).
+- `perTrajectoryAcceptedMoves[i]` — count of accepted moves per trajectory (`0` for `SEED_FAILED`).
+- `perTrajectoryFinalScore[i]` — terminal score per trajectory for `SUCCEEDED` trajectories (post-§12A.4 determinism check); undefined for `SEED_FAILED`.
 
 These fields support post-run analysis via the M5 analyzer per `docs/decision_log.md` D-0066 sub-decision 7 — operator runs LAHC and `SEEDED_RANDOM_BLIND`, renders each `AnalyzerOutput` separately via the launcher, and manually cross-references the two comparison tabs in the source spreadsheet.
 
