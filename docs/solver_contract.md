@@ -54,7 +54,7 @@ Repo-settled:
 - Downstream: scorer ranks every emitted candidate (`docs/scorer_contract.md`); selector applies retention policy over scored candidates and produces the final `AllocationResult` (see §14).
 
 Proposed in this checkpoint:
-- Solver is scoring-blind. It MUST NOT read, consult, or derive from any scoring component, soft-effect magnitude, or objective signal.
+- Solver is **scoring-blind by default**. The default behavior is that strategies MUST NOT read, consult, or derive from any scoring component, soft-effect magnitude, or objective signal — **except** when the active strategy opts into the §11.2 `scoringConsultation: "READ_ONLY_ORACLE"` extension clause (e.g., `LAHC` per §12A.6), in which case the strategy MAY consume scoring as a read-only oracle subject to §11.2's read-only constraints (no mutation, no direction override, no scorer-owned-component alteration). `SEEDED_RANDOM_BLIND` (§12) does not opt in and remains scoring-blind end-to-end. The boundary position is unchanged: scoring is always *consulted* read-only — never *owned* — by the solver.
 - Solver is a pluggable strategy behind a stable contract-level interface. See §11.
 
 ## 7) What this contract governs
