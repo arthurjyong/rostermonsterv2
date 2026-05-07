@@ -21,7 +21,9 @@
 
 function extractSnapshotForActiveSheet() {
   try {
-    var snapshot = _buildSnapshotForActiveSheet_();
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var requestSheet = SpreadsheetApp.getActiveSheet();
+    var snapshot = _buildSnapshot_(ss, requestSheet);
     var json = JSON.stringify(snapshot, null, 2);
     var filename = snapshot.metadata.snapshotId + '.json';
     return _buildDownloadHtml_(json, filename);
@@ -44,16 +46,26 @@ function extractSnapshotForActiveSheet() {
 // orchestrates extract + cloud + writeback as one operation, so the
 // extract step's error surface is "throw and let orchestrator catch."
 function extractSnapshotInMemoryForActiveSheet() {
-  return _buildSnapshotForActiveSheet_();
-}
-
-// Internal: orchestrates §6 steps 1..9. Throws Error with a user-facing
-// message on any extraction-blocking defect; the public entrypoint catches
-// and renders the message into an error HtmlOutput.
-function _buildSnapshotForActiveSheet_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var requestSheet = SpreadsheetApp.getActiveSheet();
+  return _buildSnapshot_(ss, requestSheet);
+}
 
+// Public: in-memory extract from caller-supplied spreadsheet + request-entry
+// sheet objects (no active-sheet dependency). Used by headless callers like
+// the launcher's `extractSnapshotById(spreadsheetId, requestTabName)` per
+// D-NNNN, which opens the spreadsheet via `SpreadsheetApp.openById()` from a
+// `clasp run` context where no active spreadsheet/sheet UI session exists.
+// Returns the same Snapshot-shape object as `extractSnapshotInMemoryForActiveSheet`.
+function extractSnapshotInMemoryForSheet(ss, requestSheet) {
+  return _buildSnapshot_(ss, requestSheet);
+}
+
+// Internal: orchestrates §6 steps 1..9 against caller-supplied spreadsheet +
+// request-entry sheet. Throws Error with a user-facing message on any
+// extraction-blocking defect; public entrypoints catch / propagate per their
+// own surface contracts.
+function _buildSnapshot_(ss, requestSheet) {
   // §6 step 1: validate the active sheet is a request-entry tab.
   var activeTabType = _readSingleSheetMeta_(requestSheet, 'rosterMonster:tabType');
   if (activeTabType !== 'requestEntry') {
