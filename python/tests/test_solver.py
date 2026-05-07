@@ -699,7 +699,8 @@ def test_diagnostics_records_rule_engine_rejections() -> None:
 
 def test_unknown_strategy_id_is_rejected() -> None:
     """Per §11.1: strategy resolution MUST reject unregistered strategyIds
-    before any §10 output construction begins."""
+    before any §10 output construction begins. Registered strategies as of
+    M6 C1 are exactly {SEEDED_RANDOM_BLIND, LAHC} per §11.1."""
     model = _model()
     raised = False
     try:
@@ -712,6 +713,47 @@ def test_unknown_strategy_id_is_rejected() -> None:
     except ValueError:
         raised = True
     assert raised
+
+
+def test_lahc_strategy_registered_but_not_yet_implemented() -> None:
+    """Per docs/solver_contract.md §11.1 + §12A: LAHC is registered as the
+    second strategy (M6 C1 closure per docs/decision_log.md D-0067), but
+    the algorithm implementation lands in M6 C2 Task 2B per
+    docs/delivery_plan.md §9. Until then, dispatching to LAHC raises
+    NotImplementedError — distinct from ValueError for unregistered ids
+    so callers + tests can tell the two failure modes apart.
+
+    Strategy resolution still SUCCEEDS (LAHC is registered), so the error
+    surfaces from inside the candidate loop, not from `get_strategy`.
+    """
+    from rostermonster.solver import STRATEGY_LAHC
+
+    model = _model()
+    raised_not_impl = False
+    raised_value_error = False
+    try:
+        _solve(
+            model,
+            seed=1,
+            terminationBounds=TerminationBounds(maxCandidates=1),
+            strategyId=STRATEGY_LAHC,
+        )
+    except NotImplementedError as e:
+        raised_not_impl = True
+        # Sanity: error message points at where the implementation will arrive.
+        assert "M6 C2 Task 2B" in str(e), (
+            f"NotImplementedError message should point at M6 C2 Task 2B; "
+            f"got: {e!s}"
+        )
+    except ValueError:
+        raised_value_error = True
+    assert raised_not_impl, (
+        "LAHC dispatch should raise NotImplementedError (registered + "
+        "unimplemented), not ValueError (unregistered)"
+    )
+    assert not raised_value_error, (
+        "LAHC is registered per §11.1 — strategy resolution should succeed"
+    )
 
 
 def test_unknown_fill_order_policy_is_rejected() -> None:

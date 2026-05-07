@@ -12,8 +12,10 @@ from enum import Enum
 
 from rostermonster.domain import AssignmentUnit, ValidationIssue
 
-# First-release strategy / policy identifiers per solver §11–§12.
+# Strategy / policy identifiers per solver §11.1 (Registered strategies)
+# + §12.3 (fill-order policies).
 STRATEGY_SEEDED_RANDOM_BLIND = "SEEDED_RANDOM_BLIND"
+STRATEGY_LAHC = "LAHC"
 FILL_ORDER_POLICY_MOST_CONSTRAINED_FIRST = "MOST_CONSTRAINED_FIRST"
 
 
