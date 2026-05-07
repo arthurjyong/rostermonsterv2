@@ -866,6 +866,18 @@ def test_lahc_smoke_returns_candidate_set() -> None:
         f"LAHC should surface rule-engine rejection codes from move attempts; "
         f"got empty rejection counts: {rejections}"
     )
+    # Codex P2 round-5: placementAttempts MUST include the seed-phase
+    # (Phase 1/2 SEEDED_RANDOM_BLIND placement attempts) on top of the
+    # inner-loop move-generator tries — pre-fix, both accumulators started
+    # from zero so successful LAHC's `placementAttempts` undercounted by
+    # exactly the seed phase's work. Sanity floor: every successful
+    # trajectory must have placed at least N=len(roster) cells in Phase 2,
+    # so total placementAttempts is at least 2 * sum(per-trajectory roster
+    # sizes). Use a loose floor (each trajectory had >0 seed attempts).
+    assert result.diagnostics.placementAttempts >= 2 * len(result.candidates[0].assignments), (
+        f"placementAttempts should include seed-phase work for both trajectories; "
+        f"got {result.diagnostics.placementAttempts}"
+    )
 
 
 def test_unknown_fill_order_policy_is_rejected() -> None:

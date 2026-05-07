@@ -247,11 +247,15 @@ def run_lahc(
 
     # Aggregate diagnostics: total move-generation tries, accepted moves,
     # rule-engine rejection codes seen during proposed-move validation.
-    # Symmetric with `strategy._RejectionTally` so LAHC's funnel data
-    # surfaces in `SearchDiagnostics.ruleEngineRejectionsByReason` per §18.1.
-    aggregate_attempts = 0
+    # Seed phase per §12A.1's Step 1 already produced rule-engine work
+    # (Phase 1/2 placement attempts + rejections) — fold it in so successful
+    # LAHC trajectories' SearchDiagnostics include the seed-phase work
+    # alongside the inner-loop move-generator funnel. Symmetric with
+    # `strategy._RejectionTally` so LAHC's funnel data is comparable to
+    # SEEDED_RANDOM_BLIND's per §18.1.
+    aggregate_attempts = seed_outcome.attempts
     aggregate_accepted = 0
-    rejection_counts: dict[str, int] = {}
+    rejection_counts: dict[str, int] = dict(seed_outcome.rejection_counts)
 
     # Pre-compute per-slot eligibility lookup for the reassign move type
     # (mirrors `python/rostermonster/solver/strategy.py`'s `_eligibility_index`).
