@@ -81,12 +81,13 @@ This contract does **not** govern:
 
 ## 9) Input shape
 Solver invocations are evaluated against the following inputs:
-1. **`normalizedModel`** — the `CONSUMABLE` parser output (`docs/domain_model.md`), including `FixedAssignment[]`, `SlotDemand`, `DoctorGroup` membership, `SlotType` identities, `DailyEffectState`, `EligibilityRule`, and `Request` facts.
-2. **`ruleEngine`** — a handle to the rule-engine interface governed by `docs/rule_engine_contract.md`. The solver MUST use this interface (and only this interface) to adjudicate hard validity of any candidate placement.
-3. **`seed`** — a 64-bit signed integer used to initialize any randomized decision made by the active strategy. Under identical inputs including `seed`, the solver MUST produce identical outputs; see §16.
-4. **`fillOrderPolicy`** — the fill-order policy descriptor used by the active strategy's fill phase. First-release default is `MOST_CONSTRAINED_FIRST`; see §12.
-5. **`terminationBounds`** — termination configuration for the active strategy. First-release surface: `maxCandidates` (required). See §15.
-6. **`preferenceSeeding`** (optional) — configuration for any preference-seeding phase the active strategy supports. First-release surface: `crFloor` (see §13).
+1. **`strategyId`** — the named strategy to run; MUST resolve to a registered strategy per §11.1 (`SEEDED_RANDOM_BLIND` per §12, `LAHC` per §12A). Strategy resolution at the boundary precedes any §10 output construction per §11.1; an unregistered `strategyId` is rejected outside the §10 schema.
+2. **`normalizedModel`** — the `CONSUMABLE` parser output (`docs/domain_model.md`), including `FixedAssignment[]`, `SlotDemand`, `DoctorGroup` membership, `SlotType` identities, `DailyEffectState`, `EligibilityRule`, and `Request` facts.
+3. **`ruleEngine`** — a handle to the rule-engine interface governed by `docs/rule_engine_contract.md`. The solver MUST use this interface (and only this interface) to adjudicate hard validity of any candidate placement.
+4. **`seed`** — a 64-bit signed integer used to initialize any randomized decision made by the active strategy. Under identical inputs including `seed`, the solver MUST produce identical outputs; see §16.
+5. **`fillOrderPolicy`** — the fill-order policy descriptor used by the active strategy's fill phase. First-release default is `MOST_CONSTRAINED_FIRST`; see §12.
+6. **`terminationBounds`** — termination configuration for the active strategy. First-release surface: `maxCandidates` (required). See §15.
+7. **`preferenceSeeding`** (optional) — configuration for any preference-seeding phase the active strategy supports. First-release surface: `crFloor` (see §13).
 
 Normative properties:
 - The solver MUST NOT consume the scorer interface, any scoring configuration (`scoringConfig`), any soft-effect magnitude, or any objective signal — **except** when the active strategy opts into the §11.2 `scoringConsultation: "READ_ONLY_ORACLE"` extension clause, in which case the strategy MAY consume scoring as a read-only oracle subject to the read-only constraints in §11.2 (no mutation, no direction override, no scorer-owned-component alteration). The default — and the rule for strategies that do NOT opt in — is the unconditional prohibition. `SEEDED_RANDOM_BLIND` (§12) does not opt in and remains scoring-blind end-to-end. `LAHC` (§12A) does opt in per §12A.6.
@@ -213,7 +214,7 @@ LAHC emits K candidates via **K independent seeded trajectories** — NOT K obse
 - Outer loop: for `i` in `[0, terminationBounds.maxCandidates)`:
   - Compute `trajectorySeed_i = derive(seed, i)`, where `derive(...)` is a deterministic, documented seed-derivation function (e.g., `splitmix64(seed, i)`); the strategy implementation MUST document and pin the chosen derivation.
   - Run a full LAHC inner loop (§12A.1) with `trajectorySeed_i`.
-  - Emit terminal roster as a `TrialCandidate`.
+  - Emit `bestRoster` (the trajectory's best-found roster paired with `bestSoFar` at termination, per §12A.1 step 5) as a `TrialCandidate` — NOT the terminal `currentRoster`.
 - Trajectories are independent — no information flows between them (no cross-trajectory pruning, no shared best-so-far). This preserves byte-identical determinism per §16 and the analyzer-side separation per `docs/decision_log.md` D-0056 ("solver IS the exploration mechanism"; analyzer is the passive observer).
 
 Rejected alternative — K-observations-along-a-single-trajectory: would produce highly correlated near-clone candidates (consecutive trajectory points share most of their assignment matrix), defeating the K-candidate diagnostic role per D-0056.
@@ -229,7 +230,7 @@ Rejected alternative — K-observations-along-a-single-trajectory: would produce
 Inner-loop bounds are LAHC-specific and live in `additionalInputs.lahcParams` per §11.2's strategy-specific input declaration; they are NOT part of `terminationBounds` (which §15 keeps narrow at `maxCandidates`-only).
 
 ### 12A.4 Determinism (D-0067 sub-decision 3)
-Given identical `(normalizedModel, ruleEngine, seed, fillOrderPolicy, terminationBounds, preferenceSeeding, additionalInputs.lahcParams, additionalInputs.scoringOracle)` inputs, LAHC MUST produce byte-identical output per §16. Two `scoringOracle` handles count as identical inputs only if they wrap the same effective `ScoringConfig` per `docs/scorer_contract.md` §15 (same component weights, same `pointRules`, same overlay outcome) — different scoring configs change `proposedScore` values, which changes accept decisions per §12A.1.c, which can diverge LAHC trajectories even at fixed `seed` + `lahcParams`. Callers running LAHC under varying scoring configs MUST NOT expect byte-identical output across scoring-config changes.
+Given identical `(strategyId="LAHC", normalizedModel, ruleEngine, seed, fillOrderPolicy, terminationBounds, preferenceSeeding, additionalInputs.lahcParams, additionalInputs.scoringOracle)` inputs, LAHC MUST produce byte-identical output per §16. Two `scoringOracle` handles count as identical inputs only if they wrap the same effective `ScoringConfig` per `docs/scorer_contract.md` §15 (same component weights, same `pointRules`, same overlay outcome) — different scoring configs change `proposedScore` values, which changes accept decisions per §12A.1.c, which can diverge LAHC trajectories even at fixed `seed` + `lahcParams`. Callers running LAHC under varying scoring configs MUST NOT expect byte-identical output across scoring-config changes.
 
 Determinism preservation requires:
 - `derive(seed, i)` is a deterministic, documented, pinned function.
@@ -340,7 +341,7 @@ Rationale: a single candidate-count bound keeps the first-release termination su
 
 ## 16) Determinism
 Proposed in this checkpoint (normative):
-- Given identical `(normalizedModel, ruleEngine, seed, fillOrderPolicy, terminationBounds, preferenceSeeding)` inputs, the solver MUST return byte-identical outputs — identical `CandidateSet.candidates` ordering and content, or identical `UnsatisfiedResult.unfilledDemand` and `reasons` — within a single implementation on a single platform.
+- Given identical `(strategyId, normalizedModel, ruleEngine, seed, fillOrderPolicy, terminationBounds, preferenceSeeding)` inputs (plus the strategy-specific `additionalInputs` declared in the active `StrategyDescriptor` per §11), the solver MUST return byte-identical outputs — identical `CandidateSet.candidates` ordering and content, or identical `UnsatisfiedResult.unfilledDemand` and `reasons` — within a single implementation on a single platform. Two invocations that differ only in `strategyId` (e.g., `SEEDED_RANDOM_BLIND` vs `LAHC`) are NOT identical inputs; legitimate output differences across strategies are expected and not a determinism violation.
 - Determinism is required within a single implementation on a single platform. Cross-implementation determinism is not required and is not guaranteed; RNG choices, floating-point ordering, and container iteration order differ across runtimes.
 - Any randomized decision the strategy makes (for example, tie-break selection under `MOST_CONSTRAINED_FIRST`, `CR` ordering within a doctor's seed list) MUST derive exclusively from `seed`. Strategies MUST NOT consult ambient entropy sources.
 
