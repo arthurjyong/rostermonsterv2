@@ -89,9 +89,9 @@ Solver invocations are evaluated against the following inputs:
 6. **`preferenceSeeding`** (optional) — configuration for any preference-seeding phase the active strategy supports. First-release surface: `crFloor` (see §13).
 
 Normative properties:
-- The solver MUST NOT consume the scorer interface, any scoring configuration (`scoringConfig`), any soft-effect magnitude, or any objective signal.
+- The solver MUST NOT consume the scorer interface, any scoring configuration (`scoringConfig`), any soft-effect magnitude, or any objective signal — **except** when the active strategy opts into the §11.2 `scoringConsultation: "READ_ONLY_ORACLE"` extension clause, in which case the strategy MAY consume scoring as a read-only oracle subject to the read-only constraints in §11.2 (no mutation, no direction override, no scorer-owned-component alteration). The default — and the rule for strategies that do NOT opt in — is the unconditional prohibition. `SEEDED_RANDOM_BLIND` (§12) does not opt in and remains scoring-blind end-to-end. `LAHC` (§12A) does opt in per §12A.6.
 - The solver MUST NOT read any state outside the declared inputs. No environment variables, no clocks, no filesystem.
-- Strategies MAY declare additional strategy-specific inputs in their strategy descriptor (§11). Such additions MUST NOT override this contract's prohibitions (in particular, MUST NOT smuggle scoring logic into first-release `SEEDED_RANDOM_BLIND`).
+- Strategies MAY declare additional strategy-specific inputs in their strategy descriptor (§11). Such additions MUST NOT override this contract's prohibitions, except via the explicit §11.2 extension-clause mechanism above. In particular, strategy-specific inputs MUST NOT smuggle scoring logic into a strategy that has not declared `scoringConsultation: "READ_ONLY_ORACLE"` (e.g., MUST NOT smuggle scoring into `SEEDED_RANDOM_BLIND`).
 
 ## 10) Output shape
 Solver returns one of the following two shapes:
