@@ -24,8 +24,10 @@ from random import Random
 
 from rostermonster.domain import IssueSeverity, NormalizedModel, ValidationIssue
 from rostermonster.solver.cr_floor import compute_cr_floor
+from rostermonster.solver.lahc import LahcParams, make_scoring_oracle
 from rostermonster.solver.result import (
     FILL_ORDER_POLICY_MOST_CONSTRAINED_FIRST,
+    STRATEGY_LAHC,
     STRATEGY_SEEDED_RANDOM_BLIND,
     CandidateSet,
     PreferenceSeedingConfig,
@@ -54,6 +56,100 @@ def _per_candidate_seed(rng: Random) -> int:
     return rng.getrandbits(63)
 
 
+def _build_unsatisfied(
+    *,
+    failed_outcomes: list[tuple[int, int, tuple]],
+    strategyId: str,
+    fillOrderPolicy: str,
+    crFloorMode: str,
+    crFloorComputed: int,
+    seed: int,
+    aggregate_attempts: int,
+    aggregate_rejections: dict[str, int],
+    candidate_emit_count: int,
+    lahc_diag_kwargs: dict | None = None,
+) -> UnsatisfiedResult:
+    """Build an UnsatisfiedResult from the deterministic complete union of
+    per-trajectory failures per `docs/solver_contract.md` §14 + §12A.8.
+
+    `failed_outcomes` is a list of `(trajectory_index, candidate_seed,
+    unfillable)` triples in trajectory order. The resulting `unfilledDemand`
+    de-duplicates byte-identical (dateKey, slotType, unitIndex) entries
+    while preserving deterministic per-trajectory order; `reasons` carries
+    the union of `ValidationIssue` entries with per-trajectory `seed`
+    context for debugging.
+
+    SEEDED_RANDOM_BLIND aborts on the first failure (one entry); LAHC
+    aggregates all K trajectories' failures (per §12A.8 — surface every
+    cause that affected any trajectory, never a "representative subset").
+
+    Dedup discipline:
+    - `unfilledDemand` IS deduped by unit (operator-facing summary —
+      surfacing the same `(dateKey, slotType, unitIndex)` K times when
+      every trajectory failed on it would just be noise).
+    - `reasons` is NOT deduped — every (trajectory_index, unit) pair gets
+      its own `ValidationIssue` so debugging can see which specific seed
+      hit which specific failure (per §12A.8 "complete per-trajectory
+      failure data").
+    """
+    seen_units: set[tuple[str, str, int]] = set()
+    unfilled_list: list[UnfilledDemandEntry] = []
+    reasons_list: list[ValidationIssue] = []
+    for trajectory_index, candidate_seed, unfillable in failed_outcomes:
+        for u in unfillable:
+            key = (u.dateKey, u.slotType, u.unitIndex)
+            # Always emit a reason — preserves per-trajectory debugging
+            # data even when multiple trajectories collide on the same unit.
+            reasons_list.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code="UNFILLABLE_DEMAND",
+                    message=(
+                        f"No eligible-and-rule-valid doctor for "
+                        f"({u.dateKey}, {u.slotType}, unit {u.unitIndex}) "
+                        f"under {strategyId} with seed={candidate_seed} "
+                        f"(trajectory {trajectory_index})"
+                    ),
+                    context={
+                        "dateKey": u.dateKey,
+                        "slotType": u.slotType,
+                        "unitIndex": u.unitIndex,
+                        "trajectoryIndex": trajectory_index,
+                        "seed": candidate_seed,
+                    },
+                )
+            )
+            # Dedupe `unfilledDemand` only — the operator-facing list shows
+            # each affected unit once.
+            if key in seen_units:
+                continue
+            seen_units.add(key)
+            unfilled_list.append(
+                UnfilledDemandEntry(
+                    dateKey=u.dateKey,
+                    slotType=u.slotType,
+                    unitIndex=u.unitIndex,
+                )
+            )
+    diagnostics = SearchDiagnostics(
+        strategyId=strategyId,
+        fillOrderPolicy=fillOrderPolicy,
+        crFloorMode=crFloorMode,
+        crFloorComputed=crFloorComputed,
+        seed=seed,
+        placementAttempts=aggregate_attempts,
+        ruleEngineRejectionsByReason=dict(aggregate_rejections),
+        candidateEmitCount=candidate_emit_count,
+        unfilledDemandCount=len(unfilled_list),
+        **(lahc_diag_kwargs or {}),
+    )
+    return UnsatisfiedResult(
+        unfilledDemand=tuple(unfilled_list),
+        reasons=tuple(reasons_list),
+        diagnostics=diagnostics,
+    )
+
+
 def solve(
     normalizedModel: NormalizedModel,
     *,
@@ -63,6 +159,8 @@ def solve(
     preferenceSeeding: PreferenceSeedingConfig | None = None,
     fillOrderPolicy: str = FILL_ORDER_POLICY_MOST_CONSTRAINED_FIRST,
     strategyId: str = STRATEGY_SEEDED_RANDOM_BLIND,
+    scoringConfig=None,
+    lahcParams: LahcParams | None = None,
 ) -> CandidateSet | UnsatisfiedResult:
     """Run the active solver strategy for `terminationBounds.maxCandidates`
     candidates per `docs/solver_contract.md`.
@@ -85,10 +183,31 @@ def solve(
     """
     # §11.1: strategy resolution rejects unregistered ids BEFORE any §10
     # output construction begins. Registered ids dispatch through the
-    # registry's `_StrategyDescriptor.run` callable; LAHC is registered but
-    # currently raises NotImplementedError until M6 C2 Task 2B lands its
-    # algorithm implementation per docs/delivery_plan.md §9.
+    # registry's `_StrategyDescriptor.run` callable per
+    # docs/solver_contract.md §11.
     descriptor = get_strategy(strategyId)
+
+    # §12A.6 + §11.2 extension clause: LAHC requires the read-only scoring
+    # oracle (derived from scoringConfig) and lahcParams. SEEDED_RANDOM_BLIND
+    # ignores both (it's scoring-blind end-to-end per §12). Validate at the
+    # boundary so the failure mode is "fail fast in solve()" not "AttributeError
+    # deep in the LAHC inner loop".
+    strategy_kwargs: dict = {}
+    if strategyId == STRATEGY_LAHC:
+        if scoringConfig is None:
+            raise ValueError(
+                "scoringConfig is required when strategyId='LAHC' per "
+                "docs/solver_contract.md §12A.6 (read-only scoring oracle "
+                "extension clause); SEEDED_RANDOM_BLIND remains scoring-blind."
+            )
+        # Oracle construction is encapsulated in `lahc.py` — the only
+        # solver-package module authorized to consume the scorer interface
+        # per §12A.6 + §11.2 extension clause. The solver core stays
+        # scoring-blind by default.
+        strategy_kwargs["scoring_oracle"] = make_scoring_oracle(scoringConfig)
+        strategy_kwargs["lahc_params"] = (
+            lahcParams if lahcParams is not None else LahcParams()
+        )
     if fillOrderPolicy != FILL_ORDER_POLICY_MOST_CONSTRAINED_FIRST:
         raise ValueError(
             f"Unknown fillOrderPolicy {fillOrderPolicy!r}; first-release "
@@ -144,6 +263,32 @@ def solve(
     aggregate_attempts = 0
     aggregate_rejections: dict[str, int] = {}
 
+    # Per-strategy failure aggregation per `docs/solver_contract.md` §14
+    # + §12A.8:
+    # - `SEEDED_RANDOM_BLIND` (single-attempt-style — even at K candidates
+    #   the K rosters come from one feasibility outcome): ANY unfillable
+    #   attempt → whole-run UnsatisfiedResult. Existing pre-M6 behavior.
+    # - `LAHC` (multi-trajectory K-independent attempts per §12A.2): drop
+    #   per-trajectory seed-roster failures; only return UnsatisfiedResult
+    #   when ALL K trajectories' seed steps fail. If at least one
+    #   trajectory succeeds, emit a non-empty CandidateSet with the
+    #   successful trajectories' rosters per §12A.8.
+    abort_on_first_failure = strategyId != STRATEGY_LAHC
+
+    # Track the union of all per-trajectory failures for the all-trajectories-
+    # failed UnsatisfiedResult path per §12A.8 (deterministic complete
+    # union; per-trajectory order preserved).
+    failed_outcomes: list[tuple[int, int, tuple]] = []  # (trajectory_index, candidate_seed, unfillable)
+
+    # LAHC-only per-trajectory diagnostics per §12A.9 — populated for every
+    # outer-loop iteration regardless of success/failure so the operator can
+    # reconstruct what each trajectory did. Indexed by outer-loop index.
+    per_trajectory_status: list[str] = []
+    per_trajectory_iters: list[int] = []
+    per_trajectory_accepted: list[int] = []
+    per_trajectory_best_score: list[float | None] = []
+    per_trajectory_terminal_score: list[float | None] = []
+
     for index in range(terminationBounds.maxCandidates):
         candidate_seed = _per_candidate_seed(run_rng)
         outcome = descriptor.run(
@@ -151,61 +296,97 @@ def solve(
             normalizedModel,
             candidate_seed,
             cr_floor_x,
+            **strategy_kwargs,
         )
         aggregate_attempts += outcome.attempts
         for code, count in outcome.rejection_counts.items():
             aggregate_rejections[code] = aggregate_rejections.get(code, 0) + count
 
-        if outcome.unfillable:
-            # §14 whole-run failure: surface the unfillable units from this
-            # candidate's attempt and abort. No partial CandidateSet leaks.
-            unfilled = tuple(
-                UnfilledDemandEntry(
-                    dateKey=u.dateKey,
-                    slotType=u.slotType,
-                    unitIndex=u.unitIndex,
-                )
-                for u in outcome.unfillable
-            )
-            reasons = tuple(
-                ValidationIssue(
-                    severity=IssueSeverity.ERROR,
-                    code="UNFILLABLE_DEMAND",
-                    message=(
-                        f"No eligible-and-rule-valid doctor for "
-                        f"({u.dateKey}, {u.slotType}, unit {u.unitIndex}) "
-                        f"under {strategyId} with seed={candidate_seed}"
-                    ),
-                    context={
-                        "dateKey": u.dateKey,
-                        "slotType": u.slotType,
-                        "unitIndex": u.unitIndex,
-                    },
-                )
-                for u in outcome.unfillable
-            )
-            diagnostics = SearchDiagnostics(
-                strategyId=strategyId,
-                fillOrderPolicy=fillOrderPolicy,
-                crFloorMode=seeding.crFloor.mode,
-                crFloorComputed=cr_floor_x,
-                seed=seed,
-                placementAttempts=aggregate_attempts,
-                ruleEngineRejectionsByReason=dict(aggregate_rejections),
-                candidateEmitCount=len(candidates),
-                unfilledDemandCount=len(unfilled),
-            )
-            return UnsatisfiedResult(
-                unfilledDemand=unfilled,
-                reasons=reasons,
-                diagnostics=diagnostics,
-            )
+        # Collect §12A.9 per-trajectory data when LAHC is active. SEEDED_RANDOM_BLIND
+        # outcomes don't populate `strategy_data`, so the lists stay empty
+        # for non-LAHC strategies and SearchDiagnostics gets `None` for
+        # those fields.
+        if strategyId == STRATEGY_LAHC:
+            sd = outcome.strategy_data or {}
+            if outcome.unfillable:
+                per_trajectory_status.append("SEED_FAILED")
+                per_trajectory_iters.append(0)
+                per_trajectory_accepted.append(0)
+                per_trajectory_best_score.append(None)
+                per_trajectory_terminal_score.append(None)
+            else:
+                per_trajectory_status.append("SUCCEEDED")
+                per_trajectory_iters.append(int(sd.get("iters", 0)))
+                per_trajectory_accepted.append(int(sd.get("accepted_moves", 0)))
+                per_trajectory_best_score.append(sd.get("best_score"))
+                per_trajectory_terminal_score.append(sd.get("terminal_score"))
 
+        if outcome.unfillable:
+            failed_outcomes.append((index, candidate_seed, outcome.unfillable))
+            if abort_on_first_failure:
+                # SEEDED_RANDOM_BLIND any-fail-fails (§14): surface the
+                # unfillable units from this candidate's attempt and abort.
+                # No partial CandidateSet leaks.
+                return _build_unsatisfied(
+                    failed_outcomes=failed_outcomes,
+                    strategyId=strategyId,
+                    fillOrderPolicy=fillOrderPolicy,
+                    crFloorMode=seeding.crFloor.mode,
+                    crFloorComputed=cr_floor_x,
+                    seed=seed,
+                    aggregate_attempts=aggregate_attempts,
+                    aggregate_rejections=aggregate_rejections,
+                    candidate_emit_count=len(candidates),
+                )
+            # LAHC drop-and-continue: trajectory dropped, continue to next.
+            continue
+
+        # Successful trajectory — emit as TrialCandidate. candidateId is a
+        # 1-indexed dense integer per `docs/selector_contract.md` §16.1; with
+        # LAHC's drop-and-continue, len(candidates)+1 keeps the ids dense
+        # across dropped trajectories.
         candidates.append(
             TrialCandidate(
-                candidateId=index + 1,
+                candidateId=len(candidates) + 1,
                 assignments=outcome.assignments,
             )
+        )
+
+    # §12A.9 LAHC-specific diagnostic fields surface only when the active
+    # strategy is LAHC; otherwise they stay `None`. Built BEFORE the
+    # all-fail branch so both `_build_unsatisfied` (all-fail) and the
+    # success-path diagnostics get the same LAHC fields.
+    lahc_diag_kwargs: dict = {}
+    if strategyId == STRATEGY_LAHC:
+        lp: LahcParams = strategy_kwargs["lahc_params"]
+        lahc_diag_kwargs = {
+            "lahcHistoryListLength": lp.historyListLength,
+            "lahcMaxIters": lp.maxIters,
+            "lahcIdleThreshold": lp.idleThreshold,
+            "seedDerivationFunction": "python.Random.getrandbits.candidate_seed",
+            "perTrajectoryStatus": tuple(per_trajectory_status),
+            "perTrajectoryIters": tuple(per_trajectory_iters),
+            "perTrajectoryAcceptedMoves": tuple(per_trajectory_accepted),
+            "perTrajectoryBestScore": tuple(per_trajectory_best_score),
+            "perTrajectoryTerminalScore": tuple(per_trajectory_terminal_score),
+        }
+
+    # All K trajectories have run. Decide success vs whole-run failure.
+    if not candidates:
+        # All trajectories failed (LAHC: every seed step returned unfillable;
+        # SEEDED_RANDOM_BLIND: would've already aborted on the first failure
+        # so this branch is unreachable for SEEDED_RANDOM_BLIND).
+        return _build_unsatisfied(
+            failed_outcomes=failed_outcomes,
+            strategyId=strategyId,
+            fillOrderPolicy=fillOrderPolicy,
+            crFloorMode=seeding.crFloor.mode,
+            crFloorComputed=cr_floor_x,
+            seed=seed,
+            aggregate_attempts=aggregate_attempts,
+            aggregate_rejections=aggregate_rejections,
+            candidate_emit_count=0,
+            lahc_diag_kwargs=lahc_diag_kwargs,
         )
 
     diagnostics = SearchDiagnostics(
@@ -218,6 +399,7 @@ def solve(
         ruleEngineRejectionsByReason=dict(aggregate_rejections),
         candidateEmitCount=len(candidates),
         unfilledDemandCount=0,
+        **lahc_diag_kwargs,
     )
     return CandidateSet(
         candidates=tuple(candidates),

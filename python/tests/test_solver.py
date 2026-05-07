@@ -715,44 +715,194 @@ def test_unknown_strategy_id_is_rejected() -> None:
     assert raised
 
 
-def test_lahc_strategy_registered_but_not_yet_implemented() -> None:
-    """Per docs/solver_contract.md §11.1 + §12A: LAHC is registered as the
-    second strategy (M6 C1 closure per docs/decision_log.md D-0067), but
-    the algorithm implementation lands in M6 C2 Task 2B per
-    docs/delivery_plan.md §9. Until then, dispatching to LAHC raises
-    NotImplementedError — distinct from ValueError for unregistered ids
-    so callers + tests can tell the two failure modes apart.
-
-    Strategy resolution still SUCCEEDS (LAHC is registered), so the error
-    surfaces from inside the candidate loop, not from `get_strategy`.
-    """
+def test_lahc_requires_scoring_config() -> None:
+    """Per docs/solver_contract.md §12A.6 + §11.2 extension clause: LAHC
+    consumes scoring as a read-only oracle. solve() MUST validate
+    scoringConfig presence at the boundary so the failure mode is "fail
+    fast" not "AttributeError deep in LAHC inner loop"."""
     from rostermonster.solver import STRATEGY_LAHC
 
     model = _model()
-    raised_not_impl = False
-    raised_value_error = False
+    raised = False
     try:
         _solve(
             model,
             seed=1,
             terminationBounds=TerminationBounds(maxCandidates=1),
             strategyId=STRATEGY_LAHC,
+            # NOTE: deliberately omitting scoringConfig.
         )
-    except NotImplementedError as e:
-        raised_not_impl = True
-        # Sanity: error message points at where the implementation will arrive.
-        assert "M6 C2 Task 2B" in str(e), (
-            f"NotImplementedError message should point at M6 C2 Task 2B; "
-            f"got: {e!s}"
+    except ValueError as e:
+        raised = True
+        assert "scoringConfig" in str(e), (
+            f"ValueError should mention scoringConfig; got: {e!s}"
         )
-    except ValueError:
-        raised_value_error = True
-    assert raised_not_impl, (
-        "LAHC dispatch should raise NotImplementedError (registered + "
-        "unimplemented), not ValueError (unregistered)"
+    assert raised
+
+
+def test_lahc_returns_unsatisfied_only_when_all_trajectories_fail() -> None:
+    """Per docs/solver_contract.md §12A.8 + §14: LAHC's whole-run failure
+    aggregation is "all K trajectories' seed-roster steps fail" — distinct
+    from SEEDED_RANDOM_BLIND's "any unfillable attempt → fail".
+
+    This test forces ALL trajectories to fail (1 ICU_ONLY doctor, demand
+    includes MHD_CALL which no doctor can fill) and asserts:
+    - LAHC returns UnsatisfiedResult (not a partial CandidateSet).
+    - The error reasons reference both the strategyId AND a trajectory
+      index, proving the per-trajectory aggregation path was exercised.
+
+    Codex caught the inverse bug on PR #127 round 1: pre-fix, the solver
+    aborted on the FIRST failed trajectory even for LAHC, which would
+    discard subsequent successful trajectories and report whole-run
+    failure when partial-success was the correct outcome.
+    """
+    from rostermonster.scorer.result import ScoringConfig
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+
+    # ICU_ONLY only — no doctor eligible for MHD_CALL, every trajectory's
+    # seed-roster step (run_seeded_random_blind) returns unfillable.
+    model = _model(doctors=1, standby=False)
+    scoring_config = ScoringConfig.first_release_defaults(model)
+    params = LahcParams(historyListLength=10, idleThreshold=10, maxIters=20)
+    result = _solve(
+        model,
+        seed=42,
+        terminationBounds=TerminationBounds(maxCandidates=3),
+        strategyId=STRATEGY_LAHC,
+        scoringConfig=scoring_config,
+        lahcParams=params,
     )
-    assert not raised_value_error, (
-        "LAHC is registered per §11.1 — strategy resolution should succeed"
+    assert isinstance(result, UnsatisfiedResult)
+    assert result.unfilledDemand
+    for entry in result.unfilledDemand:
+        assert entry.slotType == "MHD_CALL"
+    # Per-trajectory aggregation surfaces strategyId + trajectory index in
+    # the failure message — proves the new aggregation path is exercised
+    # rather than the legacy abort-on-first-failure path.
+    for issue in result.reasons:
+        assert issue.code == "UNFILLABLE_DEMAND"
+        assert "LAHC" in issue.message, (
+            f"strategyId should appear in LAHC failure message; got: {issue.message}"
+        )
+        assert "trajectory" in issue.message, (
+            f"per-trajectory aggregation should mention trajectory index; "
+            f"got: {issue.message}"
+        )
+    # §12A.9 LAHC diagnostics MUST also surface on UnsatisfiedResult — the
+    # all-trajectories-failed branch needs the same transparency payload as
+    # the success branch. Codex P2 round-3 caught this: pre-fix, the all-fail
+    # branch dropped lahcHistoryListLength + perTrajectoryStatus on the floor.
+    diag = result.diagnostics
+    assert diag.lahcHistoryListLength == 10, diag.lahcHistoryListLength
+    assert diag.lahcMaxIters == 20, diag.lahcMaxIters
+    assert diag.lahcIdleThreshold == 10, diag.lahcIdleThreshold
+    assert diag.seedDerivationFunction is not None
+    assert diag.perTrajectoryStatus is not None and len(diag.perTrajectoryStatus) == 3
+    assert all(s == "SEED_FAILED" for s in diag.perTrajectoryStatus), (
+        f"all 3 trajectories should have SEED_FAILED status; got {diag.perTrajectoryStatus}"
+    )
+    # Codex P2 round-4: `reasons` MUST surface every (trajectory, unit) pair
+    # — pre-fix, dedup-by-unit collapsed all 3 trajectories' failures into 1
+    # ValidationIssue when they collided on the same unit. With 3 trajectories
+    # all failing on the same K MHD_CALL units, len(reasons) should equal
+    # 3 * len(unfilledDemand), but unfilledDemand stays deduped (operator-
+    # facing summary).
+    assert len(result.reasons) == 3 * len(result.unfilledDemand), (
+        f"reasons should NOT be unit-deduped — got {len(result.reasons)} reasons "
+        f"for {len(result.unfilledDemand)} unfilled units across 3 trajectories; "
+        f"expected {3 * len(result.unfilledDemand)}"
+    )
+    # Each trajectory index 0/1/2 should appear among the reasons' contexts.
+    seen_trajectories = {issue.context.get("trajectoryIndex") for issue in result.reasons}
+    assert seen_trajectories == {0, 1, 2}, (
+        f"all 3 trajectory indices should appear in reasons; got {seen_trajectories}"
+    )
+
+
+def test_lahc_smoke_returns_candidate_set() -> None:
+    """Per docs/solver_contract.md §12A: LAHC dispatches end-to-end and
+    emits a non-empty CandidateSet under valid inputs. Smoke-level test;
+    byte-identical determinism + accept-rule unit semantics covered in
+    M6 C2 Task 2C's integration tests."""
+    from rostermonster.scorer.result import ScoringConfig, uniform_point_rules
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+
+    model = _model()
+    # `first_release_defaults(model)` builds a ScoringConfig with every
+    # required component weight pre-populated + uniform_point_rules covering
+    # the (slotType, dateKey) cross-product per scorer §11 + D-0038. Same
+    # helper used throughout test_scorer.py.
+    scoring_config = ScoringConfig.first_release_defaults(model)
+    # Tight params for a fast smoke run — full defaults take seconds even on
+    # this minimal fixture, while idleThreshold=10/maxIters=20 finish in ms.
+    params = LahcParams(
+        historyListLength=10, idleThreshold=10, maxIters=20
+    )
+    result = _solve(
+        model,
+        seed=1,
+        terminationBounds=TerminationBounds(maxCandidates=2),
+        strategyId=STRATEGY_LAHC,
+        scoringConfig=scoring_config,
+        lahcParams=params,
+    )
+    assert isinstance(result, CandidateSet), (
+        f"LAHC should return CandidateSet under valid inputs; got "
+        f"{type(result).__name__}"
+    )
+    assert len(result.candidates) == 2, (
+        f"K=2 trajectories → 2 candidates; got {len(result.candidates)}"
+    )
+    assert result.diagnostics.strategyId == "LAHC"
+    # Codex P2 round-4: LAHC inner-loop rule-engine rejections (proposed
+    # swaps/reassignments that violated SAME_DAY_ALREADY_HELD, BACK_TO_BACK_CALL,
+    # etc.) MUST tally into ruleEngineRejectionsByReason — pre-fix, LAHC
+    # always returned an empty dict here, hiding real funnel work from
+    # SearchDiagnostics §18.1. With 4 doctors / 2 days of demand under
+    # rule constraints, at least some proposed moves get rejected.
+    rejections = result.diagnostics.ruleEngineRejectionsByReason
+    assert isinstance(rejections, dict)
+    assert sum(rejections.values()) > 0, (
+        f"LAHC should surface rule-engine rejection codes from move attempts; "
+        f"got empty rejection counts: {rejections}"
+    )
+    # Codex P2 round-5: placementAttempts MUST include the seed-phase
+    # (Phase 1/2 SEEDED_RANDOM_BLIND placement attempts) on top of the
+    # inner-loop move-generator tries — pre-fix, both accumulators started
+    # from zero so successful LAHC's `placementAttempts` undercounted by
+    # exactly the seed phase's work. Sanity floor: every successful
+    # trajectory must have placed at least N=len(roster) cells in Phase 2,
+    # so total placementAttempts is at least 2 * sum(per-trajectory roster
+    # sizes). Use a loose floor (each trajectory had >0 seed attempts).
+    assert result.diagnostics.placementAttempts >= 2 * len(result.candidates[0].assignments), (
+        f"placementAttempts should include seed-phase work for both trajectories; "
+        f"got {result.diagnostics.placementAttempts}"
+    )
+    # Codex P2 round-6: placementAttempts MUST count actual rule-engine
+    # evaluations — pre-fix, it counted random-sample try counts from
+    # successful move generators only, omitting (a) the second
+    # rule_engine call inside _generate_valid_swap and (b) all 100
+    # exhausted tries when the primary move type returned None and the
+    # fallback was used. Invariant: placementAttempts ≥ total rejection
+    # count, since every rejection IS one rule-engine evaluation.
+    assert result.diagnostics.placementAttempts >= sum(rejections.values()), (
+        f"placementAttempts ({result.diagnostics.placementAttempts}) must "
+        f"be ≥ summed rejections ({sum(rejections.values())}) — every "
+        f"rejection is a rule-engine evaluation, so attempts < rejections "
+        f"would be self-contradictory"
+    )
+    # Codex P2 round-7: per §12A.3, the only valid inner-loop termination
+    # paths are `idleThreshold` and `maxIters`. Pre-fix, if both bounded
+    # random move samplers missed in a single iteration the trajectory
+    # would `break` and emit early — making perTrajectoryIters routinely
+    # smaller than idleThreshold on sparse move spaces. Floor: every
+    # successful trajectory must run at least `idleThreshold` iterations
+    # (or hit `maxIters`, which is also >= idleThreshold here).
+    per_iters = result.diagnostics.perTrajectoryIters
+    assert per_iters is not None
+    assert all(it >= 10 for it in per_iters), (
+        f"every successful trajectory should run >= idleThreshold (10) "
+        f"iterations before terminating; got {per_iters}"
     )
 
 
@@ -885,22 +1035,40 @@ def test_phase2_dedupes_doctors_when_eligible_groups_repeat() -> None:
 
 
 def test_solver_package_does_not_import_scorer() -> None:
-    """Per §9 + §11: the solver MUST NOT consume the scorer interface.
-    Architectural invariant: `rostermonster.solver` and its submodules MUST
-    NOT import anything from `rostermonster.scorer`. This test reads each
-    Python source file under `solver/` and grep-checks for actual import
-    statements (not arbitrary substring matches — docstrings legitimately
-    cite the scorer contract by name)."""
+    """Per §9 + §11: the solver MUST NOT consume the scorer interface, EXCEPT
+    via §11.2's `scoringConsultation: "READ_ONLY_ORACLE"` extension clause
+    (activated by `LAHC` per §12A.6 — M6 C1 closure / D-0067).
+
+    Architectural invariant: every `rostermonster.solver` source file MUST
+    NOT import anything from `rostermonster.scorer`, EXCEPT `lahc.py` which
+    is the §12A.6-authorized exception (LAHC consults scoring as a read-only
+    oracle to evaluate move proposals against the accept criterion). All
+    other solver modules — including `solver.py`, `strategy.py`,
+    `strategy_registry.py`, `cr_floor.py`, `result.py` — remain
+    scoring-blind end-to-end.
+
+    This test reads each Python source file under `solver/` and grep-checks
+    for actual import statements (not arbitrary substring matches —
+    docstrings legitimately cite the scorer contract by name)."""
+    # §12A.6-authorized exception: lahc.py opts into the read-only scoring
+    # oracle per §11.2's extension clause. Adding new strategy modules that
+    # opt in: append the file name here AND ensure the corresponding
+    # contract section is updated.
+    ALLOWED_SCORER_IMPORTERS = {"lahc.py"}
+
     solver_root = Path(__file__).resolve().parent.parent / "rostermonster" / "solver"
     offenders: list[str] = []
     for src in sorted(solver_root.glob("*.py")):
+        if src.name in ALLOWED_SCORER_IMPORTERS:
+            continue
         for raw_line in src.read_text(encoding="utf-8").splitlines():
             line = raw_line.strip()
             if line.startswith(("from rostermonster.scorer", "import rostermonster.scorer")):
                 offenders.append(f"{src.name}: {line}")
     assert not offenders, (
         f"solver package files import the scorer (violates "
-        f"docs/solver_contract.md §9 + §11 scoring-blind rule): {offenders}"
+        f"docs/solver_contract.md §9 + §11 scoring-blind rule): {offenders}. "
+        f"Only {sorted(ALLOWED_SCORER_IMPORTERS)} are authorized per §12A.6."
     )
 
 

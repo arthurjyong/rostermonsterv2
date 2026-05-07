@@ -11,6 +11,7 @@ scoring-blind end-to-end and never imports `rostermonster.scorer`.
 """
 
 from rostermonster.solver.cr_floor import compute_cr_floor
+from rostermonster.solver.lahc import LahcParams
 from rostermonster.solver.result import (
     FILL_ORDER_POLICY_MOST_CONSTRAINED_FIRST,
     STRATEGY_LAHC,
@@ -41,6 +42,7 @@ __all__ = [
     "PreferenceSeedingConfig",
     "TerminationBounds",
     "RuleEngineFn",
+    "LahcParams",
     "STRATEGY_SEEDED_RANDOM_BLIND",
     "STRATEGY_LAHC",
     "FILL_ORDER_POLICY_MOST_CONSTRAINED_FIRST",

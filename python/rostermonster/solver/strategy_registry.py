@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from rostermonster.solver.lahc import run_lahc
 from rostermonster.solver.result import (
     STRATEGY_LAHC,
     STRATEGY_SEEDED_RANDOM_BLIND,
@@ -48,33 +49,26 @@ class _StrategyDescriptor:
     run: Callable[..., _StrategyOutcome]
 
 
-def _run_lahc_placeholder(
-    rule_engine, model, candidate_seed, cr_floor_x
+def _run_seeded_random_blind_adapter(
+    rule_engine, model, candidate_seed, cr_floor_x, **_kwargs
 ) -> _StrategyOutcome:
-    """Placeholder for the `LAHC` strategy registered in
-    `docs/solver_contract.md` §11.1 + §12A. The algorithm spec is fully
-    pinned in §12A (M6 C1 closure per `docs/decision_log.md` D-0067), but
-    the implementation lands in **M6 C2 Task 2B** per
-    `docs/delivery_plan.md` §9. Until then, calling
-    `solve(strategyId="LAHC")` raises `NotImplementedError` with a pointer
-    to where the implementation will arrive.
+    """Adapter: SEEDED_RANDOM_BLIND ignores LAHC-specific kwargs
+    (`scoring_oracle`, `lahc_params`) the registry passes through for
+    other strategies. Behavior is byte-identical to direct
+    `run_seeded_random_blind` invocation per
+    `docs/solver_contract.md` §16.
     """
-    raise NotImplementedError(
-        "LAHC strategy is registered (per docs/solver_contract.md §11.1 + "
-        "§12A) but the algorithm implementation lands in M6 C2 Task 2B per "
-        "docs/delivery_plan.md §9. Use strategyId='SEEDED_RANDOM_BLIND' "
-        "until M6 C2 Task 2B closes."
-    )
+    return run_seeded_random_blind(rule_engine, model, candidate_seed, cr_floor_x)
 
 
 _REGISTRY: dict[str, _StrategyDescriptor] = {
     STRATEGY_SEEDED_RANDOM_BLIND: _StrategyDescriptor(
         strategy_id=STRATEGY_SEEDED_RANDOM_BLIND,
-        run=run_seeded_random_blind,
+        run=_run_seeded_random_blind_adapter,
     ),
     STRATEGY_LAHC: _StrategyDescriptor(
         strategy_id=STRATEGY_LAHC,
-        run=_run_lahc_placeholder,
+        run=run_lahc,
     ),
 }
 
