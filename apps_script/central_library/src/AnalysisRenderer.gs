@@ -119,7 +119,7 @@ function _renderAnalysisInner_(output) {
       var rankStr = _ar_padRank_(cand.rankByTotalScore, rankPadWidth);
       var baseName = 'Analysis ' + runShort + ' ' + rankStr;
       var tabName = _ar_uniqueTabName_(ss, baseName);
-      var sheet = ss.insertSheet(tabName);
+      var sheet = ss.insertSheet(tabName, ss.getNumSheets());
       newTabIds.push(String(sheet.getSheetId()));
       newTabNames.push(tabName);
       _ar_renderRosterTab_(sheet, output, cand, k, resolvedDoctorIdMap);
@@ -131,7 +131,7 @@ function _renderAnalysisInner_(output) {
 
     var compBaseName = 'Analysis ' + runShort + ' Comparison';
     var compName = _ar_uniqueTabName_(ss, compBaseName);
-    var compSheet = ss.insertSheet(compName);
+    var compSheet = ss.insertSheet(compName, ss.getNumSheets());
     newTabIds.push(String(compSheet.getSheetId()));
     newTabNames.push(compName);
     _ar_renderComparisonTab_(compSheet, output);
