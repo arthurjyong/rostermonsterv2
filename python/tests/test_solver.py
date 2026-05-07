@@ -801,6 +801,22 @@ def test_lahc_returns_unsatisfied_only_when_all_trajectories_fail() -> None:
     assert all(s == "SEED_FAILED" for s in diag.perTrajectoryStatus), (
         f"all 3 trajectories should have SEED_FAILED status; got {diag.perTrajectoryStatus}"
     )
+    # Codex P2 round-4: `reasons` MUST surface every (trajectory, unit) pair
+    # — pre-fix, dedup-by-unit collapsed all 3 trajectories' failures into 1
+    # ValidationIssue when they collided on the same unit. With 3 trajectories
+    # all failing on the same K MHD_CALL units, len(reasons) should equal
+    # 3 * len(unfilledDemand), but unfilledDemand stays deduped (operator-
+    # facing summary).
+    assert len(result.reasons) == 3 * len(result.unfilledDemand), (
+        f"reasons should NOT be unit-deduped — got {len(result.reasons)} reasons "
+        f"for {len(result.unfilledDemand)} unfilled units across 3 trajectories; "
+        f"expected {3 * len(result.unfilledDemand)}"
+    )
+    # Each trajectory index 0/1/2 should appear among the reasons' contexts.
+    seen_trajectories = {issue.context.get("trajectoryIndex") for issue in result.reasons}
+    assert seen_trajectories == {0, 1, 2}, (
+        f"all 3 trajectory indices should appear in reasons; got {seen_trajectories}"
+    )
 
 
 def test_lahc_smoke_returns_candidate_set() -> None:
@@ -838,6 +854,18 @@ def test_lahc_smoke_returns_candidate_set() -> None:
         f"K=2 trajectories → 2 candidates; got {len(result.candidates)}"
     )
     assert result.diagnostics.strategyId == "LAHC"
+    # Codex P2 round-4: LAHC inner-loop rule-engine rejections (proposed
+    # swaps/reassignments that violated SAME_DAY_ALREADY_HELD, BACK_TO_BACK_CALL,
+    # etc.) MUST tally into ruleEngineRejectionsByReason — pre-fix, LAHC
+    # always returned an empty dict here, hiding real funnel work from
+    # SearchDiagnostics §18.1. With 4 doctors / 2 days of demand under
+    # rule constraints, at least some proposed moves get rejected.
+    rejections = result.diagnostics.ruleEngineRejectionsByReason
+    assert isinstance(rejections, dict)
+    assert sum(rejections.values()) > 0, (
+        f"LAHC should surface rule-engine rejection codes from move attempts; "
+        f"got empty rejection counts: {rejections}"
+    )
 
 
 def test_unknown_fill_order_policy_is_rejected() -> None:

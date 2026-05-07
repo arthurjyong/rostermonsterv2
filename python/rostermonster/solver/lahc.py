@@ -245,9 +245,13 @@ def run_lahc(
         and (a.dateKey, a.slotType, a.doctorId) in fixed_pin_keys
     )
 
-    # Aggregate diagnostics: total move-generation tries, accepted moves.
+    # Aggregate diagnostics: total move-generation tries, accepted moves,
+    # rule-engine rejection codes seen during proposed-move validation.
+    # Symmetric with `strategy._RejectionTally` so LAHC's funnel data
+    # surfaces in `SearchDiagnostics.ruleEngineRejectionsByReason` per §18.1.
     aggregate_attempts = 0
     aggregate_accepted = 0
+    rejection_counts: dict[str, int] = {}
 
     # Pre-compute per-slot eligibility lookup for the reassign move type
     # (mirrors `python/rostermonster/solver/strategy.py`'s `_eligibility_index`).
@@ -269,7 +273,12 @@ def run_lahc(
         primary_is_swap = rng.random() < 0.5
         if primary_is_swap:
             result = _generate_valid_swap(
-                rule_engine, model, current_roster, fixed_coords, rng
+                rule_engine,
+                model,
+                current_roster,
+                fixed_coords,
+                rng,
+                rejection_counts,
             )
             if result is None:
                 result = _generate_valid_reassign(
@@ -281,6 +290,7 @@ def run_lahc(
                     group_by_doctor,
                     all_doctor_ids,
                     rng,
+                    rejection_counts,
                 )
         else:
             result = _generate_valid_reassign(
@@ -292,10 +302,16 @@ def run_lahc(
                 group_by_doctor,
                 all_doctor_ids,
                 rng,
+                rejection_counts,
             )
             if result is None:
                 result = _generate_valid_swap(
-                    rule_engine, model, current_roster, fixed_coords, rng
+                    rule_engine,
+                    model,
+                    current_roster,
+                    fixed_coords,
+                    rng,
+                    rejection_counts,
                 )
         if result is None:
             # Both move types rule-locked → terminate the trajectory with
@@ -362,7 +378,7 @@ def run_lahc(
         assignments=best_roster,
         unfillable=(),
         attempts=aggregate_attempts,
-        rejection_counts={},
+        rejection_counts=dict(rejection_counts),
         strategy_data=strategy_data,
     )
 
@@ -373,6 +389,7 @@ def _generate_valid_swap(
     current_roster: tuple[AssignmentUnit, ...],
     fixed_coords: frozenset[tuple[str, str, int]] | set[tuple[str, str, int]],
     rng: Random,
+    rejection_counts: dict[str, int],
 ) -> tuple[tuple[AssignmentUnit, ...], int] | None:
     """Generate a rule-valid pairwise doctor swap between two non-fixed
     cells. Returns `(proposed_roster, tries_consumed)` on success, `None`
@@ -382,6 +399,12 @@ def _generate_valid_swap(
     the rest of the roster (other cells are unchanged). One `evaluate(...)`
     call per swapped cell — the rule engine returns `Decision.valid` when
     the proposed unit doesn't violate any rule against the supplied state.
+
+    Rule-engine rejections are tallied into `rejection_counts` (mutated
+    in-place; one increment per `ViolationReason.code`) so the run-level
+    `SearchDiagnostics.ruleEngineRejectionsByReason` reflects the funnel
+    work done during score-aware search per §18.1 — symmetric with
+    SEEDED_RANDOM_BLIND's `_RejectionTally`.
     """
     movable_indices = [
         i
@@ -424,10 +447,14 @@ def _generate_valid_swap(
         state_no_swap = RuleState(assignments=others)
         decision_i = rule_engine(model, state_no_swap, new_i)
         if not decision_i.valid:
+            for r in decision_i.reasons:
+                rejection_counts[r.code] = rejection_counts.get(r.code, 0) + 1
             continue
         state_with_new_i = RuleState(assignments=others + (new_i,))
         decision_j = rule_engine(model, state_with_new_i, new_j)
         if not decision_j.valid:
+            for r in decision_j.reasons:
+                rejection_counts[r.code] = rejection_counts.get(r.code, 0) + 1
             continue
 
         # Both new cells valid — build the proposed roster.
@@ -449,6 +476,7 @@ def _generate_valid_reassign(
     group_by_doctor: dict[str, str],
     all_doctor_ids: tuple[str, ...],
     rng: Random,
+    rejection_counts: dict[str, int],
 ) -> tuple[tuple[AssignmentUnit, ...], int] | None:
     """Generate a rule-valid single-cell reassignment per §12A.1.a. Picks
     a non-fixed cell at random and replaces its current doctor with a
@@ -504,6 +532,8 @@ def _generate_valid_reassign(
         state = RuleState(assignments=others)
         decision = rule_engine(model, state, new_unit)
         if not decision.valid:
+            for r in decision.reasons:
+                rejection_counts[r.code] = rejection_counts.get(r.code, 0) + 1
             continue
 
         proposed = list(current_roster)

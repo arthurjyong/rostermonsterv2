@@ -82,6 +82,15 @@ def _build_unsatisfied(
     SEEDED_RANDOM_BLIND aborts on the first failure (one entry); LAHC
     aggregates all K trajectories' failures (per §12A.8 — surface every
     cause that affected any trajectory, never a "representative subset").
+
+    Dedup discipline:
+    - `unfilledDemand` IS deduped by unit (operator-facing summary —
+      surfacing the same `(dateKey, slotType, unitIndex)` K times when
+      every trajectory failed on it would just be noise).
+    - `reasons` is NOT deduped — every (trajectory_index, unit) pair gets
+      its own `ValidationIssue` so debugging can see which specific seed
+      hit which specific failure (per §12A.8 "complete per-trajectory
+      failure data").
     """
     seen_units: set[tuple[str, str, int]] = set()
     unfilled_list: list[UnfilledDemandEntry] = []
@@ -89,16 +98,8 @@ def _build_unsatisfied(
     for trajectory_index, candidate_seed, unfillable in failed_outcomes:
         for u in unfillable:
             key = (u.dateKey, u.slotType, u.unitIndex)
-            if key in seen_units:
-                continue
-            seen_units.add(key)
-            unfilled_list.append(
-                UnfilledDemandEntry(
-                    dateKey=u.dateKey,
-                    slotType=u.slotType,
-                    unitIndex=u.unitIndex,
-                )
-            )
+            # Always emit a reason — preserves per-trajectory debugging
+            # data even when multiple trajectories collide on the same unit.
             reasons_list.append(
                 ValidationIssue(
                     severity=IssueSeverity.ERROR,
@@ -113,7 +114,21 @@ def _build_unsatisfied(
                         "dateKey": u.dateKey,
                         "slotType": u.slotType,
                         "unitIndex": u.unitIndex,
+                        "trajectoryIndex": trajectory_index,
+                        "seed": candidate_seed,
                     },
+                )
+            )
+            # Dedupe `unfilledDemand` only — the operator-facing list shows
+            # each affected unit once.
+            if key in seen_units:
+                continue
+            seen_units.add(key)
+            unfilled_list.append(
+                UnfilledDemandEntry(
+                    dateKey=u.dateKey,
+                    slotType=u.slotType,
+                    unitIndex=u.unitIndex,
                 )
             )
     diagnostics = SearchDiagnostics(
