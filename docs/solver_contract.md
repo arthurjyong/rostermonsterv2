@@ -229,7 +229,7 @@ Rejected alternative — K-observations-along-a-single-trajectory: would produce
 Inner-loop bounds are LAHC-specific and live in `additionalInputs.lahcParams` per §11.2's strategy-specific input declaration; they are NOT part of `terminationBounds` (which §15 keeps narrow at `maxCandidates`-only).
 
 ### 12A.4 Determinism (D-0067 sub-decision 3)
-Given identical `(normalizedModel, ruleEngine, seed, fillOrderPolicy, terminationBounds, preferenceSeeding, additionalInputs.lahcParams)` inputs, LAHC MUST produce byte-identical output per §16.
+Given identical `(normalizedModel, ruleEngine, seed, fillOrderPolicy, terminationBounds, preferenceSeeding, additionalInputs.lahcParams, additionalInputs.scoringOracle)` inputs, LAHC MUST produce byte-identical output per §16. Two `scoringOracle` handles count as identical inputs only if they wrap the same effective `ScoringConfig` per `docs/scorer_contract.md` §15 (same component weights, same `pointRules`, same overlay outcome) — different scoring configs change `proposedScore` values, which changes accept decisions per §12A.1.c, which can diverge LAHC trajectories even at fixed `seed` + `lahcParams`. Callers running LAHC under varying scoring configs MUST NOT expect byte-identical output across scoring-config changes.
 
 Determinism preservation requires:
 - `derive(seed, i)` is a deterministic, documented, pinned function.
