@@ -84,8 +84,10 @@ var SCORER_CONFIG_COMPONENT_DESCRIPTIONS_ = {
     'of group. Cross-group fairness counterweight to the within-section ' +
     'measure.',
   spacingPenalty:
-    'Fires when the same doctor has two call placements within the ' +
-    '3-day minimum-gap window. Spreads call burden across the period.',
+    'Penalises same-doctor call pairs spaced 2-6 days apart. ' +
+    'Per-pair penalty halves with each extra day of gap ' +
+    '(gap 2 = full weight, gap 3 = half, gap 4 = quarter, …, gap 6 = 1/16); ' +
+    'zero past 6 days. Spreads call burden across the period.',
   preLeavePenalty:
     'Fires when a doctor is on call the day before a leave/absence ' +
     '(annual leave, EMCC PM-off, etc).',
