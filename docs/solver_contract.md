@@ -318,7 +318,10 @@ A doctor with one or more fixed assignments on their `CR`-target dates still has
 ## 14) Whole-run failure and retention boundary
 Proposed in this checkpoint (normative):
 
-- **Whole-run failure**: if the active strategy cannot fill every non-fixed demand unit under rule-engine validity within the active termination bounds, the solver MUST return `UnsatisfiedResult` (§10.2). No partial allocations are emitted. Partial-fill candidates MUST NOT leak into `CandidateSet`.
+- **Whole-run failure**: if the active strategy cannot produce ANY rule-engine-valid roster that fills every non-fixed demand unit within the active termination bounds, the solver MUST return `UnsatisfiedResult` (§10.2). The strategy-specific aggregation rule:
+  - For **single-attempt strategies** (`SEEDED_RANDOM_BLIND` per §12, where one Phase 1 + Phase 2 composite produces the feasibility outcome under the active `seed`), whole-run failure occurs when Phase 2 cannot complete the fill.
+  - For **multi-trajectory strategies** (`LAHC` per §12A.2, where K independent trajectories each invoke `SEEDED_RANDOM_BLIND` Phase 1 + Phase 2 with `trajectorySeed_i`), whole-run failure occurs **only when ALL K trajectories' seed-construction attempts fail** per §12A.8. If at least one trajectory produces a fully-valid rule-engine-valid candidate, the strategy emits a non-empty `CandidateSet` containing the successful trajectories' terminal rosters (`K' = K - dropped_count >= 1` candidates per §12A.8); the run is NOT a whole-run failure even if some trajectories dropped.
+  - Partial-fill candidates (rosters with unfilled non-fixed demand) MUST NOT leak into `CandidateSet` regardless of strategy.
 - **Retention boundary**: the solver does not implement retention modes (best-only, top-K, full-candidate). Retention is owned by the selector stage, which sits downstream of the scorer. The solver emits every valid candidate it generates under the active strategy, up to `terminationBounds.maxCandidates`, without per-candidate retention filtering.
 - `TrialBatchResult` "best candidate" fields (`docs/domain_model.md` §12.4) are populated retroactively by the selector after scoring. The solver MUST NOT populate best-candidate fields; those fields require scores, which the solver does not have.
 
