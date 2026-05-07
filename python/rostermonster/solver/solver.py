@@ -24,8 +24,10 @@ from random import Random
 
 from rostermonster.domain import IssueSeverity, NormalizedModel, ValidationIssue
 from rostermonster.solver.cr_floor import compute_cr_floor
+from rostermonster.solver.lahc import LahcParams, make_scoring_oracle
 from rostermonster.solver.result import (
     FILL_ORDER_POLICY_MOST_CONSTRAINED_FIRST,
+    STRATEGY_LAHC,
     STRATEGY_SEEDED_RANDOM_BLIND,
     CandidateSet,
     PreferenceSeedingConfig,
@@ -63,6 +65,8 @@ def solve(
     preferenceSeeding: PreferenceSeedingConfig | None = None,
     fillOrderPolicy: str = FILL_ORDER_POLICY_MOST_CONSTRAINED_FIRST,
     strategyId: str = STRATEGY_SEEDED_RANDOM_BLIND,
+    scoringConfig=None,
+    lahcParams: LahcParams | None = None,
 ) -> CandidateSet | UnsatisfiedResult:
     """Run the active solver strategy for `terminationBounds.maxCandidates`
     candidates per `docs/solver_contract.md`.
@@ -85,10 +89,31 @@ def solve(
     """
     # §11.1: strategy resolution rejects unregistered ids BEFORE any §10
     # output construction begins. Registered ids dispatch through the
-    # registry's `_StrategyDescriptor.run` callable; LAHC is registered but
-    # currently raises NotImplementedError until M6 C2 Task 2B lands its
-    # algorithm implementation per docs/delivery_plan.md §9.
+    # registry's `_StrategyDescriptor.run` callable per
+    # docs/solver_contract.md §11.
     descriptor = get_strategy(strategyId)
+
+    # §12A.6 + §11.2 extension clause: LAHC requires the read-only scoring
+    # oracle (derived from scoringConfig) and lahcParams. SEEDED_RANDOM_BLIND
+    # ignores both (it's scoring-blind end-to-end per §12). Validate at the
+    # boundary so the failure mode is "fail fast in solve()" not "AttributeError
+    # deep in the LAHC inner loop".
+    strategy_kwargs: dict = {}
+    if strategyId == STRATEGY_LAHC:
+        if scoringConfig is None:
+            raise ValueError(
+                "scoringConfig is required when strategyId='LAHC' per "
+                "docs/solver_contract.md §12A.6 (read-only scoring oracle "
+                "extension clause); SEEDED_RANDOM_BLIND remains scoring-blind."
+            )
+        # Oracle construction is encapsulated in `lahc.py` — the only
+        # solver-package module authorized to consume the scorer interface
+        # per §12A.6 + §11.2 extension clause. The solver core stays
+        # scoring-blind by default.
+        strategy_kwargs["scoring_oracle"] = make_scoring_oracle(scoringConfig)
+        strategy_kwargs["lahc_params"] = (
+            lahcParams if lahcParams is not None else LahcParams()
+        )
     if fillOrderPolicy != FILL_ORDER_POLICY_MOST_CONSTRAINED_FIRST:
         raise ValueError(
             f"Unknown fillOrderPolicy {fillOrderPolicy!r}; first-release "
@@ -151,6 +176,7 @@ def solve(
             normalizedModel,
             candidate_seed,
             cr_floor_x,
+            **strategy_kwargs,
         )
         aggregate_attempts += outcome.attempts
         for code, count in outcome.rejection_counts.items():

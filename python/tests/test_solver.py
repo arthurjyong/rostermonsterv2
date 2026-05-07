@@ -715,45 +715,66 @@ def test_unknown_strategy_id_is_rejected() -> None:
     assert raised
 
 
-def test_lahc_strategy_registered_but_not_yet_implemented() -> None:
-    """Per docs/solver_contract.md §11.1 + §12A: LAHC is registered as the
-    second strategy (M6 C1 closure per docs/decision_log.md D-0067), but
-    the algorithm implementation lands in M6 C2 Task 2B per
-    docs/delivery_plan.md §9. Until then, dispatching to LAHC raises
-    NotImplementedError — distinct from ValueError for unregistered ids
-    so callers + tests can tell the two failure modes apart.
-
-    Strategy resolution still SUCCEEDS (LAHC is registered), so the error
-    surfaces from inside the candidate loop, not from `get_strategy`.
-    """
+def test_lahc_requires_scoring_config() -> None:
+    """Per docs/solver_contract.md §12A.6 + §11.2 extension clause: LAHC
+    consumes scoring as a read-only oracle. solve() MUST validate
+    scoringConfig presence at the boundary so the failure mode is "fail
+    fast" not "AttributeError deep in LAHC inner loop"."""
     from rostermonster.solver import STRATEGY_LAHC
 
     model = _model()
-    raised_not_impl = False
-    raised_value_error = False
+    raised = False
     try:
         _solve(
             model,
             seed=1,
             terminationBounds=TerminationBounds(maxCandidates=1),
             strategyId=STRATEGY_LAHC,
+            # NOTE: deliberately omitting scoringConfig.
         )
-    except NotImplementedError as e:
-        raised_not_impl = True
-        # Sanity: error message points at where the implementation will arrive.
-        assert "M6 C2 Task 2B" in str(e), (
-            f"NotImplementedError message should point at M6 C2 Task 2B; "
-            f"got: {e!s}"
+    except ValueError as e:
+        raised = True
+        assert "scoringConfig" in str(e), (
+            f"ValueError should mention scoringConfig; got: {e!s}"
         )
-    except ValueError:
-        raised_value_error = True
-    assert raised_not_impl, (
-        "LAHC dispatch should raise NotImplementedError (registered + "
-        "unimplemented), not ValueError (unregistered)"
+    assert raised
+
+
+def test_lahc_smoke_returns_candidate_set() -> None:
+    """Per docs/solver_contract.md §12A: LAHC dispatches end-to-end and
+    emits a non-empty CandidateSet under valid inputs. Smoke-level test;
+    byte-identical determinism + accept-rule unit semantics covered in
+    M6 C2 Task 2C's integration tests."""
+    from rostermonster.scorer.result import ScoringConfig, uniform_point_rules
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+
+    model = _model()
+    # `first_release_defaults(model)` builds a ScoringConfig with every
+    # required component weight pre-populated + uniform_point_rules covering
+    # the (slotType, dateKey) cross-product per scorer §11 + D-0038. Same
+    # helper used throughout test_scorer.py.
+    scoring_config = ScoringConfig.first_release_defaults(model)
+    # Tight params for a fast smoke run — full defaults take seconds even on
+    # this minimal fixture, while idleThreshold=10/maxIters=20 finish in ms.
+    params = LahcParams(
+        historyListLength=10, idleThreshold=10, maxIters=20
     )
-    assert not raised_value_error, (
-        "LAHC is registered per §11.1 — strategy resolution should succeed"
+    result = _solve(
+        model,
+        seed=1,
+        terminationBounds=TerminationBounds(maxCandidates=2),
+        strategyId=STRATEGY_LAHC,
+        scoringConfig=scoring_config,
+        lahcParams=params,
     )
+    assert isinstance(result, CandidateSet), (
+        f"LAHC should return CandidateSet under valid inputs; got "
+        f"{type(result).__name__}"
+    )
+    assert len(result.candidates) == 2, (
+        f"K=2 trajectories → 2 candidates; got {len(result.candidates)}"
+    )
+    assert result.diagnostics.strategyId == "LAHC"
 
 
 def test_unknown_fill_order_policy_is_rejected() -> None:
@@ -885,22 +906,40 @@ def test_phase2_dedupes_doctors_when_eligible_groups_repeat() -> None:
 
 
 def test_solver_package_does_not_import_scorer() -> None:
-    """Per §9 + §11: the solver MUST NOT consume the scorer interface.
-    Architectural invariant: `rostermonster.solver` and its submodules MUST
-    NOT import anything from `rostermonster.scorer`. This test reads each
-    Python source file under `solver/` and grep-checks for actual import
-    statements (not arbitrary substring matches — docstrings legitimately
-    cite the scorer contract by name)."""
+    """Per §9 + §11: the solver MUST NOT consume the scorer interface, EXCEPT
+    via §11.2's `scoringConsultation: "READ_ONLY_ORACLE"` extension clause
+    (activated by `LAHC` per §12A.6 — M6 C1 closure / D-0067).
+
+    Architectural invariant: every `rostermonster.solver` source file MUST
+    NOT import anything from `rostermonster.scorer`, EXCEPT `lahc.py` which
+    is the §12A.6-authorized exception (LAHC consults scoring as a read-only
+    oracle to evaluate move proposals against the accept criterion). All
+    other solver modules — including `solver.py`, `strategy.py`,
+    `strategy_registry.py`, `cr_floor.py`, `result.py` — remain
+    scoring-blind end-to-end.
+
+    This test reads each Python source file under `solver/` and grep-checks
+    for actual import statements (not arbitrary substring matches —
+    docstrings legitimately cite the scorer contract by name)."""
+    # §12A.6-authorized exception: lahc.py opts into the read-only scoring
+    # oracle per §11.2's extension clause. Adding new strategy modules that
+    # opt in: append the file name here AND ensure the corresponding
+    # contract section is updated.
+    ALLOWED_SCORER_IMPORTERS = {"lahc.py"}
+
     solver_root = Path(__file__).resolve().parent.parent / "rostermonster" / "solver"
     offenders: list[str] = []
     for src in sorted(solver_root.glob("*.py")):
+        if src.name in ALLOWED_SCORER_IMPORTERS:
+            continue
         for raw_line in src.read_text(encoding="utf-8").splitlines():
             line = raw_line.strip()
             if line.startswith(("from rostermonster.scorer", "import rostermonster.scorer")):
                 offenders.append(f"{src.name}: {line}")
     assert not offenders, (
         f"solver package files import the scorer (violates "
-        f"docs/solver_contract.md §9 + §11 scoring-blind rule): {offenders}"
+        f"docs/solver_contract.md §9 + §11 scoring-blind rule): {offenders}. "
+        f"Only {sorted(ALLOWED_SCORER_IMPORTERS)} are authorized per §12A.6."
     )
 
 
