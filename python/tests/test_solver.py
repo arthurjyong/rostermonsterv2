@@ -891,6 +891,19 @@ def test_lahc_smoke_returns_candidate_set() -> None:
         f"rejection is a rule-engine evaluation, so attempts < rejections "
         f"would be self-contradictory"
     )
+    # Codex P2 round-7: per §12A.3, the only valid inner-loop termination
+    # paths are `idleThreshold` and `maxIters`. Pre-fix, if both bounded
+    # random move samplers missed in a single iteration the trajectory
+    # would `break` and emit early — making perTrajectoryIters routinely
+    # smaller than idleThreshold on sparse move spaces. Floor: every
+    # successful trajectory must run at least `idleThreshold` iterations
+    # (or hit `maxIters`, which is also >= idleThreshold here).
+    per_iters = result.diagnostics.perTrajectoryIters
+    assert per_iters is not None
+    assert all(it >= 10 for it in per_iters), (
+        f"every successful trajectory should run >= idleThreshold (10) "
+        f"iterations before terminating; got {per_iters}"
+    )
 
 
 def test_unknown_fill_order_policy_is_rejected() -> None:

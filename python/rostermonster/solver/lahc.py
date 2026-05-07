@@ -269,11 +269,13 @@ def run_lahc(
     # ---- Step 3-4: Inner loop ---------------------------------------------
     while idle_iters < lahc_params.idleThreshold and current_iter < lahc_params.maxIters:
         # 3.a: Move generation. Mix of swap + reassign per §12A.1.a — picked
-        # uniformly per iteration. If the primary move type returns None
-        # (rule-locked for THAT type at this state), fall back to the OTHER
-        # type — only terminate the trajectory when BOTH types are rule-locked
-        # (since either one being unblocked means progress is still
-        # reachable per §12A.1.a's ergodicity invariant).
+        # uniformly per iteration. If the primary move type's bounded random
+        # sampler misses (`None` from `_MOVE_GENERATION_MAX_TRIES` random
+        # attempts), fall back to the OTHER type — and if that ALSO misses
+        # this iteration, count it as a no-accept pass (idle++ + current_iter++)
+        # rather than terminating the trajectory. Per §12A.3, only
+        # `idleThreshold` and `maxIters` may end the inner loop; a bounded
+        # sampler returning `None` does not prove the move space is empty.
         primary_is_swap = rng.random() < 0.5
         if primary_is_swap:
             roster, evaluations = _generate_valid_swap(
@@ -326,10 +328,17 @@ def run_lahc(
                 )
                 aggregate_attempts += evaluations
         if roster is None:
-            # Both move types rule-locked → terminate the trajectory with
-            # whatever bestRoster has been found so far. Both calls'
-            # evaluations are already in aggregate_attempts.
-            break
+            # Both bounded random samplers missed their `_MOVE_GENERATION_MAX_TRIES`
+            # budget this iteration. `None` here is a SOFT miss — sparse-but-
+            # nonempty move space, not "no valid moves exist" — so per §12A.3
+            # we MUST keep iterating and let `idleThreshold` / `maxIters` be
+            # the only termination paths. Treat as a no-accept iteration:
+            # increment idle (current_score didn't improve) and advance
+            # current_iter so wrapping the history list keeps cadence with §12A.1.e.
+            # Evaluations already accumulated in aggregate_attempts above.
+            idle_iters += 1
+            current_iter += 1
+            continue
         proposed_roster = roster
 
         # 3.b: Evaluate.
@@ -379,7 +388,8 @@ def run_lahc(
     # `terminal_score` is current_score at termination (informative only —
     # may differ from best_so_far when late-acceptance left current below
     # best). `iters` is the actual inner-loop iteration count (variable due
-    # to idle/maxIters termination + rule-locked early termination).
+    # to idle/maxIters termination — those are the only termination paths
+    # per §12A.3).
     strategy_data = {
         "iters": current_iter,
         "accepted_moves": aggregate_accepted,
