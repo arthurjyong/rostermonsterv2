@@ -276,7 +276,7 @@ def run_lahc(
         # reachable per §12A.1.a's ergodicity invariant).
         primary_is_swap = rng.random() < 0.5
         if primary_is_swap:
-            result = _generate_valid_swap(
+            roster, evaluations = _generate_valid_swap(
                 rule_engine,
                 model,
                 current_roster,
@@ -284,8 +284,13 @@ def run_lahc(
                 rng,
                 rejection_counts,
             )
-            if result is None:
-                result = _generate_valid_reassign(
+            aggregate_attempts += evaluations
+            if roster is None:
+                # Primary move type exhausted/rule-locked — try fallback.
+                # Whichever path returns a roster (or both fail), the
+                # primary's evaluations are now reflected in
+                # aggregate_attempts so placementAttempts is honest.
+                roster, evaluations = _generate_valid_reassign(
                     rule_engine,
                     model,
                     current_roster,
@@ -296,8 +301,9 @@ def run_lahc(
                     rng,
                     rejection_counts,
                 )
+                aggregate_attempts += evaluations
         else:
-            result = _generate_valid_reassign(
+            roster, evaluations = _generate_valid_reassign(
                 rule_engine,
                 model,
                 current_roster,
@@ -308,8 +314,9 @@ def run_lahc(
                 rng,
                 rejection_counts,
             )
-            if result is None:
-                result = _generate_valid_swap(
+            aggregate_attempts += evaluations
+            if roster is None:
+                roster, evaluations = _generate_valid_swap(
                     rule_engine,
                     model,
                     current_roster,
@@ -317,12 +324,13 @@ def run_lahc(
                     rng,
                     rejection_counts,
                 )
-        if result is None:
+                aggregate_attempts += evaluations
+        if roster is None:
             # Both move types rule-locked → terminate the trajectory with
-            # whatever bestRoster has been found so far.
+            # whatever bestRoster has been found so far. Both calls'
+            # evaluations are already in aggregate_attempts.
             break
-        proposed_roster, tries_consumed = result
-        aggregate_attempts += tries_consumed
+        proposed_roster = roster
 
         # 3.b: Evaluate.
         proposed_score = scoring_oracle(model, proposed_roster)
@@ -394,15 +402,22 @@ def _generate_valid_swap(
     fixed_coords: frozenset[tuple[str, str, int]] | set[tuple[str, str, int]],
     rng: Random,
     rejection_counts: dict[str, int],
-) -> tuple[tuple[AssignmentUnit, ...], int] | None:
+) -> tuple[tuple[AssignmentUnit, ...] | None, int]:
     """Generate a rule-valid pairwise doctor swap between two non-fixed
-    cells. Returns `(proposed_roster, tries_consumed)` on success, `None`
-    when no valid swap is found in `_MOVE_GENERATION_MAX_TRIES` attempts.
+    cells. Returns `(proposed_roster, evaluations)` on success or
+    `(None, evaluations)` when no valid swap is found in
+    `_MOVE_GENERATION_MAX_TRIES` attempts. The second element is the
+    actual `rule_engine(...)` evaluation count for this call — symmetric
+    with SEEDED_RANDOM_BLIND's `_RejectionTally.attempts` so summing
+    across calls into `SearchDiagnostics.placementAttempts` per §18.1
+    reflects real rule-engine work, not random-sample try counts.
 
     Validity check: only the two swapped cells need re-validation against
     the rest of the roster (other cells are unchanged). One `evaluate(...)`
     call per swapped cell — the rule engine returns `Decision.valid` when
     the proposed unit doesn't violate any rule against the supplied state.
+    A single try therefore consumes 1 evaluation if `new_i` is rejected,
+    or 2 evaluations if `new_i` admits and `new_j` is checked.
 
     Rule-engine rejections are tallied into `rejection_counts` (mutated
     in-place; one increment per `ViolationReason.code`) so the run-level
@@ -410,6 +425,7 @@ def _generate_valid_swap(
     work done during score-aware search per §18.1 — symmetric with
     SEEDED_RANDOM_BLIND's `_RejectionTally`.
     """
+    evaluations = 0
     movable_indices = [
         i
         for i, a in enumerate(current_roster)
@@ -419,14 +435,14 @@ def _generate_valid_swap(
     if len(movable_indices) < 2:
         # Not enough non-fixed filled cells to swap — strategy can't make
         # any move from here. Caller terminates the trajectory.
-        return None
+        return None, evaluations
 
-    for tries in range(1, _MOVE_GENERATION_MAX_TRIES + 1):
+    for _ in range(_MOVE_GENERATION_MAX_TRIES):
         i, j = rng.sample(movable_indices, 2)
         cell_i = current_roster[i]
         cell_j = current_roster[j]
         if cell_i.doctorId == cell_j.doctorId:
-            # Swap is a no-op; skip and burn a try.
+            # Swap is a no-op; skip and burn a try (no rule-engine call).
             continue
 
         new_i = AssignmentUnit(
@@ -450,12 +466,14 @@ def _generate_valid_swap(
         )
         state_no_swap = RuleState(assignments=others)
         decision_i = rule_engine(model, state_no_swap, new_i)
+        evaluations += 1
         if not decision_i.valid:
             for r in decision_i.reasons:
                 rejection_counts[r.code] = rejection_counts.get(r.code, 0) + 1
             continue
         state_with_new_i = RuleState(assignments=others + (new_i,))
         decision_j = rule_engine(model, state_with_new_i, new_j)
+        evaluations += 1
         if not decision_j.valid:
             for r in decision_j.reasons:
                 rejection_counts[r.code] = rejection_counts.get(r.code, 0) + 1
@@ -465,10 +483,10 @@ def _generate_valid_swap(
         proposed = list(current_roster)
         proposed[i] = new_i
         proposed[j] = new_j
-        return tuple(proposed), tries
+        return tuple(proposed), evaluations
 
     # Exhausted tries without finding a valid swap.
-    return None
+    return None, evaluations
 
 
 def _generate_valid_reassign(
@@ -481,11 +499,16 @@ def _generate_valid_reassign(
     all_doctor_ids: tuple[str, ...],
     rng: Random,
     rejection_counts: dict[str, int],
-) -> tuple[tuple[AssignmentUnit, ...], int] | None:
+) -> tuple[tuple[AssignmentUnit, ...] | None, int]:
     """Generate a rule-valid single-cell reassignment per §12A.1.a. Picks
     a non-fixed cell at random and replaces its current doctor with a
-    different eligible doctor. Returns `(proposed_roster, tries_consumed)`
-    on success, `None` after exhausting `_MOVE_GENERATION_MAX_TRIES`.
+    different eligible doctor. Returns `(proposed_roster, evaluations)`
+    on success or `(None, evaluations)` after exhausting
+    `_MOVE_GENERATION_MAX_TRIES`. The second element is the actual
+    `rule_engine(...)` evaluation count for this call — sums into
+    `placementAttempts` per §18.1, including for exhausted/failed calls
+    (so the diagnostics never under-report rule-engine work even when
+    the move type was rule-locked at this state).
 
     Reassignment can introduce a doctor not present on the seed roster —
     this is the move type that gives LAHC ergodicity over the rule-engine-
@@ -498,6 +521,7 @@ def _generate_valid_reassign(
     same-day-already-held + eligibility violations are caught by the rule
     engine.
     """
+    evaluations = 0
     movable_indices = [
         i
         for i, a in enumerate(current_roster)
@@ -505,9 +529,9 @@ def _generate_valid_reassign(
         and (a.dateKey, a.slotType, a.unitIndex) not in fixed_coords
     ]
     if not movable_indices:
-        return None
+        return None, evaluations
 
-    for tries in range(1, _MOVE_GENERATION_MAX_TRIES + 1):
+    for _ in range(_MOVE_GENERATION_MAX_TRIES):
         i = rng.choice(movable_indices)
         cell = current_roster[i]
         eligible_groups = eligibility_by_slot.get(cell.slotType, frozenset())
@@ -535,6 +559,7 @@ def _generate_valid_reassign(
         others = tuple(a for k, a in enumerate(current_roster) if k != i)
         state = RuleState(assignments=others)
         decision = rule_engine(model, state, new_unit)
+        evaluations += 1
         if not decision.valid:
             for r in decision.reasons:
                 rejection_counts[r.code] = rejection_counts.get(r.code, 0) + 1
@@ -542,6 +567,6 @@ def _generate_valid_reassign(
 
         proposed = list(current_roster)
         proposed[i] = new_unit
-        return tuple(proposed), tries
+        return tuple(proposed), evaluations
 
-    return None
+    return None, evaluations

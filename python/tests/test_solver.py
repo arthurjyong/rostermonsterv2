@@ -878,6 +878,19 @@ def test_lahc_smoke_returns_candidate_set() -> None:
         f"placementAttempts should include seed-phase work for both trajectories; "
         f"got {result.diagnostics.placementAttempts}"
     )
+    # Codex P2 round-6: placementAttempts MUST count actual rule-engine
+    # evaluations — pre-fix, it counted random-sample try counts from
+    # successful move generators only, omitting (a) the second
+    # rule_engine call inside _generate_valid_swap and (b) all 100
+    # exhausted tries when the primary move type returned None and the
+    # fallback was used. Invariant: placementAttempts ≥ total rejection
+    # count, since every rejection IS one rule-engine evaluation.
+    assert result.diagnostics.placementAttempts >= sum(rejections.values()), (
+        f"placementAttempts ({result.diagnostics.placementAttempts}) must "
+        f"be ≥ summed rejections ({sum(rejections.values())}) — every "
+        f"rejection is a rule-engine evaluation, so attempts < rejections "
+        f"would be self-contradictory"
+    )
 
 
 def test_unknown_fill_order_policy_is_rejected() -> None:
