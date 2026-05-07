@@ -395,12 +395,19 @@ class _StrategyOutcome:
     attempt count (rule-engine evaluations across both phases) for
     diagnostics. `rejection_counts` is the per-rule rejection tally for
     `SearchDiagnostics.ruleEngineRejectionsByReason`.
+
+    `strategy_data` is an optional strategy-specific dict that surfaces
+    extra transparency the contract requires (e.g., LAHC's §12A.9
+    per-trajectory diagnostics). The solver entry merges these fields into
+    `SearchDiagnostics` for the active strategy. Default `None` for
+    strategies that don't surface extra data (e.g., `SEEDED_RANDOM_BLIND`).
     """
 
     assignments: tuple[AssignmentUnit, ...]
     unfillable: tuple[_DemandUnit, ...]
     attempts: int
     rejection_counts: dict[str, int]
+    strategy_data: dict | None = None
 
 
 def run_seeded_random_blind(

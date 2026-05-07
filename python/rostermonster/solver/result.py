@@ -84,6 +84,22 @@ class SearchDiagnostics:
     `MANUAL`, `X` was operator-set — both must be recoverable from the run
     artifact). `ruleEngineRejectionsByReason` aggregates `(rule_code → count)`
     for transparency on candidate-generation funnel.
+
+    LAHC-specific fields (per §12A.9 — populated only when `strategyId == "LAHC"`,
+    `None` otherwise):
+    - `lahcHistoryListLength` (`L`).
+    - `lahcMaxIters` / `lahcIdleThreshold` — termination params used.
+    - `seedDerivationFunction` — string identifier of the trajectory-seed
+      derivation function (e.g., `"python.Random.getrandbits.candidate_seed"`).
+    - `perTrajectoryStatus[i]` — `"SUCCEEDED"` (emitted as a TrialCandidate)
+      or `"SEED_FAILED"` (dropped per §12A.8).
+    - `perTrajectoryIters[i]` — actual inner-loop iteration count;
+      `0` for `"SEED_FAILED"`.
+    - `perTrajectoryAcceptedMoves[i]` — count of accepted moves; `0` for
+      `"SEED_FAILED"`.
+    - `perTrajectoryBestScore[i]` / `perTrajectoryTerminalScore[i]` —
+      emitted-roster score / terminal `currentScore`; `None` for
+      `"SEED_FAILED"`.
     """
 
     strategyId: str
@@ -95,6 +111,17 @@ class SearchDiagnostics:
     ruleEngineRejectionsByReason: dict[str, int]
     candidateEmitCount: int
     unfilledDemandCount: int
+    # LAHC-specific transparency fields (§12A.9). All None for
+    # non-LAHC strategies. Populated by `solve()` when `strategyId == "LAHC"`.
+    lahcHistoryListLength: int | None = None
+    lahcMaxIters: int | None = None
+    lahcIdleThreshold: int | None = None
+    seedDerivationFunction: str | None = None
+    perTrajectoryStatus: tuple[str, ...] | None = None
+    perTrajectoryIters: tuple[int, ...] | None = None
+    perTrajectoryAcceptedMoves: tuple[int, ...] | None = None
+    perTrajectoryBestScore: tuple[float | None, ...] | None = None
+    perTrajectoryTerminalScore: tuple[float | None, ...] | None = None
 
 
 @dataclass(frozen=True)
