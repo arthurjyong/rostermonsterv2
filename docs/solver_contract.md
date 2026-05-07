@@ -202,7 +202,7 @@ Per LAHC trajectory, state variables are: `currentRoster`, `currentScore`, `hist
    - **b. Evaluation.** Compute `proposedScore := score(proposedRoster)` via the read-only scoring oracle (§12A.6).
    - **c. Accept criterion.** Accept iff `proposedScore >= historyList[currentIter mod L]`.
    - **d. State update.** If accepted, set `currentRoster := proposedRoster` AND `currentScore := proposedScore`; else leave `currentRoster` and `currentScore` unchanged. (Both must update together so steps e + f see the post-acceptance score.)
-   - **e. History list update.** `historyList[currentIter mod L] := max(currentScore, historyList[currentIter mod L])`. (Standard LAHC update — preserves the highest-recent-score envelope per Burke & Bykov 2017.)
+   - **e. History list update.** `historyList[currentIter mod L] := currentScore`. (Standard LAHC overwrite per Burke & Bykov 2008/2017. As the circular queue wraps every `L` iterations, old scores age out — which is what enables temporary worsening moves to be accepted later if they meet an older score floor. A `max(...)` update would make each slot a non-decreasing high-water mark, blocking late-acceptance behavior and degrading LAHC into greedy threshold search.)
    - **f. Best-so-far + idle counter.** If `currentScore > bestSoFar`, set `bestSoFar := currentScore` and reset `idleIters := 0`; else `idleIters += 1`. (`bestSoFar` advances only on strict improvement to keep the idle counter monotone in "no-improvement" iterations.)
    - **g. Increment.** `currentIter += 1`.
 4. **Inner loop termination.** Stop when EITHER `idleIters >= idleThreshold` OR `currentIter >= maxIters` (§12A.3).
