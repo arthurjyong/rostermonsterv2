@@ -4,11 +4,11 @@ Roster Monster v2 is a reusable roster-allocation core with department-specific 
 
 ## Current state
 - **Live end-to-end in two modes.** Operator-facing one-click cloud (`Roster Monster → Solve Roster` menu in the bound-template spreadsheet → Cloud Run service `roster-monster-compute` → writeback into a new tab) and maintainer-facing local CLI (Apps Script extracts a Snapshot JSON → `python -m rostermonster.run --snapshot file.json` → upload via the launcher's writeback form). Both modes share one Python compute core per D-0050 and produce byte-identical envelopes at the same input when seed is explicitly set per D-0053.
-- **All milestones M1 / M1.1 / M2 / M3 / M4 closed** (as of 2026-05-01); **M5 C1 closed 2026-05-05** (Python analyzer engine + analysis contract); **M5 C2 closed 2026-05-06** (Apps Script renderer + launcher Web App route + cross-page nav; cloud deployment `@15`). 225 Python tests pass (164 baseline + 52 analyzer unit + 9 analyzer integration); 17 Apps Script writeback unit tests.
-- **Active milestone: M5 — Operator-side analysis & multi-roster delivery** (activated 2026-05-04 per D-0055). Building a Python analyzer engine + Apps Script analyzer renderer as **sibling consumers** of the wrapper envelope — purely additive to the existing pipeline (no contract changes upstream of analysis). Rationale: analysis tooling first, solver-side score-aware search second, so future LAHC / score-aware strategy work has a calibration framework to be measured against. M5 also doubles as the operator-side workaround for the weighted-sum scoring formulation pain (operator picks among K candidates with full component breakdowns rather than trusting a single scalar). M5 C1 (analyzer engine) + M5 C2 (renderer + launcher route) both closed; **active checkpoint: M5 C4** — live operator validation on a real ICU/HD cycle. C3 dropped from the plan because the upload-portal scope was wholly absorbed into C2's launcher Web App route per D-0063. End-to-end operator workflow today: extract snapshot → `python -m rostermonster.run ... --retention FULL` → `python -m rostermonster.analysis ...` → upload `AnalyzerOutput` to launcher's `?action=analysis-render` route → see K roster tabs + 1 comparison tab in the source spreadsheet.
+- **All milestones M1 / M1.1 / M2 / M3 / M4 / M5 closed** (as of 2026-05-07; M5 closed today via M5 C4 live operator validation per D-0065). 225 Python tests pass (164 baseline + 52 analyzer unit + 9 analyzer integration); 17 Apps Script writeback unit tests.
+- **Active milestone: none.** M5 closed today on the M5 C4 verdict per D-0065: the analyzer's role as calibration framework was validated — the comparison tab surfaced a load-bearing scoring-formulation insight (`pointBalanceGlobal` weight design) the operator would not have seen from `totalScore` alone, exactly the M5 thesis (operator picks among K candidates with full component breakdowns rather than trusting a single scalar) working as designed. Short-term lever: maintainer iterates weights cycle-over-cycle via the Scorer Config tab (D-0037 surface). Long-term direction — systematic weight elicitation / tuning — parked as FW-0033, explicitly NOT rolled into M6. M5 C3 dropped per D-0063 (upload-portal scope wholly absorbed into C2's launcher Web App route — same discipline as M3 C2 dropped per D-0048). Next milestone (M6) is provisionally framed as solver-side score-aware search scoped LAHC-only; activation lands in its own forthcoming direction-setting PR. End-to-end operator workflow live in cloud (Quick Solve via `Roster Monster → Solve Roster` menu) and local (CLI + analyzer + launcher upload form).
 
 ## Repo posture
-- **Architecture-first and contract-first.** Core boundaries are pinned in explicit contract docs before broad implementation work. The docs-first phased delivery cadence (Phase 1 docs → Phase 2 code → Phase 3 closure) held across M2..M4.
+- **Architecture-first and contract-first.** Core boundaries are pinned in explicit contract docs before broad implementation work. The docs-first cadence (Task 1 docs → Task 2 code, with optional Task 2A/2B/2C sub-letters when work has logically distinct chunks → Task 3 closure; per D-0064) held across M2..M5. Historical "Phase 1/2/3" labels in past PR titles and closed-milestone closure entries are preserved as-is — the cadence vocabulary applies forward from M5 closure onward.
 
 ## Planning vocabulary
 **Product** → **Milestone** → **Checkpoint** → **Task**. Normally one active milestone and one active checkpoint at a time.
@@ -17,9 +17,9 @@ Roster Monster v2 is a reusable roster-allocation core with department-specific 
 - `docs/blueprint.md` — Stable architecture truth (what the system is, boundary invariants).
 - `docs/roadmap.md` — Milestone-level delivery order + closed-milestone trail.
 - `docs/delivery_plan.md` — Active execution guide (active milestone/checkpoint/tasks, recently completed checkpoints).
-- `docs/decision_log.md` — Accepted directional decisions (D-0001..D-0055).
-- `docs/future_work.md` — Non-normative parking lot for ideas (FW-0001..FW-0030).
-- `docs/open_decisions.md` — Pending decisions awaiting closure (empty as of 2026-05-04).
+- `docs/decision_log.md` — Accepted directional decisions (D-0001..D-0065).
+- `docs/future_work.md` — Non-normative parking lot for ideas (FW-0001..FW-0033).
+- `docs/open_decisions.md` — Pending decisions awaiting closure (empty as of 2026-05-07).
 - `docs/*_contract.md` — Normative technical boundary definitions.
 
 ## Code layout
