@@ -263,6 +263,15 @@ def solve(
     # union; per-trajectory order preserved).
     failed_outcomes: list[tuple[int, int, tuple]] = []  # (trajectory_index, candidate_seed, unfillable)
 
+    # LAHC-only per-trajectory diagnostics per §12A.9 — populated for every
+    # outer-loop iteration regardless of success/failure so the operator can
+    # reconstruct what each trajectory did. Indexed by outer-loop index.
+    per_trajectory_status: list[str] = []
+    per_trajectory_iters: list[int] = []
+    per_trajectory_accepted: list[int] = []
+    per_trajectory_best_score: list[float | None] = []
+    per_trajectory_terminal_score: list[float | None] = []
+
     for index in range(terminationBounds.maxCandidates):
         candidate_seed = _per_candidate_seed(run_rng)
         outcome = descriptor.run(
@@ -275,6 +284,25 @@ def solve(
         aggregate_attempts += outcome.attempts
         for code, count in outcome.rejection_counts.items():
             aggregate_rejections[code] = aggregate_rejections.get(code, 0) + count
+
+        # Collect §12A.9 per-trajectory data when LAHC is active. SEEDED_RANDOM_BLIND
+        # outcomes don't populate `strategy_data`, so the lists stay empty
+        # for non-LAHC strategies and SearchDiagnostics gets `None` for
+        # those fields.
+        if strategyId == STRATEGY_LAHC:
+            sd = outcome.strategy_data or {}
+            if outcome.unfillable:
+                per_trajectory_status.append("SEED_FAILED")
+                per_trajectory_iters.append(0)
+                per_trajectory_accepted.append(0)
+                per_trajectory_best_score.append(None)
+                per_trajectory_terminal_score.append(None)
+            else:
+                per_trajectory_status.append("SUCCEEDED")
+                per_trajectory_iters.append(int(sd.get("iters", 0)))
+                per_trajectory_accepted.append(int(sd.get("accepted_moves", 0)))
+                per_trajectory_best_score.append(sd.get("best_score"))
+                per_trajectory_terminal_score.append(sd.get("terminal_score"))
 
         if outcome.unfillable:
             failed_outcomes.append((index, candidate_seed, outcome.unfillable))
@@ -324,6 +352,23 @@ def solve(
             candidate_emit_count=0,
         )
 
+    # §12A.9 LAHC-specific diagnostic fields surface only when the active
+    # strategy is LAHC; otherwise they stay `None`.
+    lahc_diag_kwargs: dict = {}
+    if strategyId == STRATEGY_LAHC:
+        lp: LahcParams = strategy_kwargs["lahc_params"]
+        lahc_diag_kwargs = {
+            "lahcHistoryListLength": lp.historyListLength,
+            "lahcMaxIters": lp.maxIters,
+            "lahcIdleThreshold": lp.idleThreshold,
+            "seedDerivationFunction": "python.Random.getrandbits.candidate_seed",
+            "perTrajectoryStatus": tuple(per_trajectory_status),
+            "perTrajectoryIters": tuple(per_trajectory_iters),
+            "perTrajectoryAcceptedMoves": tuple(per_trajectory_accepted),
+            "perTrajectoryBestScore": tuple(per_trajectory_best_score),
+            "perTrajectoryTerminalScore": tuple(per_trajectory_terminal_score),
+        }
+
     diagnostics = SearchDiagnostics(
         strategyId=strategyId,
         fillOrderPolicy=fillOrderPolicy,
@@ -334,6 +379,7 @@ def solve(
         ruleEngineRejectionsByReason=dict(aggregate_rejections),
         candidateEmitCount=len(candidates),
         unfilledDemandCount=0,
+        **lahc_diag_kwargs,
     )
     return CandidateSet(
         candidates=tuple(candidates),

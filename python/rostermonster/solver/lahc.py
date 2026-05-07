@@ -19,15 +19,24 @@ Algorithm (§12A.1):
    leave terminal below `bestSoFar`, and emitting terminal would discard a
    higher-scoring roster the trajectory already discovered.
 
-Move generator (§12A.1.a — implementation-defined): **pairwise doctor swap
-between two non-fixed cells**. Picked over single-cell reassignment because
-swap preserves total assignment count + section/slot demand — the swap-only
-move space is closed under the rule-engine validity constraint, so move
-generation is more likely to find a rule-valid candidate per attempt. Move
-generator is deterministic given `trajectorySeed_i` + iteration order
-(uses a single `Random` seeded once at trajectory start) and is ergodic
-over the rule-engine-valid roster space (any permutation of doctors across
-non-fixed cells is reachable via swap composition).
+Move generator (§12A.1.a — implementation-defined): **mix of pairwise
+doctor swap (between two non-fixed cells) AND single-cell reassignment
+(replace a non-fixed cell's doctor with a different eligible doctor)**.
+Each iteration picks one move type uniformly at random:
+
+- **Swap** preserves total assignment count + section/slot demand, but
+  cannot introduce a doctor not already present on the seed roster — the
+  swap-only space is a permutation closure over the seed-roster doctor set.
+- **Reassign** can change which doctors are present on the roster
+  (replacing X at one cell with Y, where Y might not be on the roster
+  before). This restores ergodicity over the rule-engine-valid roster
+  space — any rule-valid roster is reachable from any other via finite
+  composition of reassignments, even when the seed roster doesn't use
+  every doctor.
+
+Move generator is deterministic given `trajectorySeed_i` + iteration order
+(single `Random` seeded once at trajectory start; controls both move-type
+choice and within-type random selection).
 
 Scoring oracle (§12A.6): `LAHC` opts into the §11.2 extension clause
 `scoringConsultation: "READ_ONLY_ORACLE"`. The oracle is a caller-supplied
@@ -126,13 +135,13 @@ class LahcParams:
             )
 
 
-# Maximum swap-generation attempts per inner-loop iteration before
-# concluding the current state is rule-locked (no valid swap reachable).
-# 100 is a conservative ceiling — at ICU/HD scale (~116 cells, ~22 doctors)
-# the rule-valid swap density is high enough that 100 random tries
-# almost always finds one. If exhausted, the trajectory terminates early
-# with the best roster found so far.
-_SWAP_GENERATION_MAX_TRIES = 100
+# Maximum move-generation attempts per inner-loop iteration before
+# concluding the current state is rule-locked (no valid move of the chosen
+# type reachable). 100 is a conservative ceiling — at ICU/HD scale
+# (~116 cells, ~22 doctors) the rule-valid move density is high enough
+# that 100 random tries almost always finds one. If exhausted, the
+# trajectory terminates early with the best roster found so far.
+_MOVE_GENERATION_MAX_TRIES = 100
 
 # RNG-seed distinguisher — XORed with `candidate_seed` to get a separate
 # RNG stream for inner-loop move selection that doesn't collide with the
@@ -236,18 +245,40 @@ def run_lahc(
         and (a.dateKey, a.slotType, a.doctorId) in fixed_pin_keys
     )
 
-    # Aggregate diagnostics: total swap-generation tries, accepted moves.
+    # Aggregate diagnostics: total move-generation tries, accepted moves.
     aggregate_attempts = 0
     aggregate_accepted = 0
 
+    # Pre-compute per-slot eligibility lookup for the reassign move type
+    # (mirrors `python/rostermonster/solver/strategy.py`'s `_eligibility_index`).
+    # Built once per trajectory.
+    eligibility_by_slot = {
+        er.slotType: frozenset(er.eligibleGroups) for er in model.eligibility
+    }
+    group_by_doctor = {d.doctorId: d.groupId for d in model.doctors}
+    all_doctor_ids = tuple(d.doctorId for d in model.doctors)
+
     # ---- Step 3-4: Inner loop ---------------------------------------------
     while idle_iters < lahc_params.idleThreshold and current_iter < lahc_params.maxIters:
-        # 3.a: Move generation. Returns the proposed roster + the swap-tries
-        # count consumed. None means rule-locked (no valid swap found in
-        # _SWAP_GENERATION_MAX_TRIES attempts) — terminate the trajectory.
-        result = _generate_valid_swap(
-            rule_engine, model, current_roster, fixed_coords, rng
-        )
+        # 3.a: Move generation. Mix of swap + reassign per §12A.1.a — picked
+        # uniformly per iteration. None means the chosen move type is
+        # rule-locked at this state (couldn't find a valid candidate in
+        # `_MOVE_GENERATION_MAX_TRIES` attempts) — terminate the trajectory.
+        if rng.random() < 0.5:
+            result = _generate_valid_swap(
+                rule_engine, model, current_roster, fixed_coords, rng
+            )
+        else:
+            result = _generate_valid_reassign(
+                rule_engine,
+                model,
+                current_roster,
+                fixed_coords,
+                eligibility_by_slot,
+                group_by_doctor,
+                all_doctor_ids,
+                rng,
+            )
         if result is None:
             break
         proposed_roster, tries_consumed = result
@@ -295,11 +326,24 @@ def run_lahc(
     # worse than best_so_far. Under HIGHER_IS_BETTER scoring per
     # docs/scorer_contract.md §10, emitting terminal would discard a better
     # candidate the trajectory already found.
+    #
+    # Per-trajectory diagnostics surface to SearchDiagnostics per §12A.9.
+    # `terminal_score` is current_score at termination (informative only —
+    # may differ from best_so_far when late-acceptance left current below
+    # best). `iters` is the actual inner-loop iteration count (variable due
+    # to idle/maxIters termination + rule-locked early termination).
+    strategy_data = {
+        "iters": current_iter,
+        "accepted_moves": aggregate_accepted,
+        "best_score": float(best_so_far),
+        "terminal_score": float(current_score),
+    }
     return _StrategyOutcome(
         assignments=best_roster,
         unfillable=(),
         attempts=aggregate_attempts,
         rejection_counts={},
+        strategy_data=strategy_data,
     )
 
 
@@ -312,7 +356,7 @@ def _generate_valid_swap(
 ) -> tuple[tuple[AssignmentUnit, ...], int] | None:
     """Generate a rule-valid pairwise doctor swap between two non-fixed
     cells. Returns `(proposed_roster, tries_consumed)` on success, `None`
-    when no valid swap is found in `_SWAP_GENERATION_MAX_TRIES` attempts.
+    when no valid swap is found in `_MOVE_GENERATION_MAX_TRIES` attempts.
 
     Validity check: only the two swapped cells need re-validation against
     the rest of the roster (other cells are unchanged). One `evaluate(...)`
@@ -330,7 +374,7 @@ def _generate_valid_swap(
         # any move from here. Caller terminates the trajectory.
         return None
 
-    for tries in range(1, _SWAP_GENERATION_MAX_TRIES + 1):
+    for tries in range(1, _MOVE_GENERATION_MAX_TRIES + 1):
         i, j = rng.sample(movable_indices, 2)
         cell_i = current_roster[i]
         cell_j = current_roster[j]
@@ -373,4 +417,77 @@ def _generate_valid_swap(
         return tuple(proposed), tries
 
     # Exhausted tries without finding a valid swap.
+    return None
+
+
+def _generate_valid_reassign(
+    rule_engine: RuleEngineFn,
+    model: NormalizedModel,
+    current_roster: tuple[AssignmentUnit, ...],
+    fixed_coords: frozenset[tuple[str, str, int]] | set[tuple[str, str, int]],
+    eligibility_by_slot: dict[str, frozenset[str]],
+    group_by_doctor: dict[str, str],
+    all_doctor_ids: tuple[str, ...],
+    rng: Random,
+) -> tuple[tuple[AssignmentUnit, ...], int] | None:
+    """Generate a rule-valid single-cell reassignment per §12A.1.a. Picks
+    a non-fixed cell at random and replaces its current doctor with a
+    different eligible doctor. Returns `(proposed_roster, tries_consumed)`
+    on success, `None` after exhausting `_MOVE_GENERATION_MAX_TRIES`.
+
+    Reassignment can introduce a doctor not present on the seed roster —
+    this is the move type that gives LAHC ergodicity over the rule-engine-
+    valid roster space (swap alone cannot, since swap-only is a closure
+    over the seed-roster doctor set).
+
+    Validity check: only the reassigned cell needs evaluation against the
+    rest of the roster (other cells unchanged). One `evaluate(...)` call
+    per attempt. The new doctor MUST be ≠ the current cell's doctor;
+    same-day-already-held + eligibility violations are caught by the rule
+    engine.
+    """
+    movable_indices = [
+        i
+        for i, a in enumerate(current_roster)
+        if a.doctorId is not None
+        and (a.dateKey, a.slotType, a.unitIndex) not in fixed_coords
+    ]
+    if not movable_indices:
+        return None
+
+    for tries in range(1, _MOVE_GENERATION_MAX_TRIES + 1):
+        i = rng.choice(movable_indices)
+        cell = current_roster[i]
+        eligible_groups = eligibility_by_slot.get(cell.slotType, frozenset())
+        # Candidate doctors: eligible-group AND not the current cell's doctor.
+        # Pre-filtering via eligibility avoids wasting most attempts on
+        # rule-engine BASELINE_ELIGIBILITY_FAIL rejections.
+        candidate_doctors = [
+            d
+            for d in all_doctor_ids
+            if d != cell.doctorId
+            and group_by_doctor.get(d) in eligible_groups
+        ]
+        if not candidate_doctors:
+            continue
+        new_doctor = rng.choice(candidate_doctors)
+        new_unit = AssignmentUnit(
+            dateKey=cell.dateKey,
+            slotType=cell.slotType,
+            unitIndex=cell.unitIndex,
+            doctorId=new_doctor,
+        )
+        # Validate against the rest of the roster (excluding the cell being
+        # replaced). The rule engine catches SAME_DAY_ALREADY_HELD,
+        # BACK_TO_BACK_CALL, hard-blocks, etc.
+        others = tuple(a for k, a in enumerate(current_roster) if k != i)
+        state = RuleState(assignments=others)
+        decision = rule_engine(model, state, new_unit)
+        if not decision.valid:
+            continue
+
+        proposed = list(current_roster)
+        proposed[i] = new_unit
+        return tuple(proposed), tries
+
     return None
