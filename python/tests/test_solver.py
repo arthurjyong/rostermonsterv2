@@ -788,6 +788,19 @@ def test_lahc_returns_unsatisfied_only_when_all_trajectories_fail() -> None:
             f"per-trajectory aggregation should mention trajectory index; "
             f"got: {issue.message}"
         )
+    # §12A.9 LAHC diagnostics MUST also surface on UnsatisfiedResult — the
+    # all-trajectories-failed branch needs the same transparency payload as
+    # the success branch. Codex P2 round-3 caught this: pre-fix, the all-fail
+    # branch dropped lahcHistoryListLength + perTrajectoryStatus on the floor.
+    diag = result.diagnostics
+    assert diag.lahcHistoryListLength == 10, diag.lahcHistoryListLength
+    assert diag.lahcMaxIters == 20, diag.lahcMaxIters
+    assert diag.lahcIdleThreshold == 10, diag.lahcIdleThreshold
+    assert diag.seedDerivationFunction is not None
+    assert diag.perTrajectoryStatus is not None and len(diag.perTrajectoryStatus) == 3
+    assert all(s == "SEED_FAILED" for s in diag.perTrajectoryStatus), (
+        f"all 3 trajectories should have SEED_FAILED status; got {diag.perTrajectoryStatus}"
+    )
 
 
 def test_lahc_smoke_returns_candidate_set() -> None:
