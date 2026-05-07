@@ -35,7 +35,8 @@ from rostermonster.solver.result import (
     UnfilledDemandEntry,
     UnsatisfiedResult,
 )
-from rostermonster.solver.strategy import RuleEngineFn, run_seeded_random_blind
+from rostermonster.solver.strategy import RuleEngineFn
+from rostermonster.solver.strategy_registry import get_strategy
 
 # 64-bit signed integer bounds per `docs/solver_contract.md` §9 input #3.
 _INT64_MIN = -(2**63)
@@ -82,12 +83,12 @@ def solve(
     mode when `preferenceSeeding` is omitted or when
     `preferenceSeeding.crFloor` is omitted").
     """
-    if strategyId != STRATEGY_SEEDED_RANDOM_BLIND:
-        raise ValueError(
-            f"Unknown strategyId {strategyId!r}; first-release strategy set "
-            f"is exactly {{ {STRATEGY_SEEDED_RANDOM_BLIND!r} }} per "
-            f"docs/solver_contract.md §11.1"
-        )
+    # §11.1: strategy resolution rejects unregistered ids BEFORE any §10
+    # output construction begins. Registered ids dispatch through the
+    # registry's `_StrategyDescriptor.run` callable; LAHC is registered but
+    # currently raises NotImplementedError until M6 C2 Task 2B lands its
+    # algorithm implementation per docs/delivery_plan.md §9.
+    descriptor = get_strategy(strategyId)
     if fillOrderPolicy != FILL_ORDER_POLICY_MOST_CONSTRAINED_FIRST:
         raise ValueError(
             f"Unknown fillOrderPolicy {fillOrderPolicy!r}; first-release "
@@ -145,7 +146,7 @@ def solve(
 
     for index in range(terminationBounds.maxCandidates):
         candidate_seed = _per_candidate_seed(run_rng)
-        outcome = run_seeded_random_blind(
+        outcome = descriptor.run(
             ruleEngine,
             normalizedModel,
             candidate_seed,
@@ -173,7 +174,7 @@ def solve(
                     message=(
                         f"No eligible-and-rule-valid doctor for "
                         f"({u.dateKey}, {u.slotType}, unit {u.unitIndex}) "
-                        f"under SEEDED_RANDOM_BLIND with seed={candidate_seed}"
+                        f"under {strategyId} with seed={candidate_seed}"
                     ),
                     context={
                         "dateKey": u.dateKey,
