@@ -17,8 +17,8 @@ Roster Monster v2 is a reusable roster-allocation core with department-specific 
 - `docs/blueprint.md` — Stable architecture truth (what the system is, boundary invariants).
 - `docs/roadmap.md` — Milestone-level delivery order + closed-milestone trail.
 - `docs/delivery_plan.md` — Active execution guide (active milestone/checkpoint/tasks, recently completed checkpoints).
-- `docs/decision_log.md` — Accepted directional decisions (D-0001..D-0067).
-- `docs/future_work.md` — Non-normative parking lot for ideas (FW-0001..FW-0034).
+- `docs/decision_log.md` — Accepted directional decisions (D-0001..D-0068).
+- `docs/future_work.md` — Non-normative parking lot for ideas (FW-0001..FW-0035).
 - `docs/open_decisions.md` — Pending decisions awaiting closure (empty as of 2026-05-07).
 - `docs/*_contract.md` — Normative technical boundary definitions.
 
