@@ -215,9 +215,26 @@ def run_lahc(
     # never proposes touching them. Fixed assignments are first-class input
     # facts per `docs/domain_model.md` §10.1 and MUST NOT be moved by the
     # solver.
-    fixed_coords = {
-        (fa.dateKey, fa.slotType, fa.unitIndex) for fa in model.fixedAssignments
+    #
+    # `FixedAssignment` carries `(dateKey, slotType, doctorId)` only —
+    # `unitIndex` is assigned during `_seat_fixed_assignments` per
+    # `python/rostermonster/solver/strategy.py`. To recover the seated
+    # `unitIndex` for each fixed pin, we match seed-roster `AssignmentUnit`s
+    # against the fixed-pin `(dateKey, slotType, doctorId)` triples per
+    # `docs/domain_model.md` §10.1's identity discipline. This is a
+    # deterministic identification: SAME_DAY_ALREADY_HELD per
+    # `docs/rule_engine_contract.md` §11 prevents the same doctor from being
+    # placed twice on the same `(dateKey, slotType)`, so the match is
+    # one-to-one.
+    fixed_pin_keys = {
+        (fa.dateKey, fa.slotType, fa.doctorId) for fa in model.fixedAssignments
     }
+    fixed_coords = frozenset(
+        (a.dateKey, a.slotType, a.unitIndex)
+        for a in current_roster
+        if a.doctorId is not None
+        and (a.dateKey, a.slotType, a.doctorId) in fixed_pin_keys
+    )
 
     # Aggregate diagnostics: total swap-generation tries, accepted moves.
     aggregate_attempts = 0

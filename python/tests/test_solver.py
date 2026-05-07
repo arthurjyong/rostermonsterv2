@@ -740,6 +740,56 @@ def test_lahc_requires_scoring_config() -> None:
     assert raised
 
 
+def test_lahc_returns_unsatisfied_only_when_all_trajectories_fail() -> None:
+    """Per docs/solver_contract.md §12A.8 + §14: LAHC's whole-run failure
+    aggregation is "all K trajectories' seed-roster steps fail" — distinct
+    from SEEDED_RANDOM_BLIND's "any unfillable attempt → fail".
+
+    This test forces ALL trajectories to fail (1 ICU_ONLY doctor, demand
+    includes MHD_CALL which no doctor can fill) and asserts:
+    - LAHC returns UnsatisfiedResult (not a partial CandidateSet).
+    - The error reasons reference both the strategyId AND a trajectory
+      index, proving the per-trajectory aggregation path was exercised.
+
+    Codex caught the inverse bug on PR #127 round 1: pre-fix, the solver
+    aborted on the FIRST failed trajectory even for LAHC, which would
+    discard subsequent successful trajectories and report whole-run
+    failure when partial-success was the correct outcome.
+    """
+    from rostermonster.scorer.result import ScoringConfig
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+
+    # ICU_ONLY only — no doctor eligible for MHD_CALL, every trajectory's
+    # seed-roster step (run_seeded_random_blind) returns unfillable.
+    model = _model(doctors=1, standby=False)
+    scoring_config = ScoringConfig.first_release_defaults(model)
+    params = LahcParams(historyListLength=10, idleThreshold=10, maxIters=20)
+    result = _solve(
+        model,
+        seed=42,
+        terminationBounds=TerminationBounds(maxCandidates=3),
+        strategyId=STRATEGY_LAHC,
+        scoringConfig=scoring_config,
+        lahcParams=params,
+    )
+    assert isinstance(result, UnsatisfiedResult)
+    assert result.unfilledDemand
+    for entry in result.unfilledDemand:
+        assert entry.slotType == "MHD_CALL"
+    # Per-trajectory aggregation surfaces strategyId + trajectory index in
+    # the failure message — proves the new aggregation path is exercised
+    # rather than the legacy abort-on-first-failure path.
+    for issue in result.reasons:
+        assert issue.code == "UNFILLABLE_DEMAND"
+        assert "LAHC" in issue.message, (
+            f"strategyId should appear in LAHC failure message; got: {issue.message}"
+        )
+        assert "trajectory" in issue.message, (
+            f"per-trajectory aggregation should mention trajectory index; "
+            f"got: {issue.message}"
+        )
+
+
 def test_lahc_smoke_returns_candidate_set() -> None:
     """Per docs/solver_contract.md §12A: LAHC dispatches end-to-end and
     emits a non-empty CandidateSet under valid inputs. Smoke-level test;

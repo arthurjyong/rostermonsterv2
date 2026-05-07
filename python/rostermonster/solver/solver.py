@@ -56,6 +56,83 @@ def _per_candidate_seed(rng: Random) -> int:
     return rng.getrandbits(63)
 
 
+def _build_unsatisfied(
+    *,
+    failed_outcomes: list[tuple[int, int, tuple]],
+    strategyId: str,
+    fillOrderPolicy: str,
+    crFloorMode: str,
+    crFloorComputed: int,
+    seed: int,
+    aggregate_attempts: int,
+    aggregate_rejections: dict[str, int],
+    candidate_emit_count: int,
+) -> UnsatisfiedResult:
+    """Build an UnsatisfiedResult from the deterministic complete union of
+    per-trajectory failures per `docs/solver_contract.md` §14 + §12A.8.
+
+    `failed_outcomes` is a list of `(trajectory_index, candidate_seed,
+    unfillable)` triples in trajectory order. The resulting `unfilledDemand`
+    de-duplicates byte-identical (dateKey, slotType, unitIndex) entries
+    while preserving deterministic per-trajectory order; `reasons` carries
+    the union of `ValidationIssue` entries with per-trajectory `seed`
+    context for debugging.
+
+    SEEDED_RANDOM_BLIND aborts on the first failure (one entry); LAHC
+    aggregates all K trajectories' failures (per §12A.8 — surface every
+    cause that affected any trajectory, never a "representative subset").
+    """
+    seen_units: set[tuple[str, str, int]] = set()
+    unfilled_list: list[UnfilledDemandEntry] = []
+    reasons_list: list[ValidationIssue] = []
+    for trajectory_index, candidate_seed, unfillable in failed_outcomes:
+        for u in unfillable:
+            key = (u.dateKey, u.slotType, u.unitIndex)
+            if key in seen_units:
+                continue
+            seen_units.add(key)
+            unfilled_list.append(
+                UnfilledDemandEntry(
+                    dateKey=u.dateKey,
+                    slotType=u.slotType,
+                    unitIndex=u.unitIndex,
+                )
+            )
+            reasons_list.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code="UNFILLABLE_DEMAND",
+                    message=(
+                        f"No eligible-and-rule-valid doctor for "
+                        f"({u.dateKey}, {u.slotType}, unit {u.unitIndex}) "
+                        f"under {strategyId} with seed={candidate_seed} "
+                        f"(trajectory {trajectory_index})"
+                    ),
+                    context={
+                        "dateKey": u.dateKey,
+                        "slotType": u.slotType,
+                        "unitIndex": u.unitIndex,
+                    },
+                )
+            )
+    diagnostics = SearchDiagnostics(
+        strategyId=strategyId,
+        fillOrderPolicy=fillOrderPolicy,
+        crFloorMode=crFloorMode,
+        crFloorComputed=crFloorComputed,
+        seed=seed,
+        placementAttempts=aggregate_attempts,
+        ruleEngineRejectionsByReason=dict(aggregate_rejections),
+        candidateEmitCount=candidate_emit_count,
+        unfilledDemandCount=len(unfilled_list),
+    )
+    return UnsatisfiedResult(
+        unfilledDemand=tuple(unfilled_list),
+        reasons=tuple(reasons_list),
+        diagnostics=diagnostics,
+    )
+
+
 def solve(
     normalizedModel: NormalizedModel,
     *,
@@ -169,6 +246,23 @@ def solve(
     aggregate_attempts = 0
     aggregate_rejections: dict[str, int] = {}
 
+    # Per-strategy failure aggregation per `docs/solver_contract.md` §14
+    # + §12A.8:
+    # - `SEEDED_RANDOM_BLIND` (single-attempt-style — even at K candidates
+    #   the K rosters come from one feasibility outcome): ANY unfillable
+    #   attempt → whole-run UnsatisfiedResult. Existing pre-M6 behavior.
+    # - `LAHC` (multi-trajectory K-independent attempts per §12A.2): drop
+    #   per-trajectory seed-roster failures; only return UnsatisfiedResult
+    #   when ALL K trajectories' seed steps fail. If at least one
+    #   trajectory succeeds, emit a non-empty CandidateSet with the
+    #   successful trajectories' rosters per §12A.8.
+    abort_on_first_failure = strategyId != STRATEGY_LAHC
+
+    # Track the union of all per-trajectory failures for the all-trajectories-
+    # failed UnsatisfiedResult path per §12A.8 (deterministic complete
+    # union; per-trajectory order preserved).
+    failed_outcomes: list[tuple[int, int, tuple]] = []  # (trajectory_index, candidate_seed, unfillable)
+
     for index in range(terminationBounds.maxCandidates):
         candidate_seed = _per_candidate_seed(run_rng)
         outcome = descriptor.run(
@@ -183,55 +277,51 @@ def solve(
             aggregate_rejections[code] = aggregate_rejections.get(code, 0) + count
 
         if outcome.unfillable:
-            # §14 whole-run failure: surface the unfillable units from this
-            # candidate's attempt and abort. No partial CandidateSet leaks.
-            unfilled = tuple(
-                UnfilledDemandEntry(
-                    dateKey=u.dateKey,
-                    slotType=u.slotType,
-                    unitIndex=u.unitIndex,
+            failed_outcomes.append((index, candidate_seed, outcome.unfillable))
+            if abort_on_first_failure:
+                # SEEDED_RANDOM_BLIND any-fail-fails (§14): surface the
+                # unfillable units from this candidate's attempt and abort.
+                # No partial CandidateSet leaks.
+                return _build_unsatisfied(
+                    failed_outcomes=failed_outcomes,
+                    strategyId=strategyId,
+                    fillOrderPolicy=fillOrderPolicy,
+                    crFloorMode=seeding.crFloor.mode,
+                    crFloorComputed=cr_floor_x,
+                    seed=seed,
+                    aggregate_attempts=aggregate_attempts,
+                    aggregate_rejections=aggregate_rejections,
+                    candidate_emit_count=len(candidates),
                 )
-                for u in outcome.unfillable
-            )
-            reasons = tuple(
-                ValidationIssue(
-                    severity=IssueSeverity.ERROR,
-                    code="UNFILLABLE_DEMAND",
-                    message=(
-                        f"No eligible-and-rule-valid doctor for "
-                        f"({u.dateKey}, {u.slotType}, unit {u.unitIndex}) "
-                        f"under {strategyId} with seed={candidate_seed}"
-                    ),
-                    context={
-                        "dateKey": u.dateKey,
-                        "slotType": u.slotType,
-                        "unitIndex": u.unitIndex,
-                    },
-                )
-                for u in outcome.unfillable
-            )
-            diagnostics = SearchDiagnostics(
-                strategyId=strategyId,
-                fillOrderPolicy=fillOrderPolicy,
-                crFloorMode=seeding.crFloor.mode,
-                crFloorComputed=cr_floor_x,
-                seed=seed,
-                placementAttempts=aggregate_attempts,
-                ruleEngineRejectionsByReason=dict(aggregate_rejections),
-                candidateEmitCount=len(candidates),
-                unfilledDemandCount=len(unfilled),
-            )
-            return UnsatisfiedResult(
-                unfilledDemand=unfilled,
-                reasons=reasons,
-                diagnostics=diagnostics,
-            )
+            # LAHC drop-and-continue: trajectory dropped, continue to next.
+            continue
 
+        # Successful trajectory — emit as TrialCandidate. candidateId is a
+        # 1-indexed dense integer per `docs/selector_contract.md` §16.1; with
+        # LAHC's drop-and-continue, len(candidates)+1 keeps the ids dense
+        # across dropped trajectories.
         candidates.append(
             TrialCandidate(
-                candidateId=index + 1,
+                candidateId=len(candidates) + 1,
                 assignments=outcome.assignments,
             )
+        )
+
+    # All K trajectories have run. Decide success vs whole-run failure.
+    if not candidates:
+        # All trajectories failed (LAHC: every seed step returned unfillable;
+        # SEEDED_RANDOM_BLIND: would've already aborted on the first failure
+        # so this branch is unreachable for SEEDED_RANDOM_BLIND).
+        return _build_unsatisfied(
+            failed_outcomes=failed_outcomes,
+            strategyId=strategyId,
+            fillOrderPolicy=fillOrderPolicy,
+            crFloorMode=seeding.crFloor.mode,
+            crFloorComputed=cr_floor_x,
+            seed=seed,
+            aggregate_attempts=aggregate_attempts,
+            aggregate_rejections=aggregate_rejections,
+            candidate_emit_count=0,
         )
 
     diagnostics = SearchDiagnostics(
