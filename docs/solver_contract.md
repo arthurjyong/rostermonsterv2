@@ -146,9 +146,12 @@ StrategyDescriptor {
 }
 ```
 
-### 11.1 First-release strategy set
-First release ships exactly one strategy:
-- `SEEDED_RANDOM_BLIND` — see §12.
+### 11.1 Registered strategies
+The contract registers the following named strategies:
+- `SEEDED_RANDOM_BLIND` — see §12. *(First-release strategy; registered at solver-contract closure 2026-04-25 per `docs/decision_log.md` D-0026.)*
+- `LAHC` (Late Acceptance Hill Climbing) — see §12A. *(Registered M6 C1 per `docs/decision_log.md` D-0067; activates the §11.2 `scoringConsultation: "READ_ONLY_ORACLE"` extension clause.)*
+
+Per §2 + §11.2, registering a new strategy that conforms to the §11 strategy-interface contract does NOT require a `contractVersion` bump; the strategy-interface itself is unchanged.
 
 Callers that request an unregistered `strategyId` MUST be rejected at strategy-resolution time, **before** any §10 `CandidateSet` or `UnsatisfiedResult` construction begins. Such a rejection is not a §10 output value — it never enters the §10 output schema at all, and therefore does not require a slot inside the `CandidateSet | UnsatisfiedResult` branch discipline (§10.3). The concrete shape of the strategy-resolution failure (exception class, structured error object, return code) is an implementation concern outside this contract.
 
@@ -184,6 +187,98 @@ When multiple demand units share the tightest eligibility count, the strategy MU
 
 ### 12.3 Fill-order policy visibility
 The active `fillOrderPolicy` MUST be logged in `SearchDiagnostics` at run start (§18). First-release `fillOrderPolicy` default is `MOST_CONSTRAINED_FIRST`; the contract does not currently register alternative first-release fill-order policies.
+
+## 12A) Registered strategy: `LAHC` (Late Acceptance Hill Climbing)
+Proposed in this checkpoint (M6 C1 per `docs/decision_log.md` D-0067) (normative):
+
+`LAHC` is a score-aware local-search strategy that escapes local optima via a history-list accept criterion. It is the second registered strategy alongside §12's `SEEDED_RANDOM_BLIND`. LAHC conforms to the §11 strategy-interface contract and activates the §11.2 `scoringConsultation: "READ_ONLY_ORACLE"` extension clause (no `contractVersion` bump per §2 + §11.2; the strategy-interface itself is unchanged).
+
+### 12A.1 Algorithm
+Per LAHC trajectory:
+1. **Seed roster.** Produce an initial valid roster via `SEEDED_RANDOM_BLIND`'s two-phase composite (§12 Phase 1 CR seeding + §12 Phase 2 most-constrained-first fill). This guarantees the LAHC starting point is rule-engine-valid; the seed roster's score is the initial `currentScore`.
+2. **Initialize history list.** A queue of length `L` (default `1000` per §12A.5) initialized with the seed roster's `currentScore` in every slot.
+3. **Inner loop.** Iterate (`currentIter` increments per pass):
+   - **Move generation.** Generate a candidate move via seeded random selection. Move types are strategy-internal — implementation-specific (e.g., pairwise doctor swap on the same date, single-doctor reassignment to a different date, section-aware swap). The move generator MUST: (a) be deterministic given `trajectorySeed_i` + iteration order, (b) consult the rule engine to filter rule-engine-invalid moves before evaluation, (c) be ergodic over the rule-engine-valid roster space (no unreachable configurations).
+   - **Evaluation.** Compute the proposed roster's score via the read-only scoring oracle (§12A.6).
+   - **Accept criterion.** Accept iff `proposedScore >= historyList[currentIter mod L]`.
+   - **Roster update.** If accepted, advance current roster to the proposed roster; else leave current roster unchanged.
+   - **History list update.** `historyList[currentIter mod L] = max(currentScore, historyList[currentIter mod L])`. (Standard LAHC update — preserves the highest-recent-score envelope per Burke & Bykov 2017.)
+   - **Idle counter.** If `currentScore` improved over the trajectory's best-so-far, reset `idleIters = 0`; else `idleIters += 1`.
+4. **Inner loop termination.** Stop when EITHER `idleIters >= idleThreshold` OR `currentIter >= maxIters` (§12A.3).
+5. **Emit.** The trajectory's terminal `currentRoster` is emitted as a single `TrialCandidate`.
+
+### 12A.2 K-candidate emission (D-0067 sub-decision 1)
+LAHC emits K candidates via **K independent seeded trajectories** — NOT K observations along a single trajectory, NOT K parallel restarts:
+- Outer loop: for `i` in `[0, terminationBounds.maxCandidates)`:
+  - Compute `trajectorySeed_i = derive(seed, i)`, where `derive(...)` is a deterministic, documented seed-derivation function (e.g., `splitmix64(seed, i)`); the strategy implementation MUST document and pin the chosen derivation.
+  - Run a full LAHC inner loop (§12A.1) with `trajectorySeed_i`.
+  - Emit terminal roster as a `TrialCandidate`.
+- Trajectories are independent — no information flows between them (no cross-trajectory pruning, no shared best-so-far). This preserves byte-identical determinism per §16 and the analyzer-side separation per `docs/decision_log.md` D-0056 ("solver IS the exploration mechanism"; analyzer is the passive observer).
+
+Rejected alternative — K-observations-along-a-single-trajectory: would produce highly correlated near-clone candidates (consecutive trajectory points share most of their assignment matrix), defeating the K-candidate diagnostic role per D-0056.
+
+### 12A.3 Termination (D-0067 sub-decision 2)
+**Outer-loop termination**: `terminationBounds.maxCandidates` per §15. LAHC stops outer iteration once `K = maxCandidates` trajectories complete.
+
+**Inner-loop termination per trajectory**:
+- `idleThreshold` (default `5000` per §12A.5) — inner loop stops when no improvement in last `idleThreshold` iterations.
+- `maxIters` (default `100,000` per §12A.5) — hard cap on inner-loop iterations per trajectory.
+- **Wall-clock termination is NOT in v1 scope** per §15's existing rationale (breaks byte-identical determinism per §16).
+
+Inner-loop bounds are LAHC-specific and live in `additionalInputs.lahcParams` per §11.2's strategy-specific input declaration; they are NOT part of `terminationBounds` (which §15 keeps narrow at `maxCandidates`-only).
+
+### 12A.4 Determinism (D-0067 sub-decision 3)
+Given identical `(normalizedModel, ruleEngine, seed, fillOrderPolicy, terminationBounds, preferenceSeeding, additionalInputs.lahcParams)` inputs, LAHC MUST produce byte-identical output per §16.
+
+Determinism preservation requires:
+- `derive(seed, i)` is a deterministic, documented, pinned function.
+- Move-selection RNG within each trajectory derives exclusively from `trajectorySeed_i`.
+- History list state is deterministic given iteration order and per-iteration acceptance.
+- Scoring is deterministic per `docs/scorer_contract.md` §17; the read-only oracle preserves this.
+
+Wall-clock termination is excluded for the same reason it's excluded in §15 — breaks determinism. Idle-iter and max-iter termination preserve determinism (count-based, not time-based).
+
+### 12A.5 History-list and termination defaults (D-0067 sub-decision 4)
+Default values for `additionalInputs.lahcParams`:
+- `L = 1000` (history-list length).
+- `idleThreshold = 5,000` (= 5 × `L`).
+- `maxIters = 100,000`.
+
+Rationale: `L = 1000` is a literature default for combinatorial problems at roster scale (Burke & Bykov 2017's LAHC study across NRP-like domains used `L ∈ [500, 10000]`). `idleThreshold = 5L` is a common LAHC convention — gives the algorithm a chance to escape multiple local optima before declaring convergence. `maxIters = 100k` fits within Cloud Run's `UrlFetchApp` 6-minute synchronous budget per `docs/decision_log.md` D-0051 at ICU/HD scale (~30-60s per trajectory empirically, K trajectories sequential). Defaults are tunable via the maintainer-only surface per §12A.7.
+
+### 12A.6 Scoring oracle activation (D-0067 sub-decision 5)
+LAHC opts into the §11.2 extension clause:
+- `StrategyDescriptor.scoringConsultation: "READ_ONLY_ORACLE"`.
+- `additionalInputs: ["scoringOracle", "lahcParams"]`.
+- The scoring oracle is **read-only**: LAHC MUST NOT mutate scoring logic, MUST NOT override the scorer's `HIGHER_IS_BETTER` direction (per `docs/scorer_contract.md` §10), MUST NOT alter scorer-owned components.
+- Score values consulted by LAHC's accept criterion (§12A.1 step 3) MUST come from `docs/scorer_contract.md`-conforming scorer invocations on each candidate roster (or its delta-evaluated equivalent — see FW-0010 for streaming/delta scoring as a possible M6 C2 follow-up).
+
+Per §11.2 + §2, opting into the extension clause is additive only and does NOT require a `contractVersion` bump.
+
+### 12A.7 Operator-tunable surface (LAHC params — maintainer only)
+Per `docs/decision_log.md` D-0066 sub-decision 6 + D-0067 sub-decision 6, LAHC params are **maintainer only** for v1:
+- **Cloud mode**: Python module constants (e.g., `python/rostermonster/solver/lahc.py`). The cloud service uses defaults baked at deployment time; no runtime override.
+- **Local mode**: CLI flags override module defaults: `--strategy LAHC`, `--lahc-history-length`, `--lahc-iter-cap`, `--lahc-idle-threshold`.
+- **NO scorer-config tab additions, NO operator-facing UI changes.** LAHC params do NOT extract from sheet inputs; they do NOT appear in the Scorer Config tab; they do NOT bump the parser/normalizer contract.
+- The active `lahcParams` (effective values used) MUST be logged in `SearchDiagnostics` at run start per §12A.9.
+
+### 12A.8 Failure semantics
+- If the seed roster step (§12A.1 step 1) fails (`SEEDED_RANDOM_BLIND` returns `UnsatisfiedResult` because rule-engine-invalid demand cannot be filled), LAHC propagates that failure as `UnsatisfiedResult` per §10.2 — same discipline as `SEEDED_RANDOM_BLIND` standalone.
+- If a LAHC trajectory's inner loop produces no improvement and terminates by `idleThreshold` or `maxIters`, the trajectory's terminal roster IS the seed roster (still rule-engine-valid; emitted as a `TrialCandidate`).
+- LAHC trajectories are independent. A move-generator implementation defect that fails one trajectory's inner loop is a contract-breaking defect (§10.1's empty `CandidateSet` prohibition); it MUST fail loudly, NOT silently degrade other trajectories.
+- Empty `CandidateSet` is a contract-breaking defect per §10.1. Since `terminationBounds.maxCandidates >= 1` per §9, LAHC MUST emit at least one `TrialCandidate` on the success branch. If all `K` trajectories' seed roster steps fail (every Phase 1+Phase 2 returns `UnsatisfiedResult`), LAHC returns `UnsatisfiedResult` per §10.3.
+
+### 12A.9 Diagnostics
+Per §18.1, LAHC's `SearchDiagnostics` MUST include strategy-specific transparency fields:
+- `lahcHistoryListLength` — the `L` value used.
+- `lahcMaxIters` — the per-trajectory iteration cap.
+- `lahcIdleThreshold` — the per-trajectory idle-iteration cutoff.
+- `seedDerivationFunction` — string identifier of the `derive(seed, i)` function used (e.g., `"splitmix64"`).
+- `perTrajectoryIters[i]` — actual iteration count per trajectory `i` ∈ `[0, K)` (variable due to `idleThreshold` / `maxIters` termination).
+- `perTrajectoryAcceptedMoves[i]` — count of accepted moves per trajectory.
+- `perTrajectoryFinalScore[i]` — terminal score per trajectory (post-§12A.4 determinism check).
+
+These fields support post-run analysis via the M5 analyzer per `docs/decision_log.md` D-0066 sub-decision 7 — operator runs LAHC and `SEEDED_RANDOM_BLIND`, renders each `AnalyzerOutput` separately via the launcher, and manually cross-references the two comparison tabs in the source spreadsheet.
 
 ## 13) CR floor computation
 Proposed in this checkpoint (normative):
@@ -242,6 +337,8 @@ Proposed in this checkpoint (normative):
 
 An implementation that produces non-byte-identical outputs under identical inputs on a single platform is contract-broken regardless of its observed search quality.
 
+Strategies that consult a read-only scoring oracle (e.g., `LAHC` per §12A.6) preserve determinism via deterministic trajectory-seed derivation and deterministic scoring per `docs/scorer_contract.md` §17. The scoring oracle returns identical scores for identical inputs, so byte-identical determinism extends to score-aware strategies as long as their RNG, history list, and acceptance logic are deterministic given seed + iteration order.
+
 ## 17) Operator-tuneable surface (v1 parity)
 Proposed in this checkpoint (normative):
 
@@ -250,6 +347,8 @@ The solver's first-release operator-tuneable surface consists of:
 - The `SMART_MEDIAN` default mode MAY itself be selected by operator configuration as the alternative to `MANUAL`; the computed `X` remains data-derived.
 
 Scorer component weights are also operator-tuneable and are governed by `docs/scorer_contract.md` §15.
+
+Strategy-specific knobs declared via `additionalInputs` (per §11.2) are NOT necessarily part of the operator-tuneable surface at parser boundary. `LAHC`'s `lahcParams` per §12A.7 are **maintainer only** (Python module constants for cloud defaults; CLI flag overrides for local tuning) — they do NOT extract from sheet inputs, do NOT appear in the Scorer Config tab, and do NOT bump the parser/normalizer contract. This separation lets future score-aware strategies iterate on inner-loop tuning without forcing template-author churn.
 
 Blueprint §16's current "routine variation" wording is narrower than this combined surface and is scheduled for a clarifying patch in this contract-closure round.
 
@@ -281,24 +380,25 @@ A first-release implementation that does not surface batches MAY omit `TrialBatc
 Repo-settled alignments:
 - Consistent with blueprint §5 and §7.5: solver performs pure compute search against the rule engine and does not own hard-rule definition, transport, or sheet I/O.
 - Consistent with `docs/rule_engine_contract.md`: solver uses the rule engine as the sole hard-validity authority; solver does not re-derive validity from raw normalized facts.
-- Consistent with `docs/scorer_contract.md`: solver emits unscored candidates; scorer ranks them; the solver MUST NOT consult scoring.
+- Consistent with `docs/scorer_contract.md`: `SEEDED_RANDOM_BLIND` emits unscored candidates and MUST NOT consult scoring; `LAHC` consults scoring **read-only** via the §12A.6 oracle and MUST NOT mutate scoring logic, override scorer direction, or alter scorer-owned components. Scorer ranks all emitted candidates (regardless of strategy) downstream.
 - Consistent with `docs/domain_model.md` §10.1: fixed assignments are first-class normalized input, count toward demand, and are not movable by the solver.
-- Consistent with `docs/parser_normalizer_contract.md`: solver consumes `CONSUMABLE` parser output only and does not recover lost parser meaning.
+- Consistent with `docs/parser_normalizer_contract.md`: solver consumes `CONSUMABLE` parser output only and does not recover lost parser meaning. LAHC's `lahcParams` are NOT parser-boundary inputs (per §17); they are maintainer-only knobs outside the parser/normalizer contract surface.
+- Consistent with `docs/decision_log.md` D-0066 (M6 framing) + D-0067 (M6 C1 LAHC algorithm spec): LAHC registers via §11.2's extension clause without `contractVersion` bump; only the wrapper envelope's `solverStrategy` enumerant crosses the solver boundary so the M5 analyzer + ops trail can see what ran (envelope-shape additive bump location settled in M6 C3).
 
 Proposed in this checkpoint:
-- This contract formalizes the scoring-blind, strategy-pluggable, whole-run-failure surface of the solver while remaining aligned with the rule-engine / scorer / parser / domain-model boundaries.
+- This contract formalizes the scoring-blind (default) / score-aware-via-read-only-oracle (extension) strategy-pluggable surface of the solver while remaining aligned with the rule-engine / scorer / parser / domain-model boundaries.
 
 ## 20) Explicit deferrals
 The following are explicitly deferred and not fixed by this document:
 - concrete function/API signatures and language-specific shapes,
 - internal module decomposition within the solver,
-- second and subsequent strategy implementations (hill-climb, simulated annealing, beam search, parallel seeded-merge, constraint propagation, CP-SAT); see `docs/future_work.md`,
-- activation of the `scoringConsultation: "READ_ONLY_ORACLE"` extension clause for score-aware strategies; see `docs/future_work.md`,
-- parallel execution transport, worker coordination, and cross-worker merge semantics for parallel seeded-merge strategies,
+- third and subsequent strategy implementations (simulated annealing, beam search, parallel seeded-merge, constraint propagation, CP-SAT, tabu search); see `docs/future_work.md` FW-0004. *(Second strategy `LAHC` registered M6 C1 per D-0067; see §12A.)*
+- ~~activation of the `scoringConsultation: "READ_ONLY_ORACLE"` extension clause for score-aware strategies; see `docs/future_work.md`~~ — *(activated M6 C1 per D-0067; LAHC opts in per §12A.6.)*
+- parallel execution transport, worker coordination, and cross-worker merge semantics for parallel seeded-merge strategies; see FW-0005,
 - retention-stage re-emergence under scoring-aware solvers (for example, mid-search retention decisions informed by scoring); see `docs/future_work.md`,
 - alternative fill-order policies beyond `MOST_CONSTRAINED_FIRST`,
 - alternative `crFloor` computations beyond `SMART_MEDIAN` and `MANUAL`,
-- time-budget termination,
+- time-budget termination (excluded from both `SEEDED_RANDOM_BLIND`'s `terminationBounds` per §15 AND `LAHC`'s `lahcParams` inner-loop termination per §12A.3 — wall-clock termination breaks byte-identical determinism per §16),
 - cross-implementation determinism.
 
 ## 21) Current checkpoint status
@@ -308,21 +408,27 @@ The following are explicitly deferred and not fixed by this document:
 - reproducibility anchor (blueprint §5; `docs/scorer_contract.md` §17),
 - fixed-assignment normalized-input semantics (`docs/domain_model.md` §10.1; `docs/parser_normalizer_contract.md` §14).
 
-### Proposed and adopted in this checkpoint
+### Proposed and adopted in M2 C1 closure (2026-04-25 per `docs/decision_log.md` D-0024..D-0029)
 - scoring-blind public contract with `(normalizedModel, ruleEngine, seed, fillOrderPolicy, terminationBounds, preferenceSeeding) → CandidateSet | UnsatisfiedResult` shape,
 - `CandidateSet` / `UnsatisfiedResult` branch discipline with whole-run failure on any unfillable slot,
 - named-strategy pluggability with stable `StrategyDescriptor` shape and additive extension clause for future strategies,
 - first-release `SEEDED_RANDOM_BLIND` composite (`CR_MINIMUM_PER_DOCTOR` Phase 1 + `MOST_CONSTRAINED_FIRST` Phase 2),
 - `crFloor` computation with `SMART_MEDIAN` default and `MANUAL` override, with `X` logged in diagnostics at run start,
-- `maxCandidates`-only termination,
+- `maxCandidates`-only termination at the boundary surface,
 - byte-identical determinism within a single implementation on a single platform,
 - retention boundary moved downstream to the selector stage; solver emits every valid candidate up to `maxCandidates`,
 - diagnostics surface (`SearchDiagnostics` + optional `TrialBatchResult`) with solver-owned fields and unpopulated selector-owned fields.
 
+### Adopted in M6 C1 closure (2026-05-07 per `docs/decision_log.md` D-0067)
+- registered second strategy `LAHC` per §11.1, registered via §11.2's extension clause without `contractVersion` bump,
+- `LAHC` algorithm spec per §12A (K-independent-seeds emission, idle/hard-iter inner termination, history-list `L=1000` default, `maxIters=100,000` default, `idleThreshold=5,000` default, deterministic trajectory-seed derivation),
+- activated §11.2's `scoringConsultation: "READ_ONLY_ORACLE"` extension clause for score-aware strategies (`LAHC` opts in per §12A.6),
+- `LAHC`'s `lahcParams` declared as strategy-specific via `additionalInputs.lahcParams` (NOT part of `terminationBounds` boundary surface; maintainer-only operator surface per §12A.7 — Python module constants for cloud defaults, CLI flag overrides for local tuning; no scorer-config tab additions).
+
 ### Still open / deferred
 - concrete API signatures and module decomposition,
-- second and subsequent strategy implementations,
-- scoring-oracle extension-clause activation for score-aware strategies,
-- parallel-strategy transport and merge semantics.
+- third and subsequent strategy implementations (see §20 + FW-0004),
+- parallel-strategy transport and merge semantics (FW-0005),
+- alternative fill-order policies, alternative `crFloor` computations, time-budget termination, cross-implementation determinism (see §20).
 
-This document is a first-pass working draft checkpoint intended to unblock implementation planning without reopening broader architecture scope.
+This document is a first-pass working draft checkpoint intended to unblock implementation planning without reopening broader architecture scope. M6 C1 (per D-0067) extends it with `LAHC` strategy registration via the §11.2 extension clause; the document remains at `contractVersion: 1` because the strategy-interface contract itself is unchanged.
