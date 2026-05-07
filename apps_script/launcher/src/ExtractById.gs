@@ -8,9 +8,19 @@
 // delegating to the central library's
 // `RMLib.extractSnapshotInMemoryForSheet(ss, requestSheet)`.
 //
-// Returned shape is the same Snapshot object the bound-shim cloud-mode
-// path emits per `docs/snapshot_adapter_contract.md` §7. Callable via
-// `clasp run extractSnapshotById --params '["<spreadsheetId>", "<requestTabName>"]'`.
+// Returns a JSON string (not the in-memory object). `clasp run` prints
+// function returns via `console.log()`, which uses `util.inspect` for
+// objects (producing unquoted-key + `[Object]`-elided output that is NOT
+// valid JSON and not Python-loadable). Returning `JSON.stringify(...)`
+// instead makes clasp run print the JSON content verbatim, which the
+// caller can pipe to a file and feed straight into the Python CLI.
+// Snapshot shape is byte-identical to the in-memory entrypoints; only
+// the wire form changes.
+//
+// Callable via:
+//   clasp run extractSnapshotById --params '["<spreadsheetId>", "<requestTabName>"]'
+// Pipe to file:
+//   clasp run ... > snapshot.json
 
 function extractSnapshotById(spreadsheetId, requestTabName) {
   if (!spreadsheetId) {
@@ -35,5 +45,6 @@ function extractSnapshotById(spreadsheetId, requestTabName) {
       availableTabs.join(', ')
     );
   }
-  return RMLib.extractSnapshotInMemoryForSheet(ss, requestSheet);
+  var snapshot = RMLib.extractSnapshotInMemoryForSheet(ss, requestSheet);
+  return JSON.stringify(snapshot);
 }
