@@ -906,6 +906,285 @@ def test_lahc_smoke_returns_candidate_set() -> None:
     )
 
 
+def test_lahc_byte_identical_under_fixed_inputs() -> None:
+    """Per docs/solver_contract.md §12A.4 + §16: LAHC's K-trajectory output
+    MUST be byte-identical given identical
+    `(strategyId, normalizedModel, ruleEngine, seed, fillOrderPolicy,
+    terminationBounds, preferenceSeeding, lahcParams, scoringConfig)` —
+    same scoring oracle, same trajectory-seed derivation, same accept
+    decisions, same emitted CandidateSet.
+    """
+    from rostermonster.scorer.result import ScoringConfig
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+
+    model = _model()
+    scoring_config = ScoringConfig.first_release_defaults(model)
+    params = LahcParams(historyListLength=10, idleThreshold=10, maxIters=20)
+    bounds = TerminationBounds(maxCandidates=3)
+    r1 = _solve(
+        model,
+        seed=98765,
+        terminationBounds=bounds,
+        strategyId=STRATEGY_LAHC,
+        scoringConfig=scoring_config,
+        lahcParams=params,
+    )
+    r2 = _solve(
+        model,
+        seed=98765,
+        terminationBounds=bounds,
+        strategyId=STRATEGY_LAHC,
+        scoringConfig=scoring_config,
+        lahcParams=params,
+    )
+    assert r1 == r2, "LAHC outputs must be byte-identical under fixed inputs"
+
+
+def test_lahc_byte_identical_across_pythonhashseed_values() -> None:
+    """Per §12A.4 + §16: LAHC determinism MUST hold across Python processes
+    with differing `PYTHONHASHSEED` values. Mirrors the SEEDED_RANDOM_BLIND
+    cross-process determinism test (Codex P1 finding on PR #85). The LAHC
+    inner loop adds extra PYTHONHASHSEED-sensitive surfaces (rule-engine
+    rejection counter dict iteration, eligibility frozenset/dict iteration
+    inside `_generate_valid_reassign`, history list dict-not-used) — they
+    all need to either iterate stably or stay write-only.
+    """
+    import os
+    import subprocess
+
+    driver = (
+        "import sys; sys.path.insert(0, %r);\n"
+        "from rostermonster.rule_engine import evaluate;\n"
+        "from rostermonster.solver import (\n"
+        "    solve, TerminationBounds, LahcParams, STRATEGY_LAHC,\n"
+        ");\n"
+        "from rostermonster.scorer.result import ScoringConfig;\n"
+        "import test_solver;\n"
+        "model = test_solver._model();\n"
+        "cfg = ScoringConfig.first_release_defaults(model);\n"
+        "params = LahcParams(historyListLength=10, idleThreshold=10, maxIters=20);\n"
+        "result = solve(model, ruleEngine=evaluate, seed=98765,\n"
+        "    terminationBounds=TerminationBounds(maxCandidates=3),\n"
+        "    strategyId=STRATEGY_LAHC, scoringConfig=cfg, lahcParams=params);\n"
+        "for cand in result.candidates:\n"
+        "    print(cand.candidateId, [(u.dateKey, u.slotType, u.unitIndex, u.doctorId) for u in cand.assignments]);\n"
+    ) % str(ROOT)
+
+    def run_with_seed(hash_seed: str) -> str:
+        env = os.environ.copy()
+        env["PYTHONHASHSEED"] = hash_seed
+        env["PYTHONPATH"] = (
+            str(Path(__file__).resolve().parent) + os.pathsep + str(ROOT)
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", driver],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return out.stdout
+
+    out_a = run_with_seed("0")
+    out_b = run_with_seed("42")
+    out_c = run_with_seed("99999")
+    assert out_a == out_b == out_c, (
+        f"LAHC output diverged across PYTHONHASHSEED values "
+        f"(determinism §16 broken):\nseed=0:\n{out_a}\nseed=42:\n{out_b}\n"
+        f"seed=99999:\n{out_c}"
+    )
+
+
+def test_lahc_distinct_trajectories_under_same_run() -> None:
+    """Per §12A.2: K trajectories within a single LAHC run MUST be
+    INDEPENDENT — derived from per-trajectory seeds via `derive(seed, i)`,
+    no shared state, no information flow. Distinct seeds + independent
+    moves should produce distinct rosters across the K candidates (the
+    spec's whole point — defeating "K-observations-along-a-single-
+    trajectory" near-clones per §12A.2's rejected alternative).
+    """
+    from rostermonster.scorer.result import ScoringConfig
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+
+    model = _model()
+    scoring_config = ScoringConfig.first_release_defaults(model)
+    params = LahcParams(historyListLength=10, idleThreshold=10, maxIters=20)
+    result = _solve(
+        model,
+        seed=12345,
+        terminationBounds=TerminationBounds(maxCandidates=3),
+        strategyId=STRATEGY_LAHC,
+        scoringConfig=scoring_config,
+        lahcParams=params,
+    )
+    assert isinstance(result, CandidateSet)
+    assert len(result.candidates) == 3
+    # Hash each candidate's full assignment vector. With 3 trajectories
+    # each running 20-iteration LAHC over a non-trivial model, byte-
+    # identical rosters across all K would indicate the trajectory seeds
+    # collapsed — a determinism / independence regression.
+    rosters = {
+        tuple((u.dateKey, u.slotType, u.unitIndex, u.doctorId) for u in cand.assignments)
+        for cand in result.candidates
+    }
+    assert len(rosters) >= 2, (
+        f"K=3 LAHC trajectories should produce at least 2 distinct rosters; "
+        f"got {len(rosters)} unique out of {len(result.candidates)}"
+    )
+
+
+def test_lahc_emits_best_roster_when_terminal_diverges() -> None:
+    """Per §12A.1 step 5 + §12A.2: LAHC emits each trajectory's bestRoster
+    (paired with bestSoFar at termination), NOT terminal currentRoster.
+    Late acceptance (§12A.1.c dual-clause) routinely accepts moves below
+    bestSoFar after first reaching it, so terminal can be strictly worse
+    than best — and emitting terminal would discard a better candidate.
+
+    Codex P2 round-1 on PR #128: just asserting `best >= terminal` is
+    tautological — it's an invariant of `best_so_far` only advancing on
+    strict improvement. The real regression to guard is "did LAHC emit
+    the best-score roster, not the terminal-score one?" Pre-fix `run_lahc`
+    returning `current_roster` instead of `best_roster` would still leave
+    the diagnostic invariant intact.
+
+    This test forces strict divergence (seed=1 + 500 maxIters yields a
+    trajectory where best=-6.5 strictly beats terminal=-7.0 on the
+    minimal 5-doctor / 5-day fixture) and then RE-SCORES the emitted
+    candidate with the same scoring oracle — asserting the emitted
+    roster scores to `bestSoFar`, NOT to `terminal currentScore`. If
+    `run_lahc` regressed to emitting terminal, this test would fail
+    even though the diagnostic invariant still held.
+    """
+    from rostermonster.scorer.result import ScoringConfig
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+    from rostermonster.solver.lahc import make_scoring_oracle
+
+    model = _model()
+    scoring_config = ScoringConfig.first_release_defaults(model)
+    # Larger budgets so late-acceptance has room to drop below best.
+    # Empirically (seed=1, idleThreshold=50, maxIters=500), trajectory 1
+    # diverges: best=-6.5, terminal=-7.0.
+    params = LahcParams(historyListLength=20, idleThreshold=50, maxIters=500)
+    result = _solve(
+        model,
+        seed=1,
+        terminationBounds=TerminationBounds(maxCandidates=3),
+        strategyId=STRATEGY_LAHC,
+        scoringConfig=scoring_config,
+        lahcParams=params,
+    )
+    assert isinstance(result, CandidateSet)
+    diag = result.diagnostics
+    assert diag.perTrajectoryBestScore is not None
+    assert diag.perTrajectoryTerminalScore is not None
+
+    # 1. Hard invariant: best >= terminal for every trajectory
+    #    (best_so_far only advances on strict improvement).
+    for i, (best, term) in enumerate(
+        zip(diag.perTrajectoryBestScore, diag.perTrajectoryTerminalScore)
+    ):
+        assert best is not None and term is not None
+        assert best >= term, (
+            f"trajectory {i}: bestSoFar ({best}) should be >= terminal ({term}) — "
+            f"§12A.1.f says best_so_far only advances on strict improvement"
+        )
+
+    # 2. Strict divergence MUST occur for at least one trajectory under
+    #    these params/seed — otherwise the rest of this test is vacuous.
+    divergent_indices = [
+        i
+        for i, (b, t) in enumerate(
+            zip(diag.perTrajectoryBestScore, diag.perTrajectoryTerminalScore)
+        )
+        if b is not None and t is not None and b > t
+    ]
+    assert divergent_indices, (
+        f"expected at least one trajectory with strict best > terminal under "
+        f"seed=1 / maxIters=500; got per-trajectory scores best="
+        f"{diag.perTrajectoryBestScore} terminal={diag.perTrajectoryTerminalScore}. "
+        f"If params changed and divergence no longer triggers here, find a new "
+        f"seed/params that does — this test is meant to exercise §12A.1 step 5."
+    )
+
+    # 3. The real regression guard: emitted candidate's roster MUST score
+    #    to `bestSoFar`, NOT to terminal `currentScore`. Pre-fix LAHC
+    #    returning terminal_roster would yield emitted_score == terminal,
+    #    not best — caught here by re-scoring the emitted assignments
+    #    with the same oracle LAHC consulted internally.
+    oracle = make_scoring_oracle(scoring_config)
+    for i in divergent_indices:
+        candidate = result.candidates[i]
+        emitted_score = oracle(model, candidate.assignments)
+        best_score = diag.perTrajectoryBestScore[i]
+        terminal_score = diag.perTrajectoryTerminalScore[i]
+        assert emitted_score == best_score, (
+            f"trajectory {i}: emitted candidate must score to bestSoFar "
+            f"({best_score}); got {emitted_score}. §12A.1 step 5 requires "
+            f"emitting bestRoster, not terminal currentRoster."
+        )
+        assert emitted_score != terminal_score, (
+            f"trajectory {i}: emitted score ({emitted_score}) equals terminal "
+            f"({terminal_score}) — this trajectory is supposed to be divergent, "
+            f"so emitting terminal would silently match. Test setup error."
+        )
+
+
+def test_lahc_against_real_icu_hd_may_2026_fixture() -> None:
+    """End-to-end: LAHC on the real-ICU/HD May 2026 dev-copy snapshot
+    consumed by parser → solver → CandidateSet. Validates that LAHC
+    works against a 22-doctor / 29-day / 116-slot real-world workload,
+    not just the small synthetic `_model()` fixture. K-candidate emission
+    shape per §12A.2.
+    """
+    import json
+    from pathlib import Path
+    from rostermonster.parser.admission import parse
+    from rostermonster.parser.result import Consumability
+    from rostermonster.pipeline import _snapshot_from_dict
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+    from rostermonster.templates import icu_hd_template_artifact
+
+    snapshot_path = (
+        Path(__file__).resolve().parent / "data" / "icu_hd_may_2026_snapshot.json"
+    )
+    raw = json.loads(snapshot_path.read_text())
+    snapshot = _snapshot_from_dict(raw)
+    template = icu_hd_template_artifact()
+    parsed = parse(snapshot, template)
+    assert parsed.consumability is Consumability.CONSUMABLE
+    model = parsed.normalizedModel
+    scoring_config = parsed.scoringConfig
+    assert scoring_config is not None
+
+    # Tight params — ICU/HD May has 116 slot units across 22 doctors;
+    # the seed phase + a 50-iter inner loop runs in seconds. K=2 is enough
+    # to validate the K-trajectory shape against a real fixture without
+    # bloating CI runtime.
+    params = LahcParams(historyListLength=20, idleThreshold=50, maxIters=100)
+    result = _solve(
+        model,
+        seed=2026_05_07,
+        terminationBounds=TerminationBounds(maxCandidates=2),
+        strategyId=STRATEGY_LAHC,
+        scoringConfig=scoring_config,
+        lahcParams=params,
+    )
+    assert isinstance(result, CandidateSet), (
+        f"LAHC on real ICU/HD May 2026 fixture should yield CandidateSet; "
+        f"got {type(result).__name__}"
+    )
+    assert len(result.candidates) == 2
+    # Each candidate must cover the full demand (29 days × 4 slot types =
+    # 116 demand units, all requiredCount=1).
+    for cand in result.candidates:
+        assert len(cand.assignments) == 116, (
+            f"candidate {cand.candidateId}: expected 116 assignments "
+            f"(29 days × 4 slot types); got {len(cand.assignments)}"
+        )
+        # All assignments populated (no doctorId=None on a successful run).
+        assert all(a.doctorId is not None for a in cand.assignments)
+
+
 def test_unknown_fill_order_policy_is_rejected() -> None:
     """First-release fillOrderPolicy is exactly `MOST_CONSTRAINED_FIRST`
     per §12.3."""
