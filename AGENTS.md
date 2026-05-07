@@ -31,10 +31,10 @@ Unless the repo explicitly says otherwise, assume:
 Read `docs/delivery_plan.md` before proposing non-trivial work.
 
 Current active focus at time of writing:
-- **Active milestone:** **M5 — Operator-side analysis & multi-roster delivery** *(activated 2026-05-04 per D-0055)*. Sibling-consumer architecture (Python analyzer engine + Apps Script renderer + upload portal) on top of the wrapper envelope; purely additive, no contract changes upstream of analysis. Sequencing rationale: analysis tooling first, solver-side score-aware search second (M6 territory).
-- **Active checkpoint:** **M5 C4 — Live operator validation.** Awaits a real ICU/HD cycle's worth of data + operator availability. M5 C1 (analyzer engine) closed 2026-05-05 across PRs #110 + #111 + closure. M5 C2 (Apps Script renderer + launcher route + cross-page nav) closed 2026-05-06 across PRs #114 + #115 + #116 + closure; cloud deployment bumped to `@15`; operator runs `python -m rostermonster.analysis ...` locally then uploads via launcher `?action=analysis-render`. C3 dropped from the plan (absorbed into C2's launcher route — same discipline as M3 C2 dropped per D-0048). See `docs/delivery_plan.md` §7 / §9 / §11.
-- **Next likely milestone:** M6 (or its successor) — provisionally framed around solver-side score-aware search (LAHC + cloud Deep Solve + email-notification architecture + cloud-side FULL retention promotion of FW-0030). Not pre-committed.
-- **Closed-milestone trail:** D-0019..D-0054 (M1..M4); D-0055 activates M5; D-0056..D-0058 + M5 C1 closure cover M5 C1 (analysis contract + analyzer engine). Contracts settled through M5 C1 are listed in `docs/delivery_plan.md` §15.
+- **Active milestone:** **none.** M5 closed 2026-05-07 per D-0065 (M5 C4 live operator validation verdict — analyzer's role as calibration framework validated; scoring-formulation rework parked as FW-0033, explicitly NOT rolled into M6).
+- **Active checkpoint:** **none.** Until M6 activates in a forthcoming direction-setting PR.
+- **Next likely milestone:** M6 — provisionally framed around solver-side score-aware search, scoped **LAHC-only** per the M5 closure thread. Cloud Deep Solve + email-notification architecture + cloud-side FULL retention promotion (FW-0030) are explicitly carved off to FW or future milestones. M6 framing decision lands in its own direction-setting PR.
+- **Closed-milestone trail:** D-0019..D-0054 (M1..M4); D-0055 activates M5; D-0056..D-0058 close M5 C1 (analyzer engine + analysis contract); D-0059 (apps_script directory rename); D-0060..D-0063 close M5 C2 (renderer + launcher route + cross-page nav; C3 dropped); D-0064 (forward-going Task 1/2/3 cadence vocabulary); D-0065 closes M5 (C4 live operator validation verdict). Contracts settled through M5 C2 are listed in `docs/delivery_plan.md` §15.
 
 If a task does not clearly support the active checkpoint, do not expand scope casually.
 
@@ -43,7 +43,7 @@ Use the repo’s planning vocabulary consistently:
 - **Product**
 - **Milestone**
 - **Checkpoint**
-- **Task**
+- **Task** — typical decomposition inside a checkpoint follows the **Task 1 (docs) → Task 2 (code, with optional Task 2A / 2B / 2C sub-letters when work has logically distinct chunks) → Task 3 (closure)** cadence per D-0064. Not a contract: a docs-only checkpoint may be just Task 1; an unusual checkpoint may have a different shape. Historical "Phase 1/2/3" labels in past PR titles and closed-milestone closure entries are preserved as-is.
 
 Do not introduce replacement planning language in repo docs unless there is a strong repo-grounded reason.
 
