@@ -261,13 +261,27 @@ def run_lahc(
     # ---- Step 3-4: Inner loop ---------------------------------------------
     while idle_iters < lahc_params.idleThreshold and current_iter < lahc_params.maxIters:
         # 3.a: Move generation. Mix of swap + reassign per §12A.1.a — picked
-        # uniformly per iteration. None means the chosen move type is
-        # rule-locked at this state (couldn't find a valid candidate in
-        # `_MOVE_GENERATION_MAX_TRIES` attempts) — terminate the trajectory.
-        if rng.random() < 0.5:
+        # uniformly per iteration. If the primary move type returns None
+        # (rule-locked for THAT type at this state), fall back to the OTHER
+        # type — only terminate the trajectory when BOTH types are rule-locked
+        # (since either one being unblocked means progress is still
+        # reachable per §12A.1.a's ergodicity invariant).
+        primary_is_swap = rng.random() < 0.5
+        if primary_is_swap:
             result = _generate_valid_swap(
                 rule_engine, model, current_roster, fixed_coords, rng
             )
+            if result is None:
+                result = _generate_valid_reassign(
+                    rule_engine,
+                    model,
+                    current_roster,
+                    fixed_coords,
+                    eligibility_by_slot,
+                    group_by_doctor,
+                    all_doctor_ids,
+                    rng,
+                )
         else:
             result = _generate_valid_reassign(
                 rule_engine,
@@ -279,7 +293,13 @@ def run_lahc(
                 all_doctor_ids,
                 rng,
             )
+            if result is None:
+                result = _generate_valid_swap(
+                    rule_engine, model, current_roster, fixed_coords, rng
+                )
         if result is None:
+            # Both move types rule-locked → terminate the trajectory with
+            # whatever bestRoster has been found so far.
             break
         proposed_roster, tries_consumed = result
         aggregate_attempts += tries_consumed

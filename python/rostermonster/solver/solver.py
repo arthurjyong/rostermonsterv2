@@ -67,6 +67,7 @@ def _build_unsatisfied(
     aggregate_attempts: int,
     aggregate_rejections: dict[str, int],
     candidate_emit_count: int,
+    lahc_diag_kwargs: dict | None = None,
 ) -> UnsatisfiedResult:
     """Build an UnsatisfiedResult from the deterministic complete union of
     per-trajectory failures per `docs/solver_contract.md` §14 + §12A.8.
@@ -125,6 +126,7 @@ def _build_unsatisfied(
         ruleEngineRejectionsByReason=dict(aggregate_rejections),
         candidateEmitCount=candidate_emit_count,
         unfilledDemandCount=len(unfilled_list),
+        **(lahc_diag_kwargs or {}),
     )
     return UnsatisfiedResult(
         unfilledDemand=tuple(unfilled_list),
@@ -335,6 +337,25 @@ def solve(
             )
         )
 
+    # §12A.9 LAHC-specific diagnostic fields surface only when the active
+    # strategy is LAHC; otherwise they stay `None`. Built BEFORE the
+    # all-fail branch so both `_build_unsatisfied` (all-fail) and the
+    # success-path diagnostics get the same LAHC fields.
+    lahc_diag_kwargs: dict = {}
+    if strategyId == STRATEGY_LAHC:
+        lp: LahcParams = strategy_kwargs["lahc_params"]
+        lahc_diag_kwargs = {
+            "lahcHistoryListLength": lp.historyListLength,
+            "lahcMaxIters": lp.maxIters,
+            "lahcIdleThreshold": lp.idleThreshold,
+            "seedDerivationFunction": "python.Random.getrandbits.candidate_seed",
+            "perTrajectoryStatus": tuple(per_trajectory_status),
+            "perTrajectoryIters": tuple(per_trajectory_iters),
+            "perTrajectoryAcceptedMoves": tuple(per_trajectory_accepted),
+            "perTrajectoryBestScore": tuple(per_trajectory_best_score),
+            "perTrajectoryTerminalScore": tuple(per_trajectory_terminal_score),
+        }
+
     # All K trajectories have run. Decide success vs whole-run failure.
     if not candidates:
         # All trajectories failed (LAHC: every seed step returned unfillable;
@@ -350,24 +371,8 @@ def solve(
             aggregate_attempts=aggregate_attempts,
             aggregate_rejections=aggregate_rejections,
             candidate_emit_count=0,
+            lahc_diag_kwargs=lahc_diag_kwargs,
         )
-
-    # §12A.9 LAHC-specific diagnostic fields surface only when the active
-    # strategy is LAHC; otherwise they stay `None`.
-    lahc_diag_kwargs: dict = {}
-    if strategyId == STRATEGY_LAHC:
-        lp: LahcParams = strategy_kwargs["lahc_params"]
-        lahc_diag_kwargs = {
-            "lahcHistoryListLength": lp.historyListLength,
-            "lahcMaxIters": lp.maxIters,
-            "lahcIdleThreshold": lp.idleThreshold,
-            "seedDerivationFunction": "python.Random.getrandbits.candidate_seed",
-            "perTrajectoryStatus": tuple(per_trajectory_status),
-            "perTrajectoryIters": tuple(per_trajectory_iters),
-            "perTrajectoryAcceptedMoves": tuple(per_trajectory_accepted),
-            "perTrajectoryBestScore": tuple(per_trajectory_best_score),
-            "perTrajectoryTerminalScore": tuple(per_trajectory_terminal_score),
-        }
 
     diagnostics = SearchDiagnostics(
         strategyId=strategyId,
