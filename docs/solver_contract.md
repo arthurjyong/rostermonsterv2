@@ -18,7 +18,7 @@ Scoring, ranking, and retention are **not** in solver scope; scoring is owned by
 ## 2) Contract identity and versioning
 Contract identity/version for binding:
 - `contractId: SOLVER`
-- `contractVersion: 1`
+- `contractVersion: 2` *(bumped 1 → 2 in M6 C1 closure 2026-05-07 per `docs/decision_log.md` D-0067; the bump is driven by §9 promoting `strategyId` to a required boundary input. LAHC's own registration via §11.2's extension clause would NOT have required a bump on its own per the rule below, but making `strategyId` an explicit declared input — needed because §9's scoring-prohibition exception now branches on the active strategy — IS a solver-stage input-shape change covered by the bump rule below.)*
 
 Version bump rule (normative):
 - bump `contractVersion` only when solver-stage input/output shape, termination semantics, determinism guarantees, or the strategy-interface contract changes.
@@ -441,4 +441,4 @@ The following are explicitly deferred and not fixed by this document:
 - parallel-strategy transport and merge semantics (FW-0005),
 - alternative fill-order policies, alternative `crFloor` computations, time-budget termination, cross-implementation determinism (see §20).
 
-This document is a first-pass working draft checkpoint intended to unblock implementation planning without reopening broader architecture scope. M6 C1 (per D-0067) extends it with `LAHC` strategy registration via the §11.2 extension clause; the document remains at `contractVersion: 1` because the strategy-interface contract itself is unchanged.
+This document is a first-pass working draft checkpoint intended to unblock implementation planning without reopening broader architecture scope. M6 C1 (per D-0067) extends it with `LAHC` strategy registration via the §11.2 extension clause AND promotes `strategyId` to a required boundary input in §9; the latter is a solver-stage input-shape change per §2 and triggers the bump from `contractVersion: 1` → `2`. (LAHC's strategy-registration alone would NOT have required a bump per §11.2; the bump is driven by the input-shape change.)
