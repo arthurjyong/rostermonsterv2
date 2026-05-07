@@ -1040,22 +1040,34 @@ def test_lahc_emits_best_roster_when_terminal_diverges() -> None:
     bestSoFar after first reaching it, so terminal can be strictly worse
     than best — and emitting terminal would discard a better candidate.
 
-    Invariant exercised here: `perTrajectoryBestScore[i] >=
-    perTrajectoryTerminalScore[i]` for every trajectory (best is always
-    at least terminal). Bigger maxIters increases the chance of observing
-    strict divergence at least once across K trajectories.
+    Codex P2 round-1 on PR #128: just asserting `best >= terminal` is
+    tautological — it's an invariant of `best_so_far` only advancing on
+    strict improvement. The real regression to guard is "did LAHC emit
+    the best-score roster, not the terminal-score one?" Pre-fix `run_lahc`
+    returning `current_roster` instead of `best_roster` would still leave
+    the diagnostic invariant intact.
+
+    This test forces strict divergence (seed=1 + 500 maxIters yields a
+    trajectory where best=-6.5 strictly beats terminal=-7.0 on the
+    minimal 5-doctor / 5-day fixture) and then RE-SCORES the emitted
+    candidate with the same scoring oracle — asserting the emitted
+    roster scores to `bestSoFar`, NOT to `terminal currentScore`. If
+    `run_lahc` regressed to emitting terminal, this test would fail
+    even though the diagnostic invariant still held.
     """
     from rostermonster.scorer.result import ScoringConfig
     from rostermonster.solver import LahcParams, STRATEGY_LAHC
+    from rostermonster.solver.lahc import make_scoring_oracle
 
     model = _model()
     scoring_config = ScoringConfig.first_release_defaults(model)
-    # Larger budgets so late-acceptance has room to drop below best at least
-    # once across K=3 trajectories. Still tight enough to finish in ms.
-    params = LahcParams(historyListLength=20, idleThreshold=50, maxIters=200)
+    # Larger budgets so late-acceptance has room to drop below best.
+    # Empirically (seed=1, idleThreshold=50, maxIters=500), trajectory 1
+    # diverges: best=-6.5, terminal=-7.0.
+    params = LahcParams(historyListLength=20, idleThreshold=50, maxIters=500)
     result = _solve(
         model,
-        seed=2026,
+        seed=1,
         terminationBounds=TerminationBounds(maxCandidates=3),
         strategyId=STRATEGY_LAHC,
         scoringConfig=scoring_config,
@@ -1065,9 +1077,9 @@ def test_lahc_emits_best_roster_when_terminal_diverges() -> None:
     diag = result.diagnostics
     assert diag.perTrajectoryBestScore is not None
     assert diag.perTrajectoryTerminalScore is not None
-    # Hard invariant: best ≥ terminal for every trajectory (best_so_far
-    # only advances on strict improvement; terminal can drift back below
-    # best after late-acceptance).
+
+    # 1. Hard invariant: best >= terminal for every trajectory
+    #    (best_so_far only advances on strict improvement).
     for i, (best, term) in enumerate(
         zip(diag.perTrajectoryBestScore, diag.perTrajectoryTerminalScore)
     ):
@@ -1075,6 +1087,45 @@ def test_lahc_emits_best_roster_when_terminal_diverges() -> None:
         assert best >= term, (
             f"trajectory {i}: bestSoFar ({best}) should be >= terminal ({term}) — "
             f"§12A.1.f says best_so_far only advances on strict improvement"
+        )
+
+    # 2. Strict divergence MUST occur for at least one trajectory under
+    #    these params/seed — otherwise the rest of this test is vacuous.
+    divergent_indices = [
+        i
+        for i, (b, t) in enumerate(
+            zip(diag.perTrajectoryBestScore, diag.perTrajectoryTerminalScore)
+        )
+        if b is not None and t is not None and b > t
+    ]
+    assert divergent_indices, (
+        f"expected at least one trajectory with strict best > terminal under "
+        f"seed=1 / maxIters=500; got per-trajectory scores best="
+        f"{diag.perTrajectoryBestScore} terminal={diag.perTrajectoryTerminalScore}. "
+        f"If params changed and divergence no longer triggers here, find a new "
+        f"seed/params that does — this test is meant to exercise §12A.1 step 5."
+    )
+
+    # 3. The real regression guard: emitted candidate's roster MUST score
+    #    to `bestSoFar`, NOT to terminal `currentScore`. Pre-fix LAHC
+    #    returning terminal_roster would yield emitted_score == terminal,
+    #    not best — caught here by re-scoring the emitted assignments
+    #    with the same oracle LAHC consulted internally.
+    oracle = make_scoring_oracle(scoring_config)
+    for i in divergent_indices:
+        candidate = result.candidates[i]
+        emitted_score = oracle(model, candidate.assignments)
+        best_score = diag.perTrajectoryBestScore[i]
+        terminal_score = diag.perTrajectoryTerminalScore[i]
+        assert emitted_score == best_score, (
+            f"trajectory {i}: emitted candidate must score to bestSoFar "
+            f"({best_score}); got {emitted_score}. §12A.1 step 5 requires "
+            f"emitting bestRoster, not terminal currentRoster."
+        )
+        assert emitted_score != terminal_score, (
+            f"trajectory {i}: emitted score ({emitted_score}) equals terminal "
+            f"({terminal_score}) — this trajectory is supposed to be divergent, "
+            f"so emitting terminal would silently match. Test setup error."
         )
 
 
