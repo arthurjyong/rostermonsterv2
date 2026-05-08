@@ -112,12 +112,27 @@ def main(argv: list[str] | None = None) -> int:
         )
         if lahc_overrides_set:
             defaults = LahcParams()
+            # Use `is not None` not `or` — `or` treats explicit `0` as
+            # falsy and silently falls back to defaults, masking what
+            # would be an invalid maintainer tuning. With `is not None`,
+            # `--lahc-iter-cap 0` reaches LahcParams.__post_init__ and
+            # fails loud with the §12A.5 positive-integer rule.
             lahc_params = LahcParams(
-                historyListLength=args.lahc_history_length
-                or defaults.historyListLength,
-                idleThreshold=args.lahc_idle_threshold
-                or defaults.idleThreshold,
-                maxIters=args.lahc_iter_cap or defaults.maxIters,
+                historyListLength=(
+                    args.lahc_history_length
+                    if args.lahc_history_length is not None
+                    else defaults.historyListLength
+                ),
+                idleThreshold=(
+                    args.lahc_idle_threshold
+                    if args.lahc_idle_threshold is not None
+                    else defaults.idleThreshold
+                ),
+                maxIters=(
+                    args.lahc_iter_cap
+                    if args.lahc_iter_cap is not None
+                    else defaults.maxIters
+                ),
             )
     elif (
         args.lahc_history_length is not None

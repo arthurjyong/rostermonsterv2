@@ -320,6 +320,38 @@ def test_cli_lahc_flags_without_lahc_strategy_fails_loud() -> None:
     )
 
 
+def test_cli_lahc_zero_override_fails_loud() -> None:
+    """Codex P2 round-1 on PR #130: `--lahc-iter-cap 0` (or any explicit
+    zero on a --lahc-* knob) used to silently fall back to the §12A.5
+    default because the CLI used `args.x or default` (which treats `0`
+    as falsy). Fix: use `is not None`. Then explicit zero reaches
+    `LahcParams.__post_init__`, which rejects non-positive values per
+    §12A.5 ("must be a positive integer").
+
+    The CLI catches the ValueError as an uncaught exception and exits
+    non-zero, surfacing the misuse loudly rather than silently running
+    with defaults.
+    """
+    raised = False
+    try:
+        # ValueError from LahcParams.__post_init__ propagates out of
+        # `main()` since the CLI doesn't catch arbitrary exceptions —
+        # this is the "fail loud" behavior we want for invalid tuning.
+        main([
+            "--snapshot", str(_FIXTURE_PATH),
+            "--output", "/tmp/should-not-be-written.json",
+            "--strategy", "LAHC",
+            "--lahc-iter-cap", "0",  # invalid per §12A.5 (must be positive)
+        ])
+    except ValueError as e:
+        raised = True
+        assert "maxIters" in str(e) and "positive integer" in str(e), (
+            f"ValueError should call out maxIters positive-integer rule; "
+            f"got: {e}"
+        )
+    assert raised, "explicit --lahc-iter-cap 0 should fail loud, not silently default"
+
+
 def test_cli_lahc_byte_identical_re_runs() -> None:
     """LAHC determinism per `docs/solver_contract.md` §12A.4: same args
     + same fixture → byte-identical CLI output. Mirrors
@@ -409,6 +441,8 @@ def _run() -> int:
          test_cli_lahc_strategy_records_default_lahc_params),
         ("test_cli_lahc_flags_without_lahc_strategy_fails_loud",
          test_cli_lahc_flags_without_lahc_strategy_fails_loud),
+        ("test_cli_lahc_zero_override_fails_loud",
+         test_cli_lahc_zero_override_fails_loud),
         ("test_cli_lahc_byte_identical_re_runs",
          test_cli_lahc_byte_identical_re_runs),
         ("test_snapshot_from_dict_round_trips",
