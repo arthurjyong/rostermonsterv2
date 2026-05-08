@@ -263,23 +263,34 @@ def test_pipeline_strategy_choice_changes_winner() -> None:
     # Envelope-level metadata diverges by construction.
     assert srb_result.envelope.runEnvelope.solverStrategy == "SEEDED_RANDOM_BLIND"
     assert lahc_result.envelope.runEnvelope.solverStrategy == "LAHC"
-    # The actual roster + scores SHOULD differ — same seed but different
-    # search algorithms exploring the space differently. If they end up
-    # identical, either (a) the strategy dispatch silently routed both
-    # to the same code path (regression) or (b) LAHC happened to reach
-    # the exact same trajectory as SRB Phase 2 — unlikely on the
-    # 22-doctor fixture under non-trivial maxIters.
+
+    # Real regression guard: solver §12A.9 LAHC-specific diagnostic
+    # fields surface only when LAHC actually ran. SRB leaves them `None`;
+    # LAHC populates them. This catches "silent dispatch routing" (a
+    # future bug routing --strategy LAHC to SRB internally) without
+    # being brittle to legitimate score ties — same totalScore between
+    # SRB and LAHC is plausible on a small / well-converged fixture and
+    # NOT a regression. The diagnostics shape, on the other hand, is
+    # determined entirely by which inner loop ran.
     from rostermonster.selector import AllocationResult
     assert isinstance(srb_result.envelope.result, AllocationResult)
     assert isinstance(lahc_result.envelope.result, AllocationResult)
-    srb_score = srb_result.envelope.result.winnerScore.totalScore
-    lahc_score = lahc_result.envelope.result.winnerScore.totalScore
-    assert srb_score != lahc_score, (
-        f"SEEDED_RANDOM_BLIND and LAHC at seed={seed} produced identical "
-        f"winner scores ({srb_score}); strategy choice should change the "
-        f"search trajectory and thus the winner — possible silent dispatch "
-        f"regression"
+    srb_diag = srb_result.envelope.result.searchDiagnostics
+    lahc_diag = lahc_result.envelope.result.searchDiagnostics
+
+    assert srb_diag.lahcHistoryListLength is None, (
+        f"SEEDED_RANDOM_BLIND should NOT populate LAHC-specific §12A.9 "
+        f"diagnostic fields; got lahcHistoryListLength="
+        f"{srb_diag.lahcHistoryListLength!r} — possible silent dispatch "
+        f"regression (SRB code path running LAHC's diagnostics?)"
     )
+    assert lahc_diag.lahcHistoryListLength == 20, (
+        f"LAHC pipeline run should populate lahcHistoryListLength with "
+        f"the configured value (20); got {lahc_diag.lahcHistoryListLength!r}. "
+        f"None here would mean --strategy LAHC silently routed to SRB."
+    )
+    assert lahc_diag.perTrajectoryStatus is not None
+    assert srb_diag.perTrajectoryStatus is None
 
 
 def test_full_retention_emits_sidecars() -> None:
