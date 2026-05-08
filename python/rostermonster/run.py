@@ -117,23 +117,32 @@ def main(argv: list[str] | None = None) -> int:
             # would be an invalid maintainer tuning. With `is not None`,
             # `--lahc-iter-cap 0` reaches LahcParams.__post_init__ and
             # fails loud with the §12A.5 positive-integer rule.
-            lahc_params = LahcParams(
-                historyListLength=(
-                    args.lahc_history_length
-                    if args.lahc_history_length is not None
-                    else defaults.historyListLength
-                ),
-                idleThreshold=(
-                    args.lahc_idle_threshold
-                    if args.lahc_idle_threshold is not None
-                    else defaults.idleThreshold
-                ),
-                maxIters=(
-                    args.lahc_iter_cap
-                    if args.lahc_iter_cap is not None
-                    else defaults.maxIters
-                ),
-            )
+            try:
+                lahc_params = LahcParams(
+                    historyListLength=(
+                        args.lahc_history_length
+                        if args.lahc_history_length is not None
+                        else defaults.historyListLength
+                    ),
+                    idleThreshold=(
+                        args.lahc_idle_threshold
+                        if args.lahc_idle_threshold is not None
+                        else defaults.idleThreshold
+                    ),
+                    maxIters=(
+                        args.lahc_iter_cap
+                        if args.lahc_iter_cap is not None
+                        else defaults.maxIters
+                    ),
+                )
+            except ValueError as e:
+                # LahcParams validates §12A.5 (must be positive integer).
+                # Surface the validation error as a CLI usage error
+                # (stderr + exit code 2) so the operator gets the same
+                # stable CLI behavior as the other --lahc-* misuse paths
+                # rather than an unhandled-exception traceback.
+                print(f"invalid LAHC parameter: {e}", file=sys.stderr)
+                return 2
     elif (
         args.lahc_history_length is not None
         or args.lahc_iter_cap is not None
