@@ -179,6 +179,7 @@ def run_lahc(
     *,
     scoring_oracle: ScoringOracleFn,
     lahc_params: LahcParams,
+    trace_callback: Callable[[dict], None] | None = None,
     **_kwargs,
 ) -> _StrategyOutcome:
     """Run one LAHC trajectory per `docs/solver_contract.md` §12A.1.
@@ -373,6 +374,20 @@ def run_lahc(
             idle_iters = 0
         else:
             idle_iters += 1
+
+        # 3.f.bis: Optional trace hook (audit / debugging only — no
+        # production cost when not provided). Called after all state
+        # updates so the callback sees the final-of-iter state.
+        if trace_callback is not None:
+            trace_callback({
+                "iter": current_iter,
+                "current_score": current_score,
+                "best_so_far": best_so_far,
+                "proposed_score": proposed_score,
+                "accepted": accept,
+                "idle_iters": idle_iters,
+                "primary_is_swap": primary_is_swap,
+            })
 
         # 3.g: Increment.
         current_iter += 1
