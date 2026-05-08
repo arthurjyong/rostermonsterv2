@@ -75,6 +75,44 @@ class ScoredCandidateSet:
 
 
 @dataclass(frozen=True)
+class LahcParamsRecord:
+    """LAHC strategy-specific parameters carried on `runEnvelope.solverStrategyConfig`
+    per `docs/selector_contract.md` §16.5. The values stored here are the
+    **resolved** params used at run time (after CLI flag overrides per
+    `docs/solver_contract.md` §12A.7 or default fallback per §12A.5) — NOT
+    a declaration of defaults. Field meanings per `docs/solver_contract.md` §12A.5.
+    """
+
+    historyListLength: int
+    idleThreshold: int
+    maxIters: int
+
+
+@dataclass(frozen=True)
+class SeededRandomBlindStrategyConfig:
+    """Tagged-union variant for `SEEDED_RANDOM_BLIND` per
+    `docs/selector_contract.md` §16.5. No payload — `SEEDED_RANDOM_BLIND`
+    has no strategy-specific knobs at the selector boundary; its inputs
+    (`fillOrderPolicy`, `crFloorMode`, `crFloorComputed`) already ride
+    through on `runEnvelope` per §16.2. The variant exists for symmetry
+    so consumers can pattern-match on `strategy` without a special
+    "no config" case.
+    """
+
+    strategy: str = "SEEDED_RANDOM_BLIND"
+
+
+@dataclass(frozen=True)
+class LahcStrategyConfig:
+    """Tagged-union variant for `LAHC` per `docs/selector_contract.md` §16.5.
+    Carries the resolved LAHC parameters used at run time as `lahcParams`.
+    """
+
+    lahcParams: LahcParamsRecord
+    strategy: str = "LAHC"
+
+
+@dataclass(frozen=True)
 class RunEnvelope:
     """Execution-layer-supplied run identity and provenance per §9 item 3
     + §16.
@@ -89,6 +127,13 @@ class RunEnvelope:
     `contractVersion: 2` (D-0032) — they are not consumed by the selector
     itself but are required at the boundary so a downstream writeback
     adapter cannot receive a contract-compliant envelope that lacks them.
+
+    `solverStrategy` and `solverStrategyConfig` are optional additive
+    fields per §16.5 (M6 C3 Task 1; no `contractVersion` bump). Producer
+    obligation per §16.5: post-M6 C3 Task 1 producers MUST populate both
+    fields together — emitting only one is a contract-breaking caller
+    defect. The two-fields-or-neither rule is enforced at envelope
+    construction time (see `__post_init__`).
     """
 
     runId: str
@@ -101,6 +146,33 @@ class RunEnvelope:
     generationTimestamp: str
     sourceSpreadsheetId: str
     sourceTabName: str
+    solverStrategy: str | None = None
+    solverStrategyConfig: (
+        SeededRandomBlindStrategyConfig | LahcStrategyConfig | None
+    ) = None
+
+    def __post_init__(self) -> None:
+        # §16.5 producer obligation: both-or-neither.
+        s_present = self.solverStrategy is not None
+        c_present = self.solverStrategyConfig is not None
+        if s_present != c_present:
+            raise ValueError(
+                f"solverStrategy and solverStrategyConfig MUST be populated "
+                f"together or omitted together per `docs/selector_contract.md` "
+                f"§16.5; got solverStrategy={self.solverStrategy!r}, "
+                f"solverStrategyConfig={self.solverStrategyConfig!r}"
+            )
+        # §16.5 cross-field invariant: when both present, the discriminator
+        # inside the config MUST equal the top-level enumerant.
+        if s_present and c_present and (
+            self.solverStrategyConfig.strategy != self.solverStrategy
+        ):
+            raise ValueError(
+                f"solverStrategyConfig.strategy "
+                f"({self.solverStrategyConfig.strategy!r}) MUST equal "
+                f"solverStrategy ({self.solverStrategy!r}) per "
+                f"`docs/selector_contract.md` §16.5 cross-field invariant"
+            )
 
 
 @dataclass(frozen=True)
