@@ -238,6 +238,113 @@ def test_cli_missing_snapshot_returns_2() -> None:
     assert rc == 2
 
 
+def test_cli_default_strategy_records_seeded_random_blind() -> None:
+    """Per `docs/selector_contract.md` §16.5 producer obligation: every
+    post-M6 C3 Task 1 producer MUST populate `solverStrategy` +
+    `solverStrategyConfig` together. Default CLI mode (no --strategy) runs
+    SEEDED_RANDOM_BLIND and the envelope MUST reflect that — operators
+    looking at archived envelopes need to be able to tell which strategy
+    ran without parsing per-batch diagnostics.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        out_path = Path(td) / "result.json"
+        rc = main([
+            "--snapshot", str(_FIXTURE_PATH),
+            "--output", str(out_path),
+            "--max-candidates", "3",
+            "--seed", "20260504",
+            "--writeback-ready", "false",
+        ])
+        assert rc == 0
+        envelope = json.loads(out_path.read_text())
+        run_env = envelope["runEnvelope"]
+        assert run_env["solverStrategy"] == "SEEDED_RANDOM_BLIND", (
+            f"default --strategy should record SEEDED_RANDOM_BLIND on "
+            f"runEnvelope.solverStrategy; got {run_env['solverStrategy']!r}"
+        )
+        # SEEDED_RANDOM_BLIND variant has no payload beyond the discriminator.
+        assert run_env["solverStrategyConfig"] == {"strategy": "SEEDED_RANDOM_BLIND"}, (
+            f"SEEDED_RANDOM_BLIND solverStrategyConfig should be the bare "
+            f"discriminator; got {run_env['solverStrategyConfig']}"
+        )
+
+
+def test_cli_lahc_strategy_records_default_lahc_params() -> None:
+    """`--strategy LAHC` without --lahc-* overrides records the §12A.5
+    defaults (L=1000, idleThreshold=5000, maxIters=100k) in the envelope.
+    Tighter test budget here (--max-candidates 1) keeps runtime <10s on
+    the 22-doctor fixture even at LAHC's default 100k maxIters per
+    trajectory."""
+    with tempfile.TemporaryDirectory() as td:
+        out_path = Path(td) / "result.json"
+        rc = main([
+            "--snapshot", str(_FIXTURE_PATH),
+            "--output", str(out_path),
+            "--max-candidates", "1",
+            "--seed", "20260504",
+            "--strategy", "LAHC",
+            "--lahc-iter-cap", "200",  # tight cap so the test finishes fast
+            "--lahc-idle-threshold", "100",
+            "--writeback-ready", "false",
+        ])
+        assert rc == 0, f"--strategy LAHC failed; rc={rc}"
+        envelope = json.loads(out_path.read_text())
+        run_env = envelope["runEnvelope"]
+        assert run_env["solverStrategy"] == "LAHC"
+        cfg = run_env["solverStrategyConfig"]
+        assert cfg["strategy"] == "LAHC"
+        # Verify the actual override values are recorded — this is the
+        # provenance role: operator can replay the run by passing the
+        # recorded params back, and analyzer can distinguish default-vs-
+        # tuned runs per §16.5.
+        assert cfg["lahcParams"]["maxIters"] == 200
+        assert cfg["lahcParams"]["idleThreshold"] == 100
+        # historyListLength left at default — verify it picked up §12A.5's
+        # default of 1000.
+        assert cfg["lahcParams"]["historyListLength"] == 1000
+
+
+def test_cli_lahc_flags_without_lahc_strategy_fails_loud() -> None:
+    """Setting --lahc-* knobs without --strategy LAHC almost always means
+    the operator forgot the --strategy flag and would silently get
+    SEEDED_RANDOM_BLIND with their tuning ignored. Fail loud at the CLI
+    boundary rather than silently dropping the params."""
+    rc = main([
+        "--snapshot", str(_FIXTURE_PATH),
+        "--output", "/tmp/should-not-be-written.json",
+        "--lahc-history-length", "500",
+        # Note: NOT passing --strategy LAHC — defaults to SEEDED_RANDOM_BLIND.
+    ])
+    assert rc == 2, (
+        f"CLI should reject --lahc-* without --strategy LAHC; got rc={rc}"
+    )
+
+
+def test_cli_lahc_byte_identical_re_runs() -> None:
+    """LAHC determinism per `docs/solver_contract.md` §12A.4: same args
+    + same fixture → byte-identical CLI output. Mirrors
+    test_cli_byte_identical_re_runs but for the LAHC strategy."""
+    with tempfile.TemporaryDirectory() as td:
+        first_path = Path(td) / "first.json"
+        second_path = Path(td) / "second.json"
+        common = [
+            "--snapshot", str(_FIXTURE_PATH),
+            "--max-candidates", "1",
+            "--seed", "20260504",
+            "--strategy", "LAHC",
+            "--lahc-iter-cap", "100",
+            "--lahc-idle-threshold", "50",
+            "--writeback-ready", "false",
+        ]
+        rc1 = main(common + ["--output", str(first_path)])
+        rc2 = main(common + ["--output", str(second_path)])
+        assert rc1 == 0 and rc2 == 0
+        assert first_path.read_text() == second_path.read_text(), (
+            "LAHC CLI runs with identical args must produce byte-identical "
+            "output per §12A.4"
+        )
+
+
 def test_snapshot_from_dict_round_trips() -> None:
     """Loading the fixture via `_snapshot_from_dict` produces a valid
     `Snapshot` whose top-level shape matches the dataclass contract."""
@@ -296,6 +403,14 @@ def _run() -> int:
         ("test_cli_byte_identical_re_runs", test_cli_byte_identical_re_runs),
         ("test_cli_missing_snapshot_returns_2",
          test_cli_missing_snapshot_returns_2),
+        ("test_cli_default_strategy_records_seeded_random_blind",
+         test_cli_default_strategy_records_seeded_random_blind),
+        ("test_cli_lahc_strategy_records_default_lahc_params",
+         test_cli_lahc_strategy_records_default_lahc_params),
+        ("test_cli_lahc_flags_without_lahc_strategy_fails_loud",
+         test_cli_lahc_flags_without_lahc_strategy_fails_loud),
+        ("test_cli_lahc_byte_identical_re_runs",
+         test_cli_lahc_byte_identical_re_runs),
         ("test_snapshot_from_dict_round_trips",
          test_snapshot_from_dict_round_trips),
         ("test_to_jsonable_handles_dataclasses_tuples_enums",
