@@ -157,6 +157,131 @@ def test_state_dispatch_ok_on_real_fixture() -> None:
     assert result.candidate_count == 3
 
 
+def test_pipeline_lahc_strategy_full_retention_emits_sidecars() -> None:
+    """End-to-end: `run_pipeline(strategy_id="LAHC", ...)` on the real
+    ICU/HD May 2026 fixture under FULL retention emits the same sidecar
+    shape as SEEDED_RANDOM_BLIND. This is the operator's actual M6 C4
+    workflow: run LAHC, get FULL sidecars, feed them into the analyzer.
+    The §16.5 envelope contract from PR #129 + the pipeline wiring from
+    PR #130 (Task 2A) need to hold here under realistic K=3 + FULL.
+
+    Tight LAHC params (idleThreshold=50, maxIters=200) so the test
+    finishes in ~5s on the 22-doctor fixture; the property under test
+    is end-to-end shape compatibility, not LAHC search depth.
+    """
+    import tempfile
+
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+
+    snapshot = _load_fixture()
+    template = icu_hd_template_artifact()
+    with tempfile.TemporaryDirectory() as td:
+        sidecar_dir = Path(td)
+        result = run_pipeline(
+            snapshot, template,
+            max_candidates=3, seed=20260504,
+            retention_mode=RetentionMode.FULL,
+            sidecar_dir=sidecar_dir,
+            strategy_id=STRATEGY_LAHC,
+            lahc_params=LahcParams(
+                historyListLength=20, idleThreshold=50, maxIters=200,
+            ),
+        )
+        assert result.state == "OK", (
+            f"LAHC + FULL retention should reach OK; got {result.state}"
+        )
+        assert result.envelope is not None
+        files = sorted(p.name for p in sidecar_dir.iterdir())
+        assert any("candidates_summary" in f for f in files)
+        assert any("candidates_full" in f for f in files)
+        # Envelope MUST carry the strategy metadata per §16.5 producer
+        # obligation — Task 2A enforces this at construction; Task 2B
+        # locks it in at the pipeline boundary.
+        run_env = result.envelope.runEnvelope
+        assert run_env.solverStrategy == "LAHC"
+        assert run_env.solverStrategyConfig.strategy == "LAHC"
+        assert run_env.solverStrategyConfig.lahcParams.maxIters == 200
+        assert run_env.solverStrategyConfig.lahcParams.idleThreshold == 50
+
+
+def test_pipeline_lahc_byte_identical_under_fixed_seed() -> None:
+    """Per `docs/solver_contract.md` §12A.4: LAHC byte-identical
+    determinism MUST hold at the pipeline level (not just the solver
+    level — the whole pipeline composes deterministically). Mirror of
+    `test_explicit_seed_produces_byte_identical_runs` but with
+    `strategy_id="LAHC"`.
+    """
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+
+    snapshot = _load_fixture()
+    template = icu_hd_template_artifact()
+    params = LahcParams(historyListLength=20, idleThreshold=50, maxIters=200)
+    result_a = run_pipeline(
+        snapshot, template, max_candidates=3, seed=42,
+        strategy_id=STRATEGY_LAHC, lahc_params=params,
+    )
+    result_b = run_pipeline(
+        snapshot, template, max_candidates=3, seed=42,
+        strategy_id=STRATEGY_LAHC, lahc_params=params,
+    )
+    assert result_a.state == "OK"
+    assert result_b.state == "OK"
+    assert result_a.envelope == result_b.envelope, (
+        "two LAHC pipeline runs at seed=42 + identical params should "
+        "produce byte-identical envelopes per §12A.4 + D-0050 parity"
+    )
+
+
+def test_pipeline_strategy_choice_changes_winner() -> None:
+    """Regression guard: under the same fixture + same seed,
+    `strategy_id="LAHC"` and `strategy_id="SEEDED_RANDOM_BLIND"` MUST
+    produce DIFFERENT envelopes. Locks in that the strategy parameter
+    has a real effect on the pipeline; without this, a future bug
+    silently routing LAHC to SRB would pass every other test (the
+    envelope shape would still be valid, just wrong for what was
+    requested) but be operationally broken.
+    """
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+
+    snapshot = _load_fixture()
+    template = icu_hd_template_artifact()
+    seed = 20260504
+
+    srb_result = run_pipeline(
+        snapshot, template, max_candidates=3, seed=seed,
+        # default strategy is SEEDED_RANDOM_BLIND
+    )
+    lahc_result = run_pipeline(
+        snapshot, template, max_candidates=3, seed=seed,
+        strategy_id=STRATEGY_LAHC,
+        lahc_params=LahcParams(
+            historyListLength=20, idleThreshold=50, maxIters=200,
+        ),
+    )
+
+    assert srb_result.state == "OK" and lahc_result.state == "OK"
+    # Envelope-level metadata diverges by construction.
+    assert srb_result.envelope.runEnvelope.solverStrategy == "SEEDED_RANDOM_BLIND"
+    assert lahc_result.envelope.runEnvelope.solverStrategy == "LAHC"
+    # The actual roster + scores SHOULD differ — same seed but different
+    # search algorithms exploring the space differently. If they end up
+    # identical, either (a) the strategy dispatch silently routed both
+    # to the same code path (regression) or (b) LAHC happened to reach
+    # the exact same trajectory as SRB Phase 2 — unlikely on the
+    # 22-doctor fixture under non-trivial maxIters.
+    from rostermonster.selector import AllocationResult
+    assert isinstance(srb_result.envelope.result, AllocationResult)
+    assert isinstance(lahc_result.envelope.result, AllocationResult)
+    srb_score = srb_result.envelope.result.winnerScore.totalScore
+    lahc_score = lahc_result.envelope.result.winnerScore.totalScore
+    assert srb_score != lahc_score, (
+        f"SEEDED_RANDOM_BLIND and LAHC at seed={seed} produced identical "
+        f"winner scores ({srb_score}); strategy choice should change the "
+        f"search trajectory and thus the winner — possible silent dispatch "
+        f"regression"
+    )
+
+
 def test_full_retention_emits_sidecars() -> None:
     """FULL retention mode produces sidecar files in the target dir.
     The shared core honors retention_mode + sidecar_dir directly per
@@ -200,6 +325,12 @@ def _run() -> int:
          test_state_dispatch_ok_on_real_fixture),
         ("test_full_retention_emits_sidecars",
          test_full_retention_emits_sidecars),
+        ("test_pipeline_lahc_strategy_full_retention_emits_sidecars",
+         test_pipeline_lahc_strategy_full_retention_emits_sidecars),
+        ("test_pipeline_lahc_byte_identical_under_fixed_seed",
+         test_pipeline_lahc_byte_identical_under_fixed_seed),
+        ("test_pipeline_strategy_choice_changes_winner",
+         test_pipeline_strategy_choice_changes_winner),
     ]
     passed = 0
     failed = 0
