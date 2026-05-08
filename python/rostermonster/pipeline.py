@@ -39,10 +39,13 @@ from rostermonster.scorer import ScoringConfig, score
 from rostermonster.selector import (
     AllocationResult,
     FinalResultEnvelope,
+    LahcParamsRecord,
+    LahcStrategyConfig,
     RetentionMode,
     RunEnvelope,
     ScoredCandidateSet,
     ScoredTrialCandidate,
+    SeededRandomBlindStrategyConfig,
     select,
 )
 from rostermonster.snapshot import (
@@ -65,7 +68,14 @@ from rostermonster.snapshot import (
     Snapshot,
     SnapshotMetadata,
 )
-from rostermonster.solver import CandidateSet, TerminationBounds, solve
+from rostermonster.solver import (
+    CandidateSet,
+    LahcParams,
+    STRATEGY_LAHC,
+    STRATEGY_SEEDED_RANDOM_BLIND,
+    TerminationBounds,
+    solve,
+)
 
 # Default candidate budget when caller omits the override. Per D-0053,
 # there is intentionally NO default seed constant — omitted seed means
@@ -119,6 +129,8 @@ def run_pipeline(
     seed: int | None = None,
     retention_mode: RetentionMode = RetentionMode.BEST_ONLY,
     sidecar_dir: Path | None = None,
+    strategy_id: str = STRATEGY_SEEDED_RANDOM_BLIND,
+    lahc_params: LahcParams | None = None,
 ) -> PipelineResult:
     """Run the full M2 compute pipeline end-to-end.
 
@@ -134,12 +146,36 @@ def run_pipeline(
         retention_mode: selector retention mode. Defaults to BEST_ONLY.
         sidecar_dir: target directory for FULL-retention sidecars.
             Required when retention_mode is FULL.
+        strategy_id: solver search strategy per `docs/solver_contract.md`
+            §11.1. Defaults to `SEEDED_RANDOM_BLIND` for byte-identical
+            CI / pre-M6 semantics — operators opt into LAHC explicitly
+            via `--strategy LAHC` per D-0067 sub-decision 6's
+            maintainer-only tuning surface. Cloud HTTP wrapper continues
+            to ship `SEEDED_RANDOM_BLIND`-only per D-0068; cloud-mode
+            LAHC carved off to FW-0035.
+        lahc_params: LAHC strategy-specific parameters. When `strategy_id
+            == "LAHC"` and `lahc_params is None`, defaults to
+            `LahcParams()` (which uses §12A.5 defaults `L=1000`,
+            `idleThreshold=5000`, `maxIters=100k`). Ignored when
+            `strategy_id == "SEEDED_RANDOM_BLIND"` — passing
+            `lahc_params` with non-LAHC strategy raises ValueError to
+            make the misuse fail loudly rather than silently.
 
     Returns: `PipelineResult` carrying the dispatch state + populated
     envelope (when applicable) + resolved seed/max_candidates so
     callers can replay by passing the resolved values back as
     explicit overrides.
     """
+    if strategy_id != STRATEGY_LAHC and lahc_params is not None:
+        raise ValueError(
+            f"lahc_params is only meaningful when strategy_id='{STRATEGY_LAHC}'; "
+            f"got strategy_id={strategy_id!r} with lahc_params={lahc_params!r}. "
+            f"Pass lahc_params=None or change strategy_id to '{STRATEGY_LAHC}'."
+        )
+    resolved_lahc_params = (
+        lahc_params if lahc_params is not None
+        else (LahcParams() if strategy_id == STRATEGY_LAHC else None)
+    )
     resolved_max_candidates = (
         max_candidates if max_candidates is not None else _DEFAULT_MAX_CANDIDATES
     )
@@ -162,16 +198,28 @@ def run_pipeline(
     config = (parser_result.scoringConfig
               or ScoringConfig.first_release_defaults(model))
 
-    solver_result = solve(
-        model,
+    solver_kwargs: dict[str, Any] = dict(
         ruleEngine=rule_engine_evaluate,
         seed=resolved_seed,
         terminationBounds=TerminationBounds(
             maxCandidates=resolved_max_candidates
         ),
+        strategyId=strategy_id,
     )
+    if strategy_id == STRATEGY_LAHC:
+        # LAHC consumes scoring as a read-only oracle per
+        # `docs/solver_contract.md` §12A.6 — `solve()` validates
+        # scoringConfig presence at the boundary.
+        solver_kwargs["scoringConfig"] = config
+        solver_kwargs["lahcParams"] = resolved_lahc_params
+    solver_result = solve(model, **solver_kwargs)
 
-    run_envelope = _build_run_envelope(snapshot, resolved_seed)
+    run_envelope = _build_run_envelope(
+        snapshot,
+        resolved_seed,
+        strategy_id=strategy_id,
+        lahc_params=resolved_lahc_params,
+    )
 
     if not isinstance(solver_result, CandidateSet):
         # Whole-run UnsatisfiedResult — selector forwards via the
@@ -376,14 +424,41 @@ def _call_point_record(d: dict) -> CallPointRecord:
 # --- runtime helpers -------------------------------------------------------
 
 
-def _build_run_envelope(snapshot: Snapshot, seed: int) -> RunEnvelope:
+def _build_run_envelope(
+    snapshot: Snapshot,
+    seed: int,
+    *,
+    strategy_id: str = STRATEGY_SEEDED_RANDOM_BLIND,
+    lahc_params: LahcParams | None = None,
+) -> RunEnvelope:
     """Construct a `RunEnvelope` from snapshot metadata + the resolved seed.
 
     Runtime-supplied fields (`runId`, `seed`, `generationTimestamp`) are
     derived from the snapshot + caller-supplied seed; other fields take
     pilot-scope defaults that match the integration smoke test pattern.
+
+    `solverStrategy` + `solverStrategyConfig` are populated per
+    `docs/selector_contract.md` §16.5 producer obligation: post-M6 C3
+    Task 1 producers MUST populate both fields together. The two-fields-
+    or-neither rule is enforced by `RunEnvelope.__post_init__`.
     """
     md = snapshot.metadata
+    if strategy_id == STRATEGY_LAHC:
+        if lahc_params is None:
+            raise ValueError(
+                f"_build_run_envelope: strategy_id={STRATEGY_LAHC!r} requires "
+                f"a non-None lahc_params (caller is responsible for resolving "
+                f"defaults from `LahcParams()` before constructing the envelope)"
+            )
+        strategy_config = LahcStrategyConfig(
+            lahcParams=LahcParamsRecord(
+                historyListLength=lahc_params.historyListLength,
+                idleThreshold=lahc_params.idleThreshold,
+                maxIters=lahc_params.maxIters,
+            ),
+        )
+    else:
+        strategy_config = SeededRandomBlindStrategyConfig()
     return RunEnvelope(
         runId=md.snapshotId,
         snapshotRef=md.snapshotId,
@@ -395,6 +470,8 @@ def _build_run_envelope(snapshot: Snapshot, seed: int) -> RunEnvelope:
         generationTimestamp=md.generationTimestamp,
         sourceSpreadsheetId=md.sourceSpreadsheetId,
         sourceTabName=md.sourceTabName,
+        solverStrategy=strategy_id,
+        solverStrategyConfig=strategy_config,
     )
 
 

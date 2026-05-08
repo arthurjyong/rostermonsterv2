@@ -542,6 +542,119 @@ def test_empty_scored_set_on_success_branch_raises() -> None:
     assert raised
 
 
+# --- §16.5 RunEnvelope solverStrategy + solverStrategyConfig --------
+
+
+def test_run_envelope_solver_strategy_both_or_neither_invariant() -> None:
+    """Per `docs/selector_contract.md` §16.5 producer obligation: post-M6
+    C3 Task 1 producers MUST populate `solverStrategy` and
+    `solverStrategyConfig` together — emitting only one is a contract-
+    breaking caller defect. RunEnvelope.__post_init__ enforces this at
+    construction time so producers fail loudly rather than silently
+    shipping a half-state envelope downstream.
+    """
+    from rostermonster.selector import (
+        LahcParamsRecord,
+        LahcStrategyConfig,
+        SeededRandomBlindStrategyConfig,
+    )
+
+    base_kwargs = dict(
+        runId="run-001",
+        snapshotRef="snap-1",
+        configRef="cfg-1",
+        seed=42,
+        fillOrderPolicy="MOST_CONSTRAINED_FIRST",
+        crFloorMode="SMART_MEDIAN",
+        crFloorComputed=1,
+        generationTimestamp="2026-05-08T00:00:00Z",
+        sourceSpreadsheetId="sheet-1",
+        sourceTabName="May 2026",
+    )
+
+    # Both omitted — fine (archival / pre-M6 envelope shape).
+    RunEnvelope(**base_kwargs)
+
+    # Both populated, matching strategy — fine.
+    RunEnvelope(
+        **base_kwargs,
+        solverStrategy="SEEDED_RANDOM_BLIND",
+        solverStrategyConfig=SeededRandomBlindStrategyConfig(),
+    )
+    RunEnvelope(
+        **base_kwargs,
+        solverStrategy="LAHC",
+        solverStrategyConfig=LahcStrategyConfig(
+            lahcParams=LahcParamsRecord(
+                historyListLength=1000, idleThreshold=5000, maxIters=100000,
+            ),
+        ),
+    )
+
+    # solverStrategy populated, solverStrategyConfig omitted — defect.
+    raised = False
+    try:
+        RunEnvelope(**base_kwargs, solverStrategy="LAHC")
+    except ValueError as e:
+        raised = True
+        assert "together or omitted together" in str(e)
+    assert raised, "missing solverStrategyConfig should raise per §16.5"
+
+    # solverStrategyConfig populated, solverStrategy omitted — also defect.
+    raised = False
+    try:
+        RunEnvelope(
+            **base_kwargs,
+            solverStrategyConfig=SeededRandomBlindStrategyConfig(),
+        )
+    except ValueError as e:
+        raised = True
+        assert "together or omitted together" in str(e)
+    assert raised, "missing solverStrategy should raise per §16.5"
+
+
+def test_run_envelope_solver_strategy_cross_field_invariant() -> None:
+    """Per §16.5 cross-field invariant: when both fields are present,
+    `solverStrategyConfig.strategy` MUST equal `solverStrategy`. Mismatch
+    is a producer defect (the execution layer that built the envelope is
+    expected to populate both fields from the same resolved-strategy
+    value)."""
+    from rostermonster.selector import LahcParamsRecord, LahcStrategyConfig
+
+    base_kwargs = dict(
+        runId="run-001",
+        snapshotRef="snap-1",
+        configRef="cfg-1",
+        seed=42,
+        fillOrderPolicy="MOST_CONSTRAINED_FIRST",
+        crFloorMode="SMART_MEDIAN",
+        crFloorComputed=1,
+        generationTimestamp="2026-05-08T00:00:00Z",
+        sourceSpreadsheetId="sheet-1",
+        sourceTabName="May 2026",
+    )
+
+    raised = False
+    try:
+        # solverStrategy says LAHC but the config carries SEEDED_RANDOM_BLIND
+        # (constructed via mismatched strategy override). RunEnvelope MUST
+        # reject this.
+        RunEnvelope(
+            **base_kwargs,
+            solverStrategy="LAHC",
+            solverStrategyConfig=LahcStrategyConfig(
+                lahcParams=LahcParamsRecord(
+                    historyListLength=10, idleThreshold=10, maxIters=10,
+                ),
+                strategy="SEEDED_RANDOM_BLIND",  # forced mismatch
+            ),
+        )
+    except ValueError as e:
+        raised = True
+        assert "cross-field invariant" in str(e)
+    assert raised, "discriminator mismatch should raise per §16.5"
+
+
 # --- Architectural import boundary (§9) ------------------------------
 
 

@@ -64,6 +64,11 @@ from rostermonster.selector import (
     RetentionMode,
 )
 from rostermonster.snapshot import Snapshot
+from rostermonster.solver import (
+    LahcParams,
+    STRATEGY_LAHC,
+    STRATEGY_SEEDED_RANDOM_BLIND,
+)
 from rostermonster.templates import icu_hd_template_artifact
 
 
@@ -94,6 +99,67 @@ def main(argv: list[str] | None = None) -> int:
                        else output_path.parent / (output_path.stem + ".sidecars"))
         sidecar_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resolve LAHC params from CLI flags (only meaningful when --strategy LAHC
+    # is requested; misuse with --strategy SEEDED_RANDOM_BLIND fails loudly
+    # in run_pipeline). When --strategy LAHC and no --lahc-* overrides, pass
+    # `None` so run_pipeline applies §12A.5 defaults.
+    lahc_params: LahcParams | None = None
+    if args.strategy == STRATEGY_LAHC:
+        lahc_overrides_set = (
+            args.lahc_history_length is not None
+            or args.lahc_iter_cap is not None
+            or args.lahc_idle_threshold is not None
+        )
+        if lahc_overrides_set:
+            defaults = LahcParams()
+            # Use `is not None` not `or` — `or` treats explicit `0` as
+            # falsy and silently falls back to defaults, masking what
+            # would be an invalid maintainer tuning. With `is not None`,
+            # `--lahc-iter-cap 0` reaches LahcParams.__post_init__ and
+            # fails loud with the §12A.5 positive-integer rule.
+            try:
+                lahc_params = LahcParams(
+                    historyListLength=(
+                        args.lahc_history_length
+                        if args.lahc_history_length is not None
+                        else defaults.historyListLength
+                    ),
+                    idleThreshold=(
+                        args.lahc_idle_threshold
+                        if args.lahc_idle_threshold is not None
+                        else defaults.idleThreshold
+                    ),
+                    maxIters=(
+                        args.lahc_iter_cap
+                        if args.lahc_iter_cap is not None
+                        else defaults.maxIters
+                    ),
+                )
+            except ValueError as e:
+                # LahcParams validates §12A.5 (must be positive integer).
+                # Surface the validation error as a CLI usage error
+                # (stderr + exit code 2) so the operator gets the same
+                # stable CLI behavior as the other --lahc-* misuse paths
+                # rather than an unhandled-exception traceback.
+                print(f"invalid LAHC parameter: {e}", file=sys.stderr)
+                return 2
+    elif (
+        args.lahc_history_length is not None
+        or args.lahc_iter_cap is not None
+        or args.lahc_idle_threshold is not None
+    ):
+        # Fail loud: setting LAHC knobs without --strategy LAHC is almost
+        # certainly an operator mistake (forgot the flag) — we'd silently
+        # ignore them otherwise and the operator would think their tuning
+        # took effect.
+        print(
+            f"--lahc-* flags are only meaningful when --strategy LAHC; "
+            f"got --strategy {args.strategy}. Add `--strategy LAHC` or "
+            f"drop the --lahc-* flags.",
+            file=sys.stderr,
+        )
+        return 2
+
     result = run_pipeline(
         snapshot,
         template,
@@ -101,6 +167,8 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         retention_mode=retention_mode,
         sidecar_dir=sidecar_dir,
+        strategy_id=args.strategy,
+        lahc_params=lahc_params,
     )
 
     if result.state == "PARSER_NON_CONSUMABLE":
@@ -204,6 +272,38 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="directory for FULL-retention sidecar files (only meaningful "
              "with --retention FULL; defaults to <output>.sidecars/ "
              "alongside the output file)",
+    )
+    p.add_argument(
+        "--strategy",
+        choices=[STRATEGY_SEEDED_RANDOM_BLIND, STRATEGY_LAHC],
+        default=STRATEGY_SEEDED_RANDOM_BLIND,
+        help="solver search strategy per `docs/solver_contract.md` §11.1. "
+             "Defaults to SEEDED_RANDOM_BLIND for byte-identical CI / pre-M6 "
+             "semantics. Pass --strategy LAHC to opt into Late Acceptance "
+             "Hill Climbing (M6 C2 implementation per §12A). The chosen "
+             "strategy is recorded on runEnvelope.solverStrategy per "
+             "`docs/selector_contract.md` §16.5 so the M5 analyzer + ops "
+             "trail can identify the producer.",
+    )
+    p.add_argument(
+        "--lahc-history-length", type=int, default=None,
+        help="LAHC history-list length L per `docs/solver_contract.md` "
+             "§12A.5 (default 1000). Maintainer-only knob per D-0067 "
+             "sub-decision 6 — operator-facing UI changes are out of M6 "
+             "scope. Only meaningful with --strategy LAHC.",
+    )
+    p.add_argument(
+        "--lahc-iter-cap", type=int, default=None,
+        help="LAHC hard iteration cap (maxIters) per `docs/solver_contract.md` "
+             "§12A.5 (default 100,000). Maintainer-only knob. Only meaningful "
+             "with --strategy LAHC.",
+    )
+    p.add_argument(
+        "--lahc-idle-threshold", type=int, default=None,
+        help="LAHC idle-iter termination threshold per `docs/solver_contract.md` "
+             "§12A.5 (default 5000 — the loop terminates after this many "
+             "consecutive iterations without improvement). Maintainer-only knob. "
+             "Only meaningful with --strategy LAHC.",
     )
     p.add_argument(
         "--writeback-ready",
