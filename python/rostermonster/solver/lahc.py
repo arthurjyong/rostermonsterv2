@@ -179,6 +179,7 @@ def run_lahc(
     *,
     scoring_oracle: ScoringOracleFn,
     lahc_params: LahcParams,
+    trace_callback: Callable[[dict], None] | None = None,
     **_kwargs,
 ) -> _StrategyOutcome:
     """Run one LAHC trajectory per `docs/solver_contract.md` §12A.1.
@@ -337,6 +338,23 @@ def run_lahc(
             # current_iter so wrapping the history list keeps cadence with §12A.1.e.
             # Evaluations already accumulated in aggregate_attempts above.
             idle_iters += 1
+            # Emit trace BEFORE current_iter increment so the iter number
+            # matches the successful-iter branch's semantics (iter that just
+            # completed, not the next one). proposed_score=None is the
+            # soft-miss sentinel — no proposal was scored this iteration.
+            # Without this call the trace would have non-contiguous iter
+            # numbers on rule-locked rosters and undercount idle-no-move
+            # passes, misleading L/idle tuning analysis.
+            if trace_callback is not None:
+                trace_callback({
+                    "iter": current_iter,
+                    "current_score": current_score,
+                    "best_so_far": best_so_far,
+                    "proposed_score": None,
+                    "accepted": False,
+                    "idle_iters": idle_iters,
+                    "primary_is_swap": primary_is_swap,
+                })
             current_iter += 1
             continue
         proposed_roster = roster
@@ -373,6 +391,20 @@ def run_lahc(
             idle_iters = 0
         else:
             idle_iters += 1
+
+        # 3.f.bis: Optional trace hook (audit / debugging only — no
+        # production cost when not provided). Called after all state
+        # updates so the callback sees the final-of-iter state.
+        if trace_callback is not None:
+            trace_callback({
+                "iter": current_iter,
+                "current_score": current_score,
+                "best_so_far": best_so_far,
+                "proposed_score": proposed_score,
+                "accepted": accept,
+                "idle_iters": idle_iters,
+                "primary_is_swap": primary_is_swap,
+            })
 
         # 3.g: Increment.
         current_iter += 1
