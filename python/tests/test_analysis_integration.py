@@ -141,6 +141,65 @@ def test_analyzer_byte_identical_determinism_on_repeated_call() -> None:
     assert text_a.encode("utf-8") == text_b.encode("utf-8")
 
 
+def test_analyzer_consumes_lahc_full_envelope() -> None:
+    """End-to-end M6 → M5 chain: drive an LAHC pipeline run at FULL
+    retention, feed the resulting envelope + sidecar through the
+    analyzer. Verifies that:
+
+    - The analyzer treats LAHC envelopes the same as SEEDED_RANDOM_BLIND
+      envelopes — no special-casing per `docs/analysis_contract.md`'s
+      solver-agnostic property (analyzer MUST NOT inspect
+      `solverStrategyId` to switch behavior).
+
+    - The §16.5 envelope fields (`solverStrategy` + `solverStrategyConfig`)
+      ride through the analyzer's input-coherence checks without
+      tripping anything — they're additive optional and the analyzer
+      neither requires them nor should be confused by them.
+
+    - The analyzer's `recommended` flag derivation, top-K shape, and
+      Tier 1–5 aggregations all work on LAHC-produced candidates.
+    """
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+
+    raw, snapshot = _load_fixture()
+    template = icu_hd_template_artifact()
+    with tempfile.TemporaryDirectory() as td:
+        result = run_pipeline(
+            snapshot,
+            template,
+            max_candidates=3,
+            seed=20260504,
+            retention_mode=RetentionMode.FULL,
+            sidecar_dir=Path(td),
+            strategy_id=STRATEGY_LAHC,
+            lahc_params=LahcParams(
+                historyListLength=20, idleThreshold=50, maxIters=200,
+            ),
+        )
+        assert result.state == "OK"
+        envelope = result.envelope
+        assert envelope is not None
+        wrapper = _assemble_writeback_wrapper(envelope, snapshot, template)
+        wrapper_dict = json.loads(json.dumps(_to_jsonable(wrapper)))
+        sidecar_dict = json.loads(
+            Path(envelope.result.candidatesFullPath).read_text()
+        )
+
+    output = analyze(
+        raw, wrapper_dict, sidecar_dict, topK=3,
+        generatedAt="2026-05-08T10:00:00Z",
+    )
+    assert output.contractVersion == 1
+    assert output.topK.returned >= 1
+    assert output.topK.candidates[0].rankByTotalScore == 1
+    assert output.topK.candidates[0].recommended is True
+    # Sanity: envelope's strategy metadata survived round-tripping
+    # through the writeback wrapper into the analyzer-input dict shape.
+    run_env_dict = wrapper_dict["finalResultEnvelope"]["runEnvelope"]
+    assert run_env_dict["solverStrategy"] == "LAHC"
+    assert run_env_dict["solverStrategyConfig"]["strategy"] == "LAHC"
+
+
 def test_analyzer_rejects_best_only_envelope() -> None:
     """§9.1: BEST_ONLY envelope MUST be fail-loud rejected.
     Round-trip through pipeline at BEST_ONLY then attempt analysis."""
