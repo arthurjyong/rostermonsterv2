@@ -455,6 +455,7 @@ def _build_run_envelope(
                 historyListLength=lahc_params.historyListLength,
                 idleThreshold=lahc_params.idleThreshold,
                 maxIters=lahc_params.maxIters,
+                swapProbability=lahc_params.swapProbability,
             ),
         )
     else:

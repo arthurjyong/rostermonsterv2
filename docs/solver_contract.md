@@ -262,7 +262,7 @@ Per §11.2 + §2, opting into the extension clause is additive only and does NOT
 ### 12A.7 Operator-tunable surface (LAHC params — maintainer only)
 Per `docs/decision_log.md` D-0066 sub-decision 6 + D-0067 sub-decision 6, LAHC params are **maintainer only** for v1:
 - **Cloud mode**: Python module constants (e.g., `python/rostermonster/solver/lahc.py`). The cloud service uses defaults baked at deployment time; no runtime override.
-- **Local mode**: CLI flags override module defaults: `--strategy LAHC`, `--lahc-history-length`, `--lahc-iter-cap`, `--lahc-idle-threshold`.
+- **Local mode**: CLI flags override module defaults: `--strategy LAHC`, `--lahc-history-length`, `--lahc-iter-cap`, `--lahc-idle-threshold`, `--lahc-swap-probability` (added during M6 C4 to enable move-mix tuning per the move-operator literature; default `0.5` reproduces the historical 50/50 hardcoded behavior).
 - **NO scorer-config tab additions, NO operator-facing UI changes.** LAHC params do NOT extract from sheet inputs; they do NOT appear in the Scorer Config tab; they do NOT bump the parser/normalizer contract.
 - The active `lahcParams` (effective values used) MUST be logged in `SearchDiagnostics` at run start per §12A.9.
 
@@ -278,6 +278,7 @@ Per §18.1, LAHC's `SearchDiagnostics` MUST include strategy-specific transparen
 - `lahcHistoryListLength` — the `L` value used.
 - `lahcMaxIters` — the per-trajectory iteration cap.
 - `lahcIdleThreshold` — the per-trajectory idle-iteration cutoff.
+- `lahcSwapProbability` — the resolved primary-move-type bias used per §12A.7 (after CLI override / default fallback). MUST be logged so FULL-retention artifacts at non-default `swap_p` are distinguishable from default-`0.5` runs and replayable; absence of this field on pre-M6-C4 archival diagnostics MAY be interpreted by readers as `0.5` (the only value pre-M6-C4 runs could have used).
 - `seedDerivationFunction` — string identifier of the `derive(seed, i)` function used (e.g., `"splitmix64"`).
 - `perTrajectoryStatus[i]` — enum per trajectory `i` ∈ `[0, K)`: `"SUCCEEDED"` (seed roster + inner loop completed; emitted as `candidates[k]` for some `k <= i`) or `"SEED_FAILED"` (seed roster step returned `UnsatisfiedResult`; trajectory dropped per §12A.8). Implementations MAY add additional enum values for future failure modes.
 - `perTrajectoryIters[i]` — actual iteration count per trajectory `i` (variable due to `idleThreshold` / `maxIters` termination; `0` for `SEED_FAILED` trajectories).

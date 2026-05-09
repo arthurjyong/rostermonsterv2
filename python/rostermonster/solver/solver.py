@@ -363,6 +363,7 @@ def solve(
             "lahcHistoryListLength": lp.historyListLength,
             "lahcMaxIters": lp.maxIters,
             "lahcIdleThreshold": lp.idleThreshold,
+            "lahcSwapProbability": lp.swapProbability,
             "seedDerivationFunction": "python.Random.getrandbits.candidate_seed",
             "perTrajectoryStatus": tuple(per_trajectory_status),
             "perTrajectoryIters": tuple(per_trajectory_iters),

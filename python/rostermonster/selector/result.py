@@ -81,11 +81,19 @@ class LahcParamsRecord:
     **resolved** params used at run time (after CLI flag overrides per
     `docs/solver_contract.md` §12A.7 or default fallback per §12A.5) — NOT
     a declaration of defaults. Field meanings per `docs/solver_contract.md` §12A.5.
+
+    `swapProbability` was added during M6 C4 alongside the
+    `--lahc-swap-probability` CLI knob. Default `0.5` reproduces the
+    historical hardcoded `rng.random() < 0.5` coin flip byte-identically.
+    Consumers reading pre-M6-C4 archival envelopes that lack the field
+    SHOULD default to `0.5` per the same backward-compat rule (the only
+    value pre-M6-C4 runs could have used).
     """
 
     historyListLength: int
     idleThreshold: int
     maxIters: int
+    swapProbability: float = 0.5
 
 
 @dataclass(frozen=True)

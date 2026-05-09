@@ -98,6 +98,12 @@ class LahcParams:
     historyListLength: int = 1000
     idleThreshold: int = 5000
     maxIters: int = 100_000
+    # Probability of attempting a swap as the PRIMARY move type each
+    # iteration. The fallback (other move type) still fires when the
+    # primary returns None — so swapProbability=1.0 is "swap-primary,
+    # reassign as fallback", not "pure swap". Default 0.5 reproduces the
+    # historical 50/50 hardcoded behavior.
+    swapProbability: float = 0.5
 
     def __post_init__(self) -> None:
         # Fail-loud at construction: contract-§12A.5 invariants.
@@ -132,6 +138,16 @@ class LahcParams:
                 f"LahcParams.maxIters must be a positive integer "
                 f"per docs/solver_contract.md §12A.5; got "
                 f"{type(self.maxIters).__name__}={self.maxIters!r}"
+            )
+        if (
+            isinstance(self.swapProbability, bool)
+            or not isinstance(self.swapProbability, (int, float))
+            or not (0.0 <= float(self.swapProbability) <= 1.0)
+        ):
+            raise ValueError(
+                f"LahcParams.swapProbability must be a number in [0.0, 1.0]; "
+                f"got {type(self.swapProbability).__name__}="
+                f"{self.swapProbability!r}"
             )
 
 
@@ -277,7 +293,7 @@ def run_lahc(
         # rather than terminating the trajectory. Per §12A.3, only
         # `idleThreshold` and `maxIters` may end the inner loop; a bounded
         # sampler returning `None` does not prove the move space is empty.
-        primary_is_swap = rng.random() < 0.5
+        primary_is_swap = rng.random() < lahc_params.swapProbability
         if primary_is_swap:
             roster, evaluations = _generate_valid_swap(
                 rule_engine,
