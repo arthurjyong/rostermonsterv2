@@ -108,7 +108,7 @@ Asia-Southeast1 (Singapore) — operator-proximate. May be revisited if pilot ex
 - **Concurrency**: 1 request per instance (compute is CPU-bound; sharing CPU across concurrent requests degrades both).
 
 ### 8.4 Request timeout
-Service-side timeout: 5 minutes. Compute time at the default `_DEFAULT_MAX_CANDIDATES` (currently `32`) is ~50s on the ICU/HD May 2026 fixture; 5min provides comfortable headroom for cold-start + larger overridden config values. The bound shim's `UrlFetchApp.fetch()` inherits Apps Script's per-script-execution 6 min wall clock; the alignment is intentional.
+Service-side timeout: 5 minutes. **M6 C4 cloud benchmark (2026-05-09 per `docs/decision_log.md` D-0069):** at the default `_DEFAULT_MAX_CANDIDATES` (currently `32`) on the ICU/HD May 2026 dev-copy fixture, full request wall time is ~283s cold, ~270s warm (Phase 1 + Phase 2 × K=32 + scorer + selector + writeback assembly under a GIL-bound 1-vCPU container). This leaves only ~30s of headroom under the 5-min timeout — operators running with overridden `maxCandidates > 32` are within the timeout's reach and MUST account for the gap. The 5-min cap is not a comfortable ceiling at default config; future expansions (cloud-mode LAHC per FW-0035, larger K under FW-0036, parallel solver per FW-0038) need the headroom calculation explicitly. Pre-M6 C4 this section claimed "~50s on the ICU/HD May 2026 fixture; comfortable headroom" — that claim was uncalibrated against the live cloud service; the M6 C4 benchmark replaces it. The bound shim's `UrlFetchApp.fetch()` inherits Apps Script's per-script-execution 6 min wall clock; the alignment is intentional.
 
 ### 8.5 Container
 - Base image: `python:3.12-slim` (or compatible — pinned at Dockerfile commit time).
