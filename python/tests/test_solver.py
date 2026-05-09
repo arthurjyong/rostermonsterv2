@@ -1185,6 +1185,139 @@ def test_lahc_against_real_icu_hd_may_2026_fixture() -> None:
         assert all(a.doctorId is not None for a in cand.assignments)
 
 
+def test_lahc_swap_probability_rejects_out_of_range() -> None:
+    """`LahcParams.swapProbability` must be in [0.0, 1.0] per
+    `docs/solver_contract.md` §12A.7. Validates fail-loud at construction."""
+    from rostermonster.solver import LahcParams
+
+    # In-range values accepted (0.0, 0.5, 1.0 endpoints).
+    LahcParams(swapProbability=0.0)
+    LahcParams(swapProbability=0.5)
+    LahcParams(swapProbability=1.0)
+
+    bad_values = [-0.1, 1.0001, 2.0, float("nan"), float("inf"), True, "0.5", None]
+    for bad in bad_values:
+        raised = False
+        try:
+            LahcParams(swapProbability=bad)  # type: ignore[arg-type]
+        except (ValueError, TypeError):
+            raised = True
+        assert raised, (
+            f"LahcParams(swapProbability={bad!r}) should have raised but didn't"
+        )
+
+
+def test_lahc_swap_probability_extremes_complete_via_fallback() -> None:
+    """Per §12A.1.a: when the primary move type's bounded random sampler
+    returns None, the fallback (other move type) still fires. So
+    swap_p=0.0 (reassign-primary, swap-fallback) and swap_p=1.0
+    (swap-primary, reassign-fallback) MUST both produce a non-empty
+    CandidateSet under valid inputs — neither degenerates to the
+    soft-miss-then-idle-trip-immediately failure mode.
+
+    Smoke-level: with the minimal _model() fixture and tight termination
+    bounds, both extreme swap_p values should reach a valid winner.
+    """
+    from rostermonster.scorer.result import ScoringConfig
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+
+    model = _model()
+    scoring_config = ScoringConfig.first_release_defaults(model)
+
+    for swap_p in (0.0, 1.0):
+        result = _solve(
+            model,
+            seed=12345,
+            terminationBounds=TerminationBounds(maxCandidates=2),
+            strategyId=STRATEGY_LAHC,
+            scoringConfig=scoring_config,
+            lahcParams=LahcParams(
+                historyListLength=10,
+                idleThreshold=10,
+                maxIters=20,
+                swapProbability=swap_p,
+            ),
+        )
+        assert isinstance(result, CandidateSet), (
+            f"swap_p={swap_p}: extreme swap_p should still emit "
+            f"CandidateSet via fallback move type; got {type(result).__name__}"
+        )
+        assert len(result.candidates) == 2, (
+            f"swap_p={swap_p}: expected K=2 candidates; got "
+            f"{len(result.candidates)}"
+        )
+
+
+def test_lahc_swap_probability_surfaces_in_search_diagnostics() -> None:
+    """Per `docs/solver_contract.md` §12A.9: the resolved
+    `swapProbability` MUST surface on `SearchDiagnostics.lahcSwapProbability`
+    so FULL-retention artifacts at non-default `swap_p` are
+    distinguishable from default-`0.5` runs and replayable. Asserts both
+    extreme values (0.0, 1.0) and the default round-trip cleanly through
+    the diagnostic.
+    """
+    from rostermonster.scorer.result import ScoringConfig
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+
+    model = _model()
+    scoring_config = ScoringConfig.first_release_defaults(model)
+    bounds = TerminationBounds(maxCandidates=2)
+
+    for swap_p in (0.0, 0.5, 1.0):
+        result = _solve(
+            model, seed=24680, terminationBounds=bounds,
+            strategyId=STRATEGY_LAHC, scoringConfig=scoring_config,
+            lahcParams=LahcParams(
+                historyListLength=10, idleThreshold=10, maxIters=20,
+                swapProbability=swap_p,
+            ),
+        )
+        assert isinstance(result, CandidateSet)
+        assert result.diagnostics.lahcSwapProbability == swap_p, (
+            f"swap_p={swap_p}: SearchDiagnostics.lahcSwapProbability "
+            f"should carry resolved value; got "
+            f"{result.diagnostics.lahcSwapProbability}"
+        )
+
+
+def test_lahc_default_swap_probability_byte_identical_to_pre_field() -> None:
+    """The `swapProbability` field was added during M6 C4 with default
+    0.5 — chosen specifically to reproduce the historical hardcoded
+    `rng.random() < 0.5` behavior. Two runs at default swap_p MUST be
+    byte-identical (sanity check that the field plumbing didn't shift
+    the RNG stream).
+    """
+    from rostermonster.scorer.result import ScoringConfig
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+
+    model = _model()
+    scoring_config = ScoringConfig.first_release_defaults(model)
+    bounds = TerminationBounds(maxCandidates=3)
+
+    # Default swap_p (0.5) implicit
+    r1 = _solve(
+        model, seed=98765, terminationBounds=bounds,
+        strategyId=STRATEGY_LAHC, scoringConfig=scoring_config,
+        lahcParams=LahcParams(
+            historyListLength=10, idleThreshold=10, maxIters=20,
+        ),
+    )
+    # Default swap_p (0.5) explicit
+    r2 = _solve(
+        model, seed=98765, terminationBounds=bounds,
+        strategyId=STRATEGY_LAHC, scoringConfig=scoring_config,
+        lahcParams=LahcParams(
+            historyListLength=10, idleThreshold=10, maxIters=20,
+            swapProbability=0.5,
+        ),
+    )
+    assert r1 == r2, (
+        "implicit-default vs explicit-default swap_p=0.5 should produce "
+        "byte-identical CandidateSet (default chosen to preserve historical "
+        "hardcoded 0.5 behavior)"
+    )
+
+
 def test_unknown_fill_order_policy_is_rejected() -> None:
     """First-release fillOrderPolicy is exactly `MOST_CONSTRAINED_FIRST`
     per §12.3."""

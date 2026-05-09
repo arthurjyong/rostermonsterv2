@@ -613,6 +613,30 @@ def test_run_envelope_solver_strategy_both_or_neither_invariant() -> None:
     assert raised, "missing solverStrategy should raise per §16.5"
 
 
+def test_lahc_params_record_carries_swap_probability() -> None:
+    """Per `docs/selector_contract.md` §16.5 (post-M6-C4): the `lahcParams`
+    payload includes `swapProbability` so the resolved primary-move-type
+    bias is recoverable from the run envelope. Default `0.5` reproduces
+    the historical hardcoded behavior; explicit non-default values MUST
+    round-trip cleanly through the dataclass.
+    """
+    from rostermonster.selector import LahcParamsRecord
+
+    # Default reproduces historical hardcoded `rng.random() < 0.5`.
+    default_record = LahcParamsRecord(
+        historyListLength=10, idleThreshold=10, maxIters=10,
+    )
+    assert default_record.swapProbability == 0.5
+
+    # Explicit values round-trip.
+    for swap_p in (0.0, 0.25, 0.75, 1.0):
+        record = LahcParamsRecord(
+            historyListLength=10, idleThreshold=10, maxIters=10,
+            swapProbability=swap_p,
+        )
+        assert record.swapProbability == swap_p
+
+
 def test_run_envelope_solver_strategy_cross_field_invariant() -> None:
     """Per §16.5 cross-field invariant: when both fields are present,
     `solverStrategyConfig.strategy` MUST equal `solverStrategy`. Mismatch
