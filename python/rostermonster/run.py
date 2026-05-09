@@ -109,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
             args.lahc_history_length is not None
             or args.lahc_iter_cap is not None
             or args.lahc_idle_threshold is not None
+            or args.lahc_swap_probability is not None
         )
         if lahc_overrides_set:
             defaults = LahcParams()
@@ -134,6 +135,11 @@ def main(argv: list[str] | None = None) -> int:
                         if args.lahc_iter_cap is not None
                         else defaults.maxIters
                     ),
+                    swapProbability=(
+                        args.lahc_swap_probability
+                        if args.lahc_swap_probability is not None
+                        else defaults.swapProbability
+                    ),
                 )
             except ValueError as e:
                 # LahcParams validates §12A.5 (must be positive integer).
@@ -147,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         args.lahc_history_length is not None
         or args.lahc_iter_cap is not None
         or args.lahc_idle_threshold is not None
+        or args.lahc_swap_probability is not None
     ):
         # Fail loud: setting LAHC knobs without --strategy LAHC is almost
         # certainly an operator mistake (forgot the flag) — we'd silently
@@ -304,6 +311,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
              "§12A.5 (default 5000 — the loop terminates after this many "
              "consecutive iterations without improvement). Maintainer-only knob. "
              "Only meaningful with --strategy LAHC.",
+    )
+    p.add_argument(
+        "--lahc-swap-probability", type=float, default=None,
+        help="LAHC primary-move-type bias per `docs/solver_contract.md` §12A.7 "
+             "(default 0.5 — 50/50 swap-vs-reassign coin flip per iteration; "
+             "the un-chosen type still fires as fallback when the primary's "
+             "bounded random sampler returns None per §12A.1.a). Must be in "
+             "[0.0, 1.0]. swap_p=0.0 → reassign-primary; swap_p=1.0 → "
+             "swap-primary. Maintainer-only knob. Only meaningful with "
+             "--strategy LAHC.",
     )
     p.add_argument(
         "--writeback-ready",
