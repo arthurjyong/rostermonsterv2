@@ -1248,6 +1248,38 @@ def test_lahc_swap_probability_extremes_complete_via_fallback() -> None:
         )
 
 
+def test_lahc_swap_probability_surfaces_in_search_diagnostics() -> None:
+    """Per `docs/solver_contract.md` §12A.9: the resolved
+    `swapProbability` MUST surface on `SearchDiagnostics.lahcSwapProbability`
+    so FULL-retention artifacts at non-default `swap_p` are
+    distinguishable from default-`0.5` runs and replayable. Asserts both
+    extreme values (0.0, 1.0) and the default round-trip cleanly through
+    the diagnostic.
+    """
+    from rostermonster.scorer.result import ScoringConfig
+    from rostermonster.solver import LahcParams, STRATEGY_LAHC
+
+    model = _model()
+    scoring_config = ScoringConfig.first_release_defaults(model)
+    bounds = TerminationBounds(maxCandidates=2)
+
+    for swap_p in (0.0, 0.5, 1.0):
+        result = _solve(
+            model, seed=24680, terminationBounds=bounds,
+            strategyId=STRATEGY_LAHC, scoringConfig=scoring_config,
+            lahcParams=LahcParams(
+                historyListLength=10, idleThreshold=10, maxIters=20,
+                swapProbability=swap_p,
+            ),
+        )
+        assert isinstance(result, CandidateSet)
+        assert result.diagnostics.lahcSwapProbability == swap_p, (
+            f"swap_p={swap_p}: SearchDiagnostics.lahcSwapProbability "
+            f"should carry resolved value; got "
+            f"{result.diagnostics.lahcSwapProbability}"
+        )
+
+
 def test_lahc_default_swap_probability_byte_identical_to_pre_field() -> None:
     """The `swapProbability` field was added during M6 C4 with default
     0.5 — chosen specifically to reproduce the historical hardcoded

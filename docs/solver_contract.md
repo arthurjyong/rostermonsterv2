@@ -278,6 +278,7 @@ Per §18.1, LAHC's `SearchDiagnostics` MUST include strategy-specific transparen
 - `lahcHistoryListLength` — the `L` value used.
 - `lahcMaxIters` — the per-trajectory iteration cap.
 - `lahcIdleThreshold` — the per-trajectory idle-iteration cutoff.
+- `lahcSwapProbability` — the resolved primary-move-type bias used per §12A.7 (after CLI override / default fallback). MUST be logged so FULL-retention artifacts at non-default `swap_p` are distinguishable from default-`0.5` runs and replayable; absence of this field on pre-M6-C4 archival diagnostics MAY be interpreted by readers as `0.5` (the only value pre-M6-C4 runs could have used).
 - `seedDerivationFunction` — string identifier of the `derive(seed, i)` function used (e.g., `"splitmix64"`).
 - `perTrajectoryStatus[i]` — enum per trajectory `i` ∈ `[0, K)`: `"SUCCEEDED"` (seed roster + inner loop completed; emitted as `candidates[k]` for some `k <= i`) or `"SEED_FAILED"` (seed roster step returned `UnsatisfiedResult`; trajectory dropped per §12A.8). Implementations MAY add additional enum values for future failure modes.
 - `perTrajectoryIters[i]` — actual iteration count per trajectory `i` (variable due to `idleThreshold` / `maxIters` termination; `0` for `SEED_FAILED` trajectories).

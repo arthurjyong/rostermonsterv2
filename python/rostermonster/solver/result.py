@@ -89,6 +89,10 @@ class SearchDiagnostics:
     `None` otherwise):
     - `lahcHistoryListLength` (`L`).
     - `lahcMaxIters` / `lahcIdleThreshold` — termination params used.
+    - `lahcSwapProbability` — primary-move-type bias used per §12A.7
+      (resolved value after CLI override / default fallback). MUST be
+      logged so FULL-retention artifacts at non-default `swap_p` are
+      distinguishable from default-`0.5` runs and replayable.
     - `seedDerivationFunction` — string identifier of the trajectory-seed
       derivation function (e.g., `"python.Random.getrandbits.candidate_seed"`).
     - `perTrajectoryStatus[i]` — `"SUCCEEDED"` (emitted as a TrialCandidate)
@@ -116,6 +120,7 @@ class SearchDiagnostics:
     lahcHistoryListLength: int | None = None
     lahcMaxIters: int | None = None
     lahcIdleThreshold: int | None = None
+    lahcSwapProbability: float | None = None
     seedDerivationFunction: str | None = None
     perTrajectoryStatus: tuple[str, ...] | None = None
     perTrajectoryIters: tuple[int, ...] | None = None
