@@ -181,6 +181,90 @@ LAHC's `K' >= 1` exit criterion per §12A.8 is preserved by this aggregation (su
 
 **GCS read/write discipline at the boundary:** the pipeline reads from / writes to GCS only inside the orchestrator + Batch worker code paths. Drive is NOT a pipeline data path — operator-facing data flows continue per the §9 / §10 contract (snapshot in via HTTP body, envelope back via HTTP response). The optional `candidates_full.json` artifact (per the reconciliation note above) is maintainer-accessible via `gsutil cp` for post-hoc analysis; operator never reads from GCS.
 
+**Per-task `seeds.json` schema (orchestrator → worker):** pinned at M7 C2 Task 2D (2026-05-10).
+
+```
+{
+  "schemaVersion": 1,
+  "runId": "<runEnvelope.runId per docs/selector_contract.md v2 §9>",
+  "taskIndex": <int in [0, taskCount)>,
+  "masterSeed": <int — the §9 input #3 master seed for this run>,
+  "seeds": [<int>, ...]   // per-task slice of the K_approved seeds the
+                          // orchestrator pre-derived via
+                          // derive_K_seeds(masterSeed, K_approved) per
+                          // docs/solver_contract.md §12A.10. Length MUST
+                          // be <= 8 (the dense-pack invariant — 1
+                          // trajectory per c3-highcpu-8 vCPU). Length is
+                          // typically 8 for fully-packed tasks; the final
+                          // task in a non-multiple-of-8 K_approved
+                          // partition may carry fewer (current production
+                          // K=104 → all 13 tasks fully packed).
+}
+```
+
+**Per-task `result.json` schema (worker → orchestrator):** pinned at M7 C2 Task 2D (2026-05-10).
+
+```
+{
+  "schemaVersion": 1,
+  "runId": "<echoed from seeds.json>",
+  "taskIndex": <echoed from seeds.json>,
+  "masterSeed": <echoed from seeds.json>,
+  "candidates": [               // SUCCEEDED trajectories — len(candidates)
+                                // is this task's contribution to K' per
+                                // the primary K' definition above
+    {
+      "candidateSeed": <int>,                   // the seed this trajectory ran on
+      "assignments": [...],                     // _to_jsonable(TrialCandidate.assignments) — ready for orchestrator analyzer pass-through
+      "iters": <int>,                           // §12A.9 perTrajectoryIters
+      "acceptedMoves": <int>,                   // §12A.9 perTrajectoryAcceptedMoves
+      "bestScore": <float | null>,              // §12A.9 perTrajectoryBestScore
+      "terminalScore": <float | null>           // §12A.9 perTrajectoryTerminalScore
+    },
+    ...
+  ],
+  "failedTrajectories": [       // SEED_FAILED per §12A.8 — drop-and-continue
+    {
+      "candidateSeed": <int>,
+      "unfilledDemand": [...]   // _to_jsonable(UnsatisfiedResult.unfilledDemand)
+    },
+    ...
+  ],
+  "aggregateAttempts": <int>,                    // sum of placementAttempts across this task's trajectories
+  "aggregateRejectionsByReason": {<code>: <int>} // sum of ruleEngineRejectionsByReason across this task's trajectories
+  // Optional fields, present only when applicable (omitted in the common case
+  // for minimal orchestrator-side parsing surface area):
+  // "trajectoryExceptions": [   // present iff any trajectory raised an
+                                 // unhandled exception inside _run_one_trajectory;
+                                 // the exception is contained per §12A.8 drop-and-continue
+                                 // — the other trajectories still surface in
+                                 // candidates / failedTrajectories.
+  //   {
+  //     "candidateSeed": <int>,
+  //     "exceptionType": "<class name>",
+  //     "exceptionMessage": "<repr>"
+  //   }
+  // ]
+  // "parserRejection": {        // present iff parser rejected the snapshot
+                                 // entirely; in this case candidates +
+                                 // failedTrajectories are both empty (this task
+                                 // contributes 0 to K' per §8.7 partial-failure
+                                 // tolerance).
+  //   "issueCount": <int>,
+  //   "issues": [{"severity": ..., "code": ..., "message": ...}, ...]
+  // }
+  // "workerError": {            // present iff worker_main itself raised — wrapping
+                                 // emergency surface so the orchestrator's K'
+                                 // aggregation has structured input even when
+                                 // the worker fails outside trajectory execution
+  //   "exceptionType": "<class name>",
+  //   "exceptionMessage": "<repr>"
+  // }
+}
+```
+
+The worker (`python/rostermonster_service/worker.py`) hardcodes the FW-0037 elbow tuple (`L=50`, `idleThreshold=3500`, `swapProbability=0.5`) per `docs/delivery_plan.md` §9 M7 C2 Task 2D + the M7 architecture lock at D-0070 — this is the M7 production LAHC operating point. Each Batch task runs `multiprocessing.Pool(8)` over its assigned trajectories, where each pool child invokes `solve(strategyId=LAHC, terminationBounds=K=1, _candidate_seeds=[its_one_seed], lahcParams=<FW-0037 tuple>, ...)` per the M7 C2 Task 2C `_candidate_seeds` private override.
+
 ## 9) Request shape
 Proposed in this checkpoint (normative):
 
