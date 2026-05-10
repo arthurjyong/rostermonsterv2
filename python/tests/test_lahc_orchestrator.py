@@ -57,6 +57,20 @@ _FIXED_ATTEMPT_ID = "attempt-test-fixed-aaaa1111"
 
 def _fixed_attempt_id_fn() -> str:
     return _FIXED_ATTEMPT_ID
+
+
+def _real_snapshot_with_id(snapshot_id: str) -> dict:
+    """Return a real-fixture snapshot with `metadata.snapshotId` overridden
+    to the supplied value. T2G's orchestrator pre-validates the snapshot
+    is fully deserializable at entry (returning COMPUTE_ERROR on failure),
+    so synthetic dicts like `{"metadata": {"snapshotId": "x"}}` no
+    longer reach the aggregation/wrapper logic. Tests use this helper
+    to get a parseable snapshot while still controlling the runId via
+    the snapshotId override (runId derives from
+    `(snapshotId, masterSeed)` per `derive_run_id`)."""
+    snap = json.loads(_FIXTURE_PATH.read_text())
+    snap["metadata"]["snapshotId"] = snapshot_id
+    return snap
 _FIXTURE_PATH = (
     Path(__file__).resolve().parent / "data" / "icu_hd_may_2026_snapshot.json"
 )
@@ -270,14 +284,11 @@ def _orchestrate_with_pre_seeded_results(
     """Helper: pre-seed result.jsons after orchestrator submits the job
     so aggregation has data to read. Returns
     `(orchestrator_response, all_seeds_per_task, storage_dict)`."""
-    snapshot_dict = {
-        "metadata": {
-            "snapshotId": snapshot_id,
-            "generationTimestamp": "2026-05-10T00:00:00Z",
-            "sourceSpreadsheetId": "ssid",
-            "sourceTabName": "tab",
-        },
-    }
+    # T2G: orchestrator validates snapshot deserializability at entry,
+    # so synthetic minimal dicts no longer reach aggregation. Use the
+    # real fixture with snapshotId override so runId derivation still
+    # matches the supplied `snapshot_id` argument.
+    snapshot_dict = _real_snapshot_with_id(snapshot_id)
 
     expected_run_id = lo.derive_run_id(snapshot_id, master_seed)
 
@@ -374,9 +385,7 @@ def test_orchestrator_aggregates_attempts_and_rejections() -> None:
 def test_orchestrator_cancels_on_deadline_overrun() -> None:
     """If state never reaches terminal within `completion_deadline_seconds`,
     orchestrator MUST call cancel_job + return CANCELLED_OVER_DEADLINE."""
-    snapshot_dict = {
-        "metadata": {"snapshotId": "snap-deadline-test"},
-    }
+    snapshot_dict = _real_snapshot_with_id("snap-deadline-test")
     expected_run_id = lo.derive_run_id("snap-deadline-test", 1)
 
     # Pre-seed result.json for task 0 only (so orchestrator's aggregation
@@ -428,7 +437,7 @@ def test_orchestrator_handles_missing_result_json_per_task() -> None:
     task (counted in `incompleteTaskIndices`). The orchestrator MUST
     still return a structured response — the missing task doesn't crash
     aggregation."""
-    snapshot_dict = {"metadata": {"snapshotId": "snap-partial-001"}}
+    snapshot_dict = _real_snapshot_with_id("snap-partial-001")
     expected_run_id = lo.derive_run_id("snap-partial-001", 7)
 
     # K=16 → 2 tasks. Pre-seed task-0 only; task-1 will be missing.
@@ -484,7 +493,7 @@ def test_orchestrator_clears_stale_artifacts_before_replay() -> None:
     2. K' == 0 (UNSATISFIED) — the orchestrator did NOT count the
        stale data toward K'.
     """
-    snapshot_dict = {"metadata": {"snapshotId": "snap-replay-test"}}
+    snapshot_dict = _real_snapshot_with_id("snap-replay-test")
     expected_run_id = lo.derive_run_id("snap-replay-test", master_seed=42)
 
     # Pre-seed STALE result.json from a "prior attempt" — has 8
@@ -645,7 +654,7 @@ def test_orchestrator_filters_out_results_with_mismatched_attempt_id() -> None:
     orchestrator with `attempt_id_fn` returning '_FIXED_ATTEMPT_ID'.
     Orchestrator MUST treat the result as missing → kPrime=0,
     mismatchedAttemptTaskIndices populated."""
-    snapshot_dict = {"metadata": {"snapshotId": "snap-attempt-mismatch"}}
+    snapshot_dict = _real_snapshot_with_id("snap-attempt-mismatch")
     expected_run_id = lo.derive_run_id("snap-attempt-mismatch", master_seed=42)
 
     # Pre-seed result.json with a DIFFERENT attemptId — simulates a
@@ -718,7 +727,7 @@ def test_orchestrator_writes_attempt_id_into_seeds_json() -> None:
 def test_orchestrator_zero_candidates_returns_UNSATISFIED() -> None:
     """All trajectories failed (K' == 0) → state=UNSATISFIED per §8.7's
     whole-run UNSATISFIED criterion."""
-    snapshot_dict = {"metadata": {"snapshotId": "snap-all-fail"}}
+    snapshot_dict = _real_snapshot_with_id("snap-all-fail")
     expected_run_id = lo.derive_run_id("snap-all-fail", 0)
 
     pre_seeded = {

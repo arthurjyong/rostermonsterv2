@@ -371,30 +371,20 @@ def _build_post_aggregation_envelope(
     # operator-response wall (~50ms for K=104 at production scale,
     # ~5ms per `tests/test_pipeline.py` measurements) — acceptable
     # vs the alternative of serializing model state through GCS.
-    #
-    # Defensive guard: in production the route validates the snapshot
-    # shape before invoking the orchestrator, so `_snapshot_from_dict`
-    # always succeeds. Test scenarios that use synthetic minimal
-    # snapshots (e.g., `{"metadata": {"snapshotId": "x"}}`) for
-    # aggregation testing get `wrapperEnvelope=None` instead of a
-    # raised exception — the wrapper assembly is opportunistic post-
-    # aggregation, not a contract guarantee on every orchestrator path.
-    try:
-        snapshot = _snapshot_from_dict(snapshot_dict)
-    except (KeyError, TypeError, ValueError) as e:
-        log.warning(
-            "Snapshot deserialization failed in post-aggregation "
-            "(%s: %s); returning no wrapper envelope",
-            type(e).__name__, e,
-        )
-        return None
+    # `orchestrate_lahc_run` pre-validates snapshot deserializability
+    # at entry (returning COMPUTE_ERROR on failure) so this call is
+    # guaranteed to succeed when the helper is invoked.
+    snapshot = _snapshot_from_dict(snapshot_dict)
     template = icu_hd_template_artifact()
     parser_result = parse(snapshot, template)
     if parser_result.consumability is not Consumability.CONSUMABLE:
-        # Orchestrator's parse rejected the snapshot post-Batch — this
-        # shouldn't happen unless the snapshot mutated mid-flight (which
-        # it can't, since we wrote it to GCS at orchestration entry).
-        # Fail fast rather than silently drop the wrapper.
+        # Parser rejected the snapshot post-Batch despite the
+        # orchestrator's pre-dispatch deserializability check.
+        # Shouldn't happen unless the snapshot mutated mid-flight
+        # (which it can't, since the orchestrator wrote it to GCS at
+        # entry). Returning None here propagates a null wrapper to
+        # the orchestrator response, which the caller now detects +
+        # promotes to COMPUTE_ERROR per §10.3.
         log.error(
             "Orchestrator parse rejected snapshot post-Batch: %d issues",
             len(parser_result.issues),
@@ -743,6 +733,36 @@ def orchestrate_lahc_run(
     snapshot_id = metadata["snapshotId"]
     run_id = derive_run_id(snapshot_id, master_seed)
 
+    # Validate the snapshot is fully deserializable BEFORE dispatching
+    # to Cloud Batch. The route's body validation only checks the
+    # shallow `snapshot.metadata.snapshotId` presence; a snapshot can
+    # have a valid snapshotId but be otherwise malformed (e.g., missing
+    # required `periodRef` / `doctorRecords` / etc.). Without this
+    # check, workers fail uniformly + K'==0 + the post-aggregation
+    # wrapper helper can't re-parse the snapshot to build a failure-
+    # branch envelope, leaving `writebackEnvelope=null` while still
+    # reporting `state=UNSATISFIED` (§10.3 violation). Codex P2
+    # finding on PR #144 commit 80e0ceb. Surfacing as COMPUTE_ERROR
+    # here keeps the §10.3 invariant + saves the maintainer the
+    # Cloud Batch round-trip cost on a snapshot that can't possibly
+    # produce a valid envelope.
+    try:
+        _snapshot_from_dict(snapshot_dict)
+    except (KeyError, TypeError, ValueError) as e:
+        return _build_compute_error(
+            run_id=run_id,
+            master_seed=master_seed,
+            K_approved=K_approved,
+            code="SNAPSHOT_NOT_DESERIALIZABLE",
+            message=(
+                "snapshot has a valid snapshotId but is otherwise not "
+                "deserializable (" + type(e).__name__ + ": " + str(e)
+                + "). Surfacing as COMPUTE_ERROR here per §10.3 — "
+                "the maintainer test path can't produce a valid "
+                "writebackEnvelope without a parseable snapshot."
+            ),
+        )
+
     # Per-attempt unique ID for the §8.7 concurrent-replay race fix
     # (T2G). Stamped into every per-task seeds.json; worker echoes
     # back into result.json; aggregation validates on read so a
@@ -852,9 +872,16 @@ def orchestrate_lahc_run(
         "elapsedSeconds": round(elapsed, 3),
     }
 
-    # T2G: post-aggregation pipeline — score K' candidates, run
-    # selector, build wrapper envelope so the route returns the same
-    # shape as POST /compute. None when K'==0 (UNSATISFIED).
+    # T2G: post-aggregation pipeline — score K' candidates (success
+    # branch) OR build failure-branch envelope from
+    # failedTrajectories aggregation (UNSATISFIED branch). Either way
+    # produces a non-null wrapper per `docs/cloud_compute_contract.md`
+    # §10.3 (OK/UNSATISFIED MUST carry a non-null
+    # writebackEnvelope). The helper only returns None on a defensive
+    # post-Batch parser rejection (snapshot deserialized fine at
+    # orchestrator entry but parse() rejected — shouldn't happen since
+    # snapshot is immutable in GCS); detect + promote to COMPUTE_ERROR
+    # rather than violating §10.3.
     wrapper_envelope = _build_post_aggregation_envelope(
         snapshot_dict=snapshot_dict,
         agg=agg,
@@ -862,6 +889,26 @@ def orchestrate_lahc_run(
         K_approved=K_approved,
         run_id=run_id,
     )
+
+    if wrapper_envelope is None:
+        log.error(
+            "Wrapper envelope assembly returned None despite orchestrator "
+            "pre-validation; promoting to COMPUTE_ERROR per §10.3"
+        )
+        return _build_compute_error(
+            run_id=run_id,
+            master_seed=master_seed,
+            K_approved=K_approved,
+            code="WRAPPER_ASSEMBLY_FAILED",
+            message=(
+                "Post-aggregation wrapper envelope assembly failed "
+                "despite the orchestrator's pre-dispatch snapshot "
+                "deserializability check. Parser rejected the snapshot "
+                "post-Batch, suggesting state corruption between entry "
+                "and aggregation. Surfacing as COMPUTE_ERROR per §10.3 "
+                "to honor the OK/UNSATISFIED non-null-wrapper invariant."
+            ),
+        )
 
     response: dict[str, Any] = {
         "state": state,
