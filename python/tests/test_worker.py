@@ -451,13 +451,10 @@ def test_cli_picks_up_batch_task_index_env() -> None:
 
 
 def test_real_gcs_adapter_rejects_uri_outside_bucket() -> None:
-    """The real adapter validates `uri` starts with `gs://{bucket}/`.
-    Cross-bucket reads/writes are a misconfiguration and MUST fail
-    fast (the worker is bound to one bucket per §8.7)."""
-    # Skip the actual google-cloud-storage import path; just call the
-    # closure factory and exercise the URI guard. We can't construct
-    # a real google.cloud.storage.Client without credentials — but the
-    # ValueError check fires before the GCS call.
+    """The shared `make_gcs_adapter` in `gcs.py` (T2F extraction) validates
+    `uri` starts with `gs://{bucket}/`. Cross-bucket reads/writes are a
+    misconfiguration and MUST fail fast (the worker + orchestrator are
+    each bound to one bucket per §8.7)."""
     try:
         from google.cloud import storage  # noqa: F401
     except ImportError:
@@ -466,7 +463,8 @@ def test_real_gcs_adapter_rejects_uri_outside_bucket() -> None:
         # imports it. Skip.
         return
 
-    read_json, write_json = worker_mod._make_real_gcs_adapter(_BUCKET)
+    from rostermonster_service.gcs import make_gcs_adapter
+    read_json, write_json = make_gcs_adapter(_BUCKET)
     for fn, label in ((read_json, "read"), (write_json, "write")):
         try:
             if label == "read":

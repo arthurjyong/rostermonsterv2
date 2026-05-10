@@ -16,3 +16,9 @@ requests>=2.32,<3.0
 # without google-cloud-storage installed (in-memory GCS adapter) can
 # still import the worker module.
 google-cloud-storage>=2.18,<4.0
+# Cloud Batch job submit / poll / cancel for the M7 C2 Task 2F
+# orchestrator (`rostermonster_service.lahc_orchestrator`). Lazy-imported
+# at `BatchClient` construction time so test environments without the
+# SDK can still import the orchestrator module (tests use
+# `InMemoryBatchClient`).
+google-cloud-batch>=0.17,<2.0
