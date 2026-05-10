@@ -181,7 +181,7 @@ LAHC's `K' >= 1` exit criterion per §12A.8 is preserved by this aggregation (su
 
 **GCS read/write discipline at the boundary:** the pipeline reads from / writes to GCS only inside the orchestrator + Batch worker code paths. Drive is NOT a pipeline data path — operator-facing data flows continue per the §9 / §10 contract (snapshot in via HTTP body, envelope back via HTTP response). The optional `candidates_full.json` artifact (per the reconciliation note above) is maintainer-accessible via `gsutil cp` for post-hoc analysis; operator never reads from GCS.
 
-**Per-task `seeds.json` schema (orchestrator → worker):** pinned at M7 C2 Task 2D (2026-05-10).
+**Per-task `seeds.json` schema (orchestrator → worker):** pinned at M7 C2 Task 2D (2026-05-10); `attemptId` added at M7 C2 Task 2G (2026-05-10) per the concurrent-replay race fix.
 
 ```
 {
@@ -189,6 +189,15 @@ LAHC's `K' >= 1` exit criterion per §12A.8 is preserved by this aggregation (su
   "runId": "<runEnvelope.runId per docs/selector_contract.md v2 §9>",
   "taskIndex": <int in [0, taskCount)>,
   "masterSeed": <int — the §9 input #3 master seed for this run>,
+  "attemptId": "<uuid hex — fresh per orchestrator call>",
+                          // T2G concurrent-replay race fix: orchestrator
+                          // generates a per-call attemptId; worker echoes
+                          // back into result.json; aggregation validates
+                          // result.attemptId == expected_attempt_id on
+                          // read so a parallel attempt at the same runId
+                          // prefix can't pollute K' aggregation. See the
+                          // "Concurrent-replay race" notes after the
+                          // result.json schema.
   "seeds": [<int>, ...]   // per-task slice of the K_approved seeds the
                           // orchestrator pre-derived via
                           // derive_K_seeds(masterSeed, K_approved) per
@@ -202,7 +211,7 @@ LAHC's `K' >= 1` exit criterion per §12A.8 is preserved by this aggregation (su
 }
 ```
 
-**Per-task `result.json` schema (worker → orchestrator):** pinned at M7 C2 Task 2D (2026-05-10).
+**Per-task `result.json` schema (worker → orchestrator):** pinned at M7 C2 Task 2D (2026-05-10); `attemptId` added at M7 C2 Task 2G (2026-05-10).
 
 ```
 {
@@ -210,6 +219,7 @@ LAHC's `K' >= 1` exit criterion per §12A.8 is preserved by this aggregation (su
   "runId": "<echoed from seeds.json>",
   "taskIndex": <echoed from seeds.json>,
   "masterSeed": <echoed from seeds.json>,
+  "attemptId": "<echoed from seeds.json>",  // T2G concurrent-replay race fix; orchestrator validates on read
   "candidates": [               // SUCCEEDED trajectories — len(candidates)
                                 // is this task's contribution to K' per
                                 // the primary K' definition above

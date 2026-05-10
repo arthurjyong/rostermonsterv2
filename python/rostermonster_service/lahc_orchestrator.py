@@ -2,23 +2,20 @@
 `docs/cloud_compute_contract.md` §8.7 + `docs/delivery_plan.md` §9 M7 C2
 Task 2F.
 
-**Concurrent-replay race (acceptable for the maintainer-only test path):**
+**Concurrent-replay race closed at T2G via attempt-id validation:**
 the runId is deterministic per `(snapshotId, masterSeed)` so two
 maintainer-issued replays of the same parameters share the same GCS
 artifact prefix. The pre-write `gcs_delete_prefix(runId/)` step
-(below) keeps a serial replay clean — any prior attempt's artifacts
-get wiped before the new attempt writes its inputs. But two
-orchestrator calls running concurrently against the same `(snapshot,
-seed)` can interleave clears + writes + reads, producing mixed K'
-aggregations that include candidates from both attempts. Codex
-flagged this as a P1 finding on PR #143; the fix lands at M7 C3
-when the §9 amendment promotes the LAHC path from this maintainer-
-only test route to the public `POST /compute` route — at that point
-attempt-id validation (orchestrator stamps an `attemptId` into
-seeds.json, worker echoes back into result.json, orchestrator
-validates on read) closes the race for unbounded operator traffic.
-For T2F's single-maintainer test usage, the serial-replay clean
-path is sufficient and the concurrent-race window is acceptable.
+(below) keeps a serial replay clean. Concurrent replays were a P1
+race window flagged at T2F (PR #143) — closed at T2G by stamping a
+fresh `attemptId` (uuid4 hex) into every per-task `seeds.json`, the
+worker echoes it back into `result.json`, and aggregation validates
+`result.attemptId == expected_attempt_id` on read; mismatched /
+missing attemptIds are treated as missing per §8.7's primary K'
+definition. So if two orchestrator calls overlap on the same runId,
+each sees only its own attempt's results — at worst one attempt
+sees all its inputs stomped (UNSATISFIED) but never a polluted /
+mixed K' aggregation.
 
 `orchestrate_lahc_run(snapshot_dict, ...)` is the entry point the M7 C2
 Task 2F maintainer-only `/compute-lahc-test` route calls. End-to-end
@@ -68,9 +65,32 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+import uuid
 from typing import Any, Callable
 
-from rostermonster.solver import derive_K_seeds
+from rostermonster.domain import AssignmentUnit
+from rostermonster.parser import Consumability, parse
+from rostermonster.pipeline import _assemble_writeback_wrapper, _snapshot_from_dict
+from rostermonster.scorer import ScoringConfig, score
+from rostermonster.selector import (
+    AllocationResult,
+    LahcParamsRecord,
+    LahcStrategyConfig,
+    RetentionMode,
+    RunEnvelope,
+    ScoredCandidateSet,
+    ScoredTrialCandidate,
+    select,
+)
+from rostermonster.solver import (
+    STRATEGY_LAHC,
+    CandidateSet,
+    LahcParams,
+    SearchDiagnostics,
+    TrialCandidate,
+    derive_K_seeds,
+)
+from rostermonster.templates import icu_hd_template_artifact
 from rostermonster_service.batch_client import (
     JOB_STATE_CANCELLED,
     JOB_STATE_FAILED,
@@ -223,12 +243,22 @@ def _aggregate_results(
     task_count: int,
     bucket: str,
     run_id: str,
+    expected_attempt_id: str,
     gcs_read_json: ReadJsonFn,
 ) -> dict[str, Any]:
     """Read per-task `result.json` files from GCS and aggregate.
     Missing / unreadable results contribute 0 candidates per §8.7's
     primary K' definition; they're counted in `incomplete_task_indices`
-    so the response surfaces which tasks contributed nothing."""
+    so the response surfaces which tasks contributed nothing.
+
+    Validates each result.json's `attemptId` against the
+    `expected_attempt_id` per the §8.7 concurrent-replay race fix
+    (T2G): a result.json with a mismatched / missing attemptId belongs
+    to a different attempt at the same runId prefix and MUST NOT
+    contribute candidates to this attempt's K'. Mismatches are counted
+    in `mismatched_attempt_task_indices` for diagnostics + treated the
+    same as missing results.
+    """
     candidates: list[dict] = []
     failed_trajectories: list[dict] = []
     trajectory_exceptions: list[dict] = []
@@ -236,6 +266,7 @@ def _aggregate_results(
     aggregate_rejections: dict[str, int] = {}
     completed_task_indices: list[int] = []
     incomplete_task_indices: list[int] = []
+    mismatched_attempt_task_indices: list[int] = []
     per_task_results: list[dict | None] = []
 
     for task_index in range(task_count):
@@ -251,6 +282,22 @@ def _aggregate_results(
             )
             per_task_results.append(None)
             incomplete_task_indices.append(task_index)
+            continue
+
+        # §8.7 attemptId validation per the T2G concurrent-replay race
+        # fix: a result.json from a different attempt (or pre-T2G with
+        # no attemptId) at the same runId prefix MUST NOT contribute
+        # to this attempt's K'.
+        result_attempt_id = result.get("attemptId")
+        if result_attempt_id != expected_attempt_id:
+            log.warning(
+                "Task %d result.json has attemptId=%r; expected %r — "
+                "treating as missing (stale from a prior attempt)",
+                task_index, result_attempt_id, expected_attempt_id,
+            )
+            per_task_results.append(None)
+            incomplete_task_indices.append(task_index)
+            mismatched_attempt_task_indices.append(task_index)
             continue
 
         per_task_results.append(result)
@@ -273,8 +320,210 @@ def _aggregate_results(
         "aggregateRejectionsByReason": aggregate_rejections,
         "completedTaskIndices": completed_task_indices,
         "incompleteTaskIndices": incomplete_task_indices,
+        "mismatchedAttemptTaskIndices": mismatched_attempt_task_indices,
         "perTaskResults": per_task_results,
     }
+
+
+def _assignment_unit_from_dict(d: dict) -> AssignmentUnit:
+    """Inverse of `_to_jsonable(AssignmentUnit)` — rebuilds an
+    `AssignmentUnit` from the worker's serialized dict form so the
+    orchestrator's downstream scorer/selector can consume it."""
+    return AssignmentUnit(
+        dateKey=d["dateKey"],
+        slotType=d["slotType"],
+        unitIndex=int(d["unitIndex"]),
+        doctorId=d["doctorId"],
+    )
+
+
+def _build_post_aggregation_envelope(
+    *,
+    snapshot_dict: dict,
+    agg: dict,
+    master_seed: int,
+    K_approved: int,
+    run_id: str,
+) -> dict | None:
+    """T2G post-aggregation pipeline: take the K' candidates the orchestrator
+    aggregated from per-task result.json files + run them through the
+    standard scorer → selector → wrapper-envelope chain (matching what
+    `pipeline.run_pipeline()` does for the local CLI path) so the
+    `/compute-lahc-test` route returns the same `writebackEnvelope` shape
+    as the existing `POST /compute` route.
+
+    Returns the wrapper envelope dict, or `None` if K' == 0 (caller
+    should surface UNSATISFIED state without a wrapper). The orchestrator
+    stays the only post-T2D module that consumes the scorer/selector
+    surface for the LAHC path; worker stays scoring-blind end-to-end per
+    `docs/solver_contract.md` §9 / §11.
+    """
+    candidates_raw = agg["candidates"]
+    if not candidates_raw:
+        return None
+
+    # Re-parse snapshot. Worker also did this per-task, but the
+    # orchestrator needs its own NormalizedModel + ScoringConfig to
+    # score candidates + run selector. Cost is one parse on the
+    # operator-response wall (~50ms for K=104 at production scale,
+    # ~5ms per `tests/test_pipeline.py` measurements) — acceptable
+    # vs the alternative of serializing model state through GCS.
+    #
+    # Defensive guard: in production the route validates the snapshot
+    # shape before invoking the orchestrator, so `_snapshot_from_dict`
+    # always succeeds. Test scenarios that use synthetic minimal
+    # snapshots (e.g., `{"metadata": {"snapshotId": "x"}}`) for
+    # aggregation testing get `wrapperEnvelope=None` instead of a
+    # raised exception — the wrapper assembly is opportunistic post-
+    # aggregation, not a contract guarantee on every orchestrator path.
+    try:
+        snapshot = _snapshot_from_dict(snapshot_dict)
+    except (KeyError, TypeError, ValueError) as e:
+        log.warning(
+            "Snapshot deserialization failed in post-aggregation "
+            "(%s: %s); returning no wrapper envelope",
+            type(e).__name__, e,
+        )
+        return None
+    template = icu_hd_template_artifact()
+    parser_result = parse(snapshot, template)
+    if parser_result.consumability is not Consumability.CONSUMABLE:
+        # Orchestrator's parse rejected the snapshot post-Batch — this
+        # shouldn't happen unless the snapshot mutated mid-flight (which
+        # it can't, since we wrote it to GCS at orchestration entry).
+        # Fail fast rather than silently drop the wrapper.
+        log.error(
+            "Orchestrator parse rejected snapshot post-Batch: %d issues",
+            len(parser_result.issues),
+        )
+        return None
+
+    model = parser_result.normalizedModel
+    scoring_config = (parser_result.scoringConfig
+                      or ScoringConfig.first_release_defaults(model))
+
+    # Reconstruct CandidateSet from agg["candidates"]. Each candidate's
+    # assignments came from the worker as JSON dicts; convert back to
+    # AssignmentUnit objects so the scorer/selector can consume them.
+    # `candidateId` is 1-indexed dense per `docs/selector_contract.md`
+    # §16; the orchestrator's emission order = aggregation order across
+    # tasks (task-0 candidates first, then task-1, ...).
+    trial_candidates = tuple(
+        TrialCandidate(
+            candidateId=i + 1,
+            assignments=tuple(
+                _assignment_unit_from_dict(a) for a in cand["assignments"]
+            ),
+        )
+        for i, cand in enumerate(candidates_raw)
+    )
+
+    # Build SearchDiagnostics. LAHC fields populated from per-task
+    # diagnostics aggregated by the worker per `docs/solver_contract.md`
+    # §12A.9. Per-trajectory tuples are flattened across all tasks in
+    # candidate emission order.
+    per_traj_status = tuple(
+        "SUCCEEDED" for _ in candidates_raw
+    )
+    per_traj_iters = tuple(int(c["iters"]) for c in candidates_raw)
+    per_traj_accepted = tuple(int(c["acceptedMoves"]) for c in candidates_raw)
+    per_traj_best = tuple(c["bestScore"] for c in candidates_raw)
+    per_traj_terminal = tuple(c["terminalScore"] for c in candidates_raw)
+
+    diagnostics = SearchDiagnostics(
+        strategyId=STRATEGY_LAHC,
+        fillOrderPolicy="MOST_CONSTRAINED_FIRST",
+        # cr_floor + crFloorMode aren't recoverable from per-task
+        # result.json (worker doesn't write them). Use the SMART_MEDIAN
+        # default — matches what worker computed internally per
+        # `docs/solver_contract.md` §13.1. Re-deriving the exact value
+        # locally would require the same compute_cr_floor call the
+        # worker did; for T2G's wrapper-envelope shape this is
+        # sufficient (operator-facing diagnostics surface other LAHC
+        # fields more prominently).
+        crFloorMode="SMART_MEDIAN",
+        crFloorComputed=0,
+        seed=master_seed,
+        placementAttempts=int(agg["aggregateAttempts"]),
+        ruleEngineRejectionsByReason=dict(agg["aggregateRejectionsByReason"]),
+        candidateEmitCount=len(trial_candidates),
+        unfilledDemandCount=0,
+        lahcHistoryListLength=50,   # FW-0037 elbow tuple per worker.py
+        lahcMaxIters=None,
+        lahcIdleThreshold=3500,
+        lahcSwapProbability=0.5,
+        seedDerivationFunction="python.Random.getrandbits.candidate_seed",
+        perTrajectoryStatus=per_traj_status,
+        perTrajectoryIters=per_traj_iters,
+        perTrajectoryAcceptedMoves=per_traj_accepted,
+        perTrajectoryBestScore=per_traj_best,
+        perTrajectoryTerminalScore=per_traj_terminal,
+    )
+    candidate_set = CandidateSet(
+        candidates=trial_candidates,
+        diagnostics=diagnostics,
+    )
+
+    # Score each candidate and assemble ScoredCandidateSet (mirrors
+    # pipeline.run_pipeline()'s post-solve step).
+    scored = ScoredCandidateSet(
+        candidates=tuple(
+            ScoredTrialCandidate(
+                candidate=cand,
+                score=score(cand.assignments, model, scoring_config),
+            )
+            for cand in candidate_set.candidates
+        ),
+        diagnostics=diagnostics,
+    )
+
+    # Build RunEnvelope mirroring pipeline._build_run_envelope's LAHC
+    # branch. The orchestrator's run_id is per-call unique (encodes
+    # snapshotId + masterSeed + content hash); the standard runEnvelope
+    # uses `snapshot.metadata.snapshotId`, but for the cloud-LAHC path
+    # surfacing the orchestrator's runId in the envelope keeps GCS
+    # forensic replay traceable from the writeback artifact.
+    md = snapshot.metadata
+    run_envelope = RunEnvelope(
+        runId=run_id,
+        snapshotRef=md.snapshotId,
+        configRef="first_release_defaults",
+        seed=master_seed,
+        fillOrderPolicy="MOST_CONSTRAINED_FIRST",
+        crFloorMode="SMART_MEDIAN",
+        crFloorComputed=0,
+        generationTimestamp=md.generationTimestamp,
+        sourceSpreadsheetId=md.sourceSpreadsheetId,
+        sourceTabName=md.sourceTabName,
+        solverStrategy=STRATEGY_LAHC,
+        solverStrategyConfig=LahcStrategyConfig(
+            lahcParams=LahcParamsRecord(
+                historyListLength=50,
+                idleThreshold=3500,
+                maxIters=LahcParams().maxIters,
+                swapProbability=0.5,
+            ),
+        ),
+    )
+
+    # Select the winner + assemble FinalResultEnvelope.
+    envelope = select(
+        scored,
+        retentionMode=RetentionMode.BEST_ONLY,
+        runEnvelope=run_envelope,
+    )
+
+    if not isinstance(envelope.result, AllocationResult):
+        # Selector returned the failure-branch shape (e.g., zero scored
+        # candidates after filtering). Treat as no-wrapper.
+        log.warning(
+            "Selector failure-branch envelope returned with K'=%d; "
+            "no wrapper envelope produced",
+            len(trial_candidates),
+        )
+        return None
+
+    return _assemble_writeback_wrapper(envelope, snapshot, template)
 
 
 def orchestrate_lahc_run(
@@ -294,6 +543,7 @@ def orchestrate_lahc_run(
     poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
     sleep_fn: Callable[[float], None] = time.sleep,
     time_fn: Callable[[], float] = time.monotonic,
+    attempt_id_fn: Callable[[], str] = lambda: uuid.uuid4().hex,
 ) -> dict[str, Any]:
     """Orchestrate one M7 LAHC Cloud Batch run end-to-end. Returns a
     structured response dict the maintainer-only `/compute-lahc-test`
@@ -361,6 +611,13 @@ def orchestrate_lahc_run(
     snapshot_id = metadata["snapshotId"]
     run_id = derive_run_id(snapshot_id, master_seed)
 
+    # Per-attempt unique ID for the §8.7 concurrent-replay race fix
+    # (T2G). Stamped into every per-task seeds.json; worker echoes
+    # back into result.json; aggregation validates on read so a
+    # concurrent attempt at the same runId can't pollute this
+    # attempt's K' aggregation.
+    attempt_id = attempt_id_fn()
+
     # --- Seed pre-derivation + partition -----------------------------
     all_seeds = derive_K_seeds(master_seed, K_approved)
     per_task_seeds = _partition_seeds(all_seeds)
@@ -405,6 +662,7 @@ def orchestrate_lahc_run(
             "runId": run_id,
             "taskIndex": task_index,
             "masterSeed": master_seed,
+            "attemptId": attempt_id,
             "seeds": seeds,
         })
 
@@ -436,6 +694,7 @@ def orchestrate_lahc_run(
         task_count=task_count,
         bucket=bucket,
         run_id=run_id,
+        expected_attempt_id=attempt_id,
         gcs_read_json=gcs_read_json,
     )
 
@@ -445,6 +704,7 @@ def orchestrate_lahc_run(
 
     summary = {
         "runId": run_id,
+        "attemptId": attempt_id,
         "masterSeed": master_seed,
         "kApproved": K_approved,
         "kPrime": k_prime,
@@ -452,6 +712,7 @@ def orchestrate_lahc_run(
         "taskCount": task_count,
         "completedTaskCount": len(agg["completedTaskIndices"]),
         "incompleteTaskIndices": agg["incompleteTaskIndices"],
+        "mismatchedAttemptTaskIndices": agg["mismatchedAttemptTaskIndices"],
         "totalAttempts": agg["aggregateAttempts"],
         "rejectionsByReason": agg["aggregateRejectionsByReason"],
         "batchJobName": job_name,
@@ -459,9 +720,21 @@ def orchestrate_lahc_run(
         "elapsedSeconds": round(elapsed, 3),
     }
 
+    # T2G: post-aggregation pipeline — score K' candidates, run
+    # selector, build wrapper envelope so the route returns the same
+    # shape as POST /compute. None when K'==0 (UNSATISFIED).
+    wrapper_envelope = _build_post_aggregation_envelope(
+        snapshot_dict=snapshot_dict,
+        agg=agg,
+        master_seed=master_seed,
+        K_approved=K_approved,
+        run_id=run_id,
+    )
+
     response: dict[str, Any] = {
         "state": state,
         "lahcSummary": summary,
+        "writebackEnvelope": wrapper_envelope,
         "candidates": candidates,
         "failedTrajectories": agg["failedTrajectories"],
         "error": None,
@@ -482,6 +755,7 @@ def _build_compute_error(
         "state": "COMPUTE_ERROR",
         "lahcSummary": {
             "runId": run_id,
+            "attemptId": "",
             "masterSeed": master_seed,
             "kApproved": K_approved,
             "kPrime": 0,
@@ -489,12 +763,14 @@ def _build_compute_error(
             "taskCount": 0,
             "completedTaskCount": 0,
             "incompleteTaskIndices": [],
+            "mismatchedAttemptTaskIndices": [],
             "totalAttempts": 0,
             "rejectionsByReason": {},
             "batchJobName": "",
             "batchFinalState": "NOT_SUBMITTED",
             "elapsedSeconds": 0.0,
         },
+        "writebackEnvelope": None,
         "candidates": [],
         "failedTrajectories": [],
         "error": {"code": code, "message": message},

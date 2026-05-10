@@ -48,6 +48,15 @@ _BUCKET = "rostermonsterv2-lahc"
 _REGION = "asia-southeast1"
 _PROJECT = "rostermonsterv2"
 _IMAGE = "gcr.io/rostermonsterv2/roster-monster-compute:test-tag"
+# Fixed attemptId for deterministic test assertions; the production
+# orchestrator generates a fresh uuid4 hex per call, but tests inject
+# this constant via `attempt_id_fn=_fixed_attempt_id_fn` so pre-seeded
+# result.json files can carry the matching value.
+_FIXED_ATTEMPT_ID = "attempt-test-fixed-aaaa1111"
+
+
+def _fixed_attempt_id_fn() -> str:
+    return _FIXED_ATTEMPT_ID
 _FIXTURE_PATH = (
     Path(__file__).resolve().parent / "data" / "icu_hd_may_2026_snapshot.json"
 )
@@ -219,15 +228,20 @@ def test_partition_seeds_K_2500_partial_pack_at_final_task() -> None:
 
 
 def _build_pre_seeded_result(*, run_id: str, task_index: int, seeds: list[int],
-                              candidate_count: int) -> dict:
+                              candidate_count: int,
+                              attempt_id: str = _FIXED_ATTEMPT_ID) -> dict:
     """Build a fake worker result.json with `candidate_count` SUCCEEDED
     trajectories. Used to test the orchestrator's aggregation path
-    without invoking the real worker."""
+    without invoking the real worker. `attempt_id` defaults to
+    `_FIXED_ATTEMPT_ID` so the orchestrator's attempt-id validation
+    accepts the result; tests targeting the mismatch path pass a
+    different value explicitly."""
     return {
         "schemaVersion": 1,
         "runId": run_id,
         "taskIndex": task_index,
         "masterSeed": 99999,
+        "attemptId": attempt_id,
         "candidates": [
             {
                 "candidateSeed": seeds[i],
@@ -303,6 +317,7 @@ def _orchestrate_with_pre_seeded_results(
         region=_REGION,
         sleep_fn=_no_sleep,
         time_fn=_virtual_clock(),
+        attempt_id_fn=_fixed_attempt_id_fn,
     )
     return response, per_task_seeds, storage
 
@@ -395,6 +410,7 @@ def test_orchestrator_cancels_on_deadline_overrun() -> None:
         poll_interval_seconds=3,
         sleep_fn=_no_sleep,
         time_fn=_virtual_clock(step=100.0),
+        attempt_id_fn=_fixed_attempt_id_fn,
     )
 
     assert response["lahcSummary"]["batchFinalState"] == "CANCELLED_OVER_DEADLINE"
@@ -438,6 +454,7 @@ def test_orchestrator_handles_missing_result_json_per_task() -> None:
         project=_PROJECT, bucket=_BUCKET, region=_REGION,
         sleep_fn=_no_sleep,
         time_fn=_virtual_clock(),
+        attempt_id_fn=_fixed_attempt_id_fn,
     )
 
     assert response["state"] == "OK"
@@ -501,6 +518,7 @@ def test_orchestrator_clears_stale_artifacts_before_replay() -> None:
         project=_PROJECT, bucket=_BUCKET, region=_REGION,
         sleep_fn=_no_sleep,
         time_fn=_virtual_clock(),
+        attempt_id_fn=_fixed_attempt_id_fn,
     )
 
     # Orchestrator did NOT count the stale data (K' must be 0)
@@ -520,6 +538,84 @@ def test_orchestrator_clears_stale_artifacts_before_replay() -> None:
     assert lo._gcs_uri(_BUCKET, expected_run_id, "task-0", "seeds.json") in storage
 
 
+def test_orchestrator_filters_out_results_with_mismatched_attempt_id() -> None:
+    """T2G concurrent-replay race fix per §8.7: a result.json carrying
+    a different attemptId belongs to a parallel/prior attempt at the
+    same runId prefix and MUST NOT contribute to this attempt's K'.
+    Test scenario: pre-seed result.json with attemptId='OTHER'; run
+    orchestrator with `attempt_id_fn` returning '_FIXED_ATTEMPT_ID'.
+    Orchestrator MUST treat the result as missing → kPrime=0,
+    mismatchedAttemptTaskIndices populated."""
+    snapshot_dict = {"metadata": {"snapshotId": "snap-attempt-mismatch"}}
+    expected_run_id = lo.derive_run_id("snap-attempt-mismatch", master_seed=42)
+
+    # Pre-seed result.json with a DIFFERENT attemptId — simulates a
+    # concurrent attempt's worker writing to the same runId prefix
+    # before this orchestrator's clear/aggregation cycle completes.
+    pre_seeded = {
+        lo._gcs_uri(_BUCKET, expected_run_id, "task-0", "result.json"):
+            _build_pre_seeded_result(
+                run_id=expected_run_id, task_index=0,
+                seeds=[1, 2, 3, 4, 5, 6, 7, 8], candidate_count=8,
+                attempt_id="attempt-from-OTHER-replay-zzzz9999",
+            ),
+    }
+    read_json, write_json, storage = _make_inmem_gcs(pre_seeded)
+    batch_client = InMemoryBatchClient(state_sequence=[JOB_STATE_SUCCEEDED])
+
+    response = lo.orchestrate_lahc_run(
+        snapshot_dict,
+        master_seed=42,
+        K_approved=8,
+        container_image_uri=_IMAGE,
+        batch_client=batch_client,
+        gcs_read_json=read_json,
+        gcs_write_json=write_json,
+        gcs_delete_prefix=_no_delete,  # don't clear; testing the filter
+        project=_PROJECT, bucket=_BUCKET, region=_REGION,
+        sleep_fn=_no_sleep,
+        time_fn=_virtual_clock(),
+        attempt_id_fn=_fixed_attempt_id_fn,
+    )
+
+    # Orchestrator filtered out the OTHER attempt's results
+    assert response["state"] == "UNSATISFIED", (
+        "expected UNSATISFIED when all results have mismatched "
+        "attemptId; got " + repr(response["state"])
+    )
+    assert response["lahcSummary"]["kPrime"] == 0, (
+        "Mismatched-attemptId result.json was counted toward K' — "
+        "T2G concurrent-replay race fix is broken."
+    )
+    assert response["lahcSummary"]["mismatchedAttemptTaskIndices"] == [0]
+    # Task 0 surfaced in incompleteTaskIndices too (mismatched is a
+    # subset of incomplete from the K'-arithmetic perspective)
+    assert 0 in response["lahcSummary"]["incompleteTaskIndices"]
+
+
+def test_orchestrator_writes_attempt_id_into_seeds_json() -> None:
+    """T2G regression: orchestrator MUST stamp `attemptId` into every
+    per-task seeds.json so the worker can echo it back into result.json.
+    Without this stamp, the orchestrator's read-side validation would
+    reject all results as stale."""
+    response, _, storage = _orchestrate_with_pre_seeded_results(K_approved=16)
+    expected_run_id = lo.derive_run_id("test-snap-001", 99999)
+
+    for task_index in range(2):
+        seeds_uri = lo._gcs_uri(
+            _BUCKET, expected_run_id, "task-" + str(task_index), "seeds.json",
+        )
+        seeds_payload = storage[seeds_uri]
+        assert seeds_payload["attemptId"] == _FIXED_ATTEMPT_ID, (
+            "task " + str(task_index)
+            + " seeds.json missing attemptId — worker can't echo + "
+            "orchestrator's validation would treat results as stale."
+        )
+
+    # Response surfaces attemptId in lahcSummary too (forensic replay)
+    assert response["lahcSummary"]["attemptId"] == _FIXED_ATTEMPT_ID
+
+
 def test_orchestrator_zero_candidates_returns_UNSATISFIED() -> None:
     """All trajectories failed (K' == 0) → state=UNSATISFIED per §8.7's
     whole-run UNSATISFIED criterion."""
@@ -533,6 +629,10 @@ def test_orchestrator_zero_candidates_returns_UNSATISFIED() -> None:
                 "runId": expected_run_id,
                 "taskIndex": 0,
                 "masterSeed": 0,
+                # T2G attempt-id validation: result.json MUST carry the
+                # orchestrator's expected attemptId so it isn't filtered
+                # out as a stale-attempt mismatch.
+                "attemptId": _FIXED_ATTEMPT_ID,
                 "candidates": [],
                 "failedTrajectories": [
                     {"candidateSeed": 1, "unfilledDemand": []}
@@ -557,6 +657,7 @@ def test_orchestrator_zero_candidates_returns_UNSATISFIED() -> None:
         project=_PROJECT, bucket=_BUCKET, region=_REGION,
         sleep_fn=_no_sleep,
         time_fn=_virtual_clock(),
+        attempt_id_fn=_fixed_attempt_id_fn,
     )
 
     assert response["state"] == "UNSATISFIED"
@@ -621,6 +722,7 @@ def test_orchestrator_worker_integration_round_trip() -> None:
         project=_PROJECT, bucket=_BUCKET, region=_REGION,
         sleep_fn=_no_sleep,
         time_fn=_virtual_clock(),
+        attempt_id_fn=_fixed_attempt_id_fn,
     )
 
     assert response["state"] in ("OK", "UNSATISFIED"), (
@@ -659,6 +761,7 @@ def test_orchestrator_missing_snapshot_id_returns_compute_error() -> None:
         project=_PROJECT, bucket=_BUCKET, region=_REGION,
         sleep_fn=_no_sleep,
         time_fn=_virtual_clock(),
+        attempt_id_fn=_fixed_attempt_id_fn,
     )
     assert response["state"] == "COMPUTE_ERROR"
     assert response["error"]["code"] == "MISSING_SNAPSHOT_ID"
@@ -683,6 +786,7 @@ def test_orchestrator_rejects_non_int_master_seed() -> None:
                 gcs_delete_prefix=_no_delete,
                 project=_PROJECT, bucket=_BUCKET, region=_REGION,
                 sleep_fn=_no_sleep, time_fn=_virtual_clock(),
+                attempt_id_fn=_fixed_attempt_id_fn,
             )
         except ValueError as e:
             assert "master_seed" in str(e)
@@ -710,6 +814,7 @@ def test_orchestrator_rejects_non_positive_K_approved() -> None:
                 gcs_delete_prefix=_no_delete,
                 project=_PROJECT, bucket=_BUCKET, region=_REGION,
                 sleep_fn=_no_sleep, time_fn=_virtual_clock(),
+                attempt_id_fn=_fixed_attempt_id_fn,
             )
         except ValueError as e:
             assert "K_approved" in str(e)
