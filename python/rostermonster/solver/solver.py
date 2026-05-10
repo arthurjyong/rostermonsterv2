@@ -20,8 +20,6 @@ candidates while remaining reproducible.
 
 from __future__ import annotations
 
-from random import Random
-
 from rostermonster.domain import IssueSeverity, NormalizedModel, ValidationIssue
 from rostermonster.solver.cr_floor import compute_cr_floor
 from rostermonster.solver.lahc import LahcParams, make_scoring_oracle
@@ -37,23 +35,13 @@ from rostermonster.solver.result import (
     UnfilledDemandEntry,
     UnsatisfiedResult,
 )
+from rostermonster.solver.seeds import derive_K_seeds
 from rostermonster.solver.strategy import RuleEngineFn
 from rostermonster.solver.strategy_registry import get_strategy
 
 # 64-bit signed integer bounds per `docs/solver_contract.md` §9 input #3.
 _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
-# Mask used to fold the signed seed into a unique unsigned 64-bit bit
-# pattern before initializing `Random()`. CPython's `Random.seed(int)`
-# normalizes via `abs(...)`, which would otherwise alias `seed`/`-seed`.
-_UINT64_MASK = (1 << 64) - 1
-
-
-def _per_candidate_seed(rng: Random) -> int:
-    """Derive one per-candidate seed from the run-level RNG. Using `getrandbits`
-    keeps the seed inside the 64-bit signed range used by `Random()` and stays
-    deterministic under the parent stream."""
-    return rng.getrandbits(63)
 
 
 def _build_unsatisfied(
@@ -252,13 +240,13 @@ def solve(
     seeding = preferenceSeeding if preferenceSeeding is not None else PreferenceSeedingConfig()
     cr_floor_x = compute_cr_floor(normalizedModel, seeding.crFloor)
 
-    # CPython's `Random.seed(int)` uses `abs(seed)`, which collapses every
-    # `seed`/`-seed` pair into the same RNG stream — so contract-valid
-    # inputs `1` and `-1` would generate identical candidate trajectories
-    # despite the §9 surface accepting the full signed 64-bit range. Mask
-    # the signed value into its unsigned 64-bit bit pattern so the full
-    # input domain produces distinct streams.
-    run_rng = Random(seed & _UINT64_MASK)
+    # K-trajectory seeds are derived via the shared `derive_K_seeds` helper
+    # per `docs/solver_contract.md` §12A.10 (single source of truth across
+    # the local CLI and the Cloud Run Service orchestrator). The helper
+    # owns the load-bearing `_UINT64_MASK` step that prevents CPython's
+    # `Random.seed(int)` `abs(...)` from aliasing contract-valid `seed` and
+    # `-seed` inputs to the same RNG stream.
+    candidate_seeds = derive_K_seeds(seed, terminationBounds.maxCandidates)
     candidates: list[TrialCandidate] = []
     aggregate_attempts = 0
     aggregate_rejections: dict[str, int] = {}
@@ -289,8 +277,7 @@ def solve(
     per_trajectory_best_score: list[float | None] = []
     per_trajectory_terminal_score: list[float | None] = []
 
-    for index in range(terminationBounds.maxCandidates):
-        candidate_seed = _per_candidate_seed(run_rng)
+    for index, candidate_seed in enumerate(candidate_seeds):
         outcome = descriptor.run(
             ruleEngine,
             normalizedModel,
