@@ -773,6 +773,51 @@ def test_orchestrator_zero_candidates_returns_UNSATISFIED() -> None:
     assert len(response["failedTrajectories"]) == 8
 
 
+def test_orchestrator_parser_rejection_returns_input_error_pre_dispatch() -> None:
+    """Codex P2 finding regression on PR #144 commit bad297f: a
+    snapshot that deserializes but `parse()` returns NON_CONSUMABLE
+    MUST be rejected at the orchestrator BEFORE Cloud-Batch dispatch
+    (with `state="INPUT_ERROR"` + code `PARSER_REJECTED` + parser
+    issue summary), matching local `/compute`'s INPUT_ERROR semantics
+    per `docs/cloud_compute_contract.md` §10.1. Pre-fix the
+    orchestrator dispatched to Batch + workers all failed parser →
+    K'==0 + post-aggregation wrapper helper returned None →
+    COMPUTE_ERROR, losing actionable parser issues + wasting Batch
+    capacity."""
+    # Mutate the real fixture to break parser consumability — drop
+    # the `doctorRecords` field so the parser surfaces a structural
+    # rejection without breaking shallow snapshotId / metadata
+    # deserialization.
+    snapshot_dict = json.loads(_FIXTURE_PATH.read_text())
+    snapshot_dict["doctorRecords"] = []  # parser requires non-empty per snapshot contract
+    read_json, write_json, _ = _make_inmem_gcs()
+    batch_client = InMemoryBatchClient()
+
+    response = lo.orchestrate_lahc_run(
+        snapshot_dict,
+        master_seed=42,
+        K_approved=8,
+        container_image_uri=_IMAGE,
+        batch_client=batch_client,
+        gcs_read_json=read_json,
+        gcs_write_json=write_json,
+        gcs_delete_prefix=_no_delete,
+        project=_PROJECT, bucket=_BUCKET, region=_REGION,
+        sleep_fn=_no_sleep,
+        time_fn=_virtual_clock(),
+        attempt_id_fn=_fixed_attempt_id_fn,
+    )
+
+    assert response["state"] == "INPUT_ERROR", (
+        "Parser rejection MUST surface as INPUT_ERROR pre-dispatch "
+        "matching local /compute semantics; got "
+        + repr(response.get("state"))
+    )
+    assert response["error"]["code"] == "PARSER_REJECTED"
+    # No Batch job submitted on parser rejection — saved compute
+    assert len(batch_client.submitted_jobs) == 0
+
+
 def test_orchestrator_failure_branch_wrapper_envelope_present() -> None:
     """Codex P2 finding regression on PR #144 commit c990f16:
     UNSATISFIED responses (K'==0) MUST still carry a non-null

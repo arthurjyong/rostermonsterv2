@@ -758,7 +758,7 @@ def orchestrate_lahc_run(
     # Cloud Batch round-trip cost on a snapshot that can't possibly
     # produce a valid envelope.
     try:
-        _snapshot_from_dict(snapshot_dict)
+        snapshot_obj = _snapshot_from_dict(snapshot_dict)
     except (KeyError, TypeError, ValueError) as e:
         return _build_compute_error(
             run_id=run_id,
@@ -771,6 +771,42 @@ def orchestrate_lahc_run(
                 + "). Surfacing as COMPUTE_ERROR here per §10.3 — "
                 "the maintainer test path can't produce a valid "
                 "writebackEnvelope without a parseable snapshot."
+            ),
+        )
+
+    # Validate parser consumability BEFORE dispatching to Cloud Batch.
+    # A snapshot that deserializes but is parser-NON_CONSUMABLE (per
+    # `docs/parser_normalizer_contract.md`) is an input defect — the
+    # local `/compute` path surfaces it as INPUT_ERROR with code
+    # PARSER_REJECTED + a truncated issue summary, NOT COMPUTE_ERROR.
+    # Without this check, Cloud-Batch workers all fail uniformly on
+    # the same parser rejection and the orchestrator maps the resulting
+    # K'==0 + null wrapper to COMPUTE_ERROR / WRAPPER_ASSEMBLY_FAILED
+    # — losing the actionable parser issues + wasting Batch compute on
+    # a request that can't produce a valid envelope. Codex P2 finding
+    # on PR #144 commit bad297f.
+    template = icu_hd_template_artifact()
+    parser_result = parse(snapshot_obj, template)
+    if parser_result.consumability is not Consumability.CONSUMABLE:
+        issue_summary = "; ".join(
+            "[" + getattr(i.severity, "name", str(i.severity)) + "] "
+            + i.code + ": " + i.message
+            for i in parser_result.issues[:5]
+        )
+        if len(parser_result.issues) > 5:
+            issue_summary += (
+                " (+" + str(len(parser_result.issues) - 5) + " more "
+                "issues — truncated for response brevity)"
+            )
+        return _build_input_error(
+            run_id=run_id,
+            master_seed=master_seed,
+            K_approved=K_approved,
+            code="PARSER_REJECTED",
+            message=(
+                "Parser rejected the snapshot at admission with "
+                + str(len(parser_result.issues)) + " issue(s): "
+                + issue_summary
             ),
         )
 
@@ -932,6 +968,41 @@ def orchestrate_lahc_run(
     if agg["trajectoryExceptions"]:
         response["trajectoryExceptions"] = agg["trajectoryExceptions"]
     return response
+
+
+def _build_input_error(
+    *, run_id: str, master_seed: int, K_approved: int,
+    code: str, message: str,
+) -> dict:
+    """Orchestrator-level input-error response (e.g., parser rejected
+    the snapshot at admission). Mirrors `_build_compute_error`'s shape
+    but with `state="INPUT_ERROR"` + `writebackEnvelope=None` per
+    `docs/cloud_compute_contract.md` §10.1 — INPUT_ERROR responses
+    MAY have a null wrapper since they fire before any compute."""
+    return {
+        "state": "INPUT_ERROR",
+        "lahcSummary": {
+            "runId": run_id,
+            "attemptId": "",
+            "masterSeed": master_seed,
+            "kApproved": K_approved,
+            "kPrime": 0,
+            "droppedCount": K_approved,
+            "taskCount": 0,
+            "completedTaskCount": 0,
+            "incompleteTaskIndices": [],
+            "mismatchedAttemptTaskIndices": [],
+            "totalAttempts": 0,
+            "rejectionsByReason": {},
+            "batchJobName": "",
+            "batchFinalState": "NOT_SUBMITTED",
+            "elapsedSeconds": 0.0,
+        },
+        "writebackEnvelope": None,
+        "candidates": [],
+        "failedTrajectories": [],
+        "error": {"code": code, "message": message},
+    }
 
 
 def _build_compute_error(
