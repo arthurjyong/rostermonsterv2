@@ -18,7 +18,8 @@ job-level state polling.
 
 from __future__ import annotations
 
-from typing import Any
+import time
+from typing import Any, Callable
 
 
 # Terminal job states per the Cloud Batch v1 JobStatus.State enum. The
@@ -32,6 +33,30 @@ TERMINAL_JOB_STATES = frozenset([
     JOB_STATE_SUCCEEDED, JOB_STATE_FAILED, JOB_STATE_CANCELLED,
 ])
 
+# Cloud Batch v1 job_id length cap.
+_BATCH_JOB_ID_MAX_LEN = 63
+
+
+def _derive_batch_job_id(run_id: str, *, unique_suffix: str) -> str:
+    """Cloud Batch's `create_job` REJECTS duplicate job_id within a
+    project + region (per its v1 docs — the maintainer's idempotent
+    replay path would 409 on the second submission if we reused the
+    artifact runId verbatim as the Batch job_id). We disambiguate by
+    appending a per-call unique suffix while keeping the prefix
+    derived from runId for traceability.
+
+    Artifact GCS keys remain idempotent — they live under `runId/...`
+    not `batch_job_id/...`, so re-runs of the same (snapshot, seed)
+    overwrite the same GCS paths. Batch job IDs are an internal Batch
+    namespace concern; they don't appear in the artifact layout.
+    """
+    suffix = "-" + unique_suffix
+    prefix_room = _BATCH_JOB_ID_MAX_LEN - len(suffix)
+    if prefix_room < 1:
+        # Pathological — unique_suffix alone exceeds the cap. Truncate.
+        return suffix[1:_BATCH_JOB_ID_MAX_LEN + 1]
+    return run_id[:prefix_room] + suffix
+
 
 class BatchClient:
     """Production Cloud Batch client. Wraps `google.cloud.batch_v1`
@@ -39,13 +64,17 @@ class BatchClient:
 
     Lazy-imports the SDK at construction so importing this module in
     test environments without google-cloud-batch installed is safe
-    (tests use `InMemoryBatchClient` and never construct this class)."""
+    (tests use `InMemoryBatchClient` and never construct this class).
 
-    def __init__(self) -> None:
+    `time_fn` is injectable so deterministic Batch job_id derivation
+    is testable (production defaults to `time.time`)."""
+
+    def __init__(self, *, time_fn: Callable[[], float] = time.time) -> None:
         from google.cloud import batch_v1  # local import per docstring rationale
 
         self._batch_v1 = batch_v1
         self._client = batch_v1.BatchServiceClient()
+        self._time_fn = time_fn
 
     def submit_job(
         self, *,
@@ -57,17 +86,22 @@ class BatchClient:
         """Submit a Cloud Batch job using the dict spec from
         `batch_job_spec.build_lahc_batch_job_spec`. Returns the full job
         name (`projects/X/locations/Y/jobs/Z`) the caller passes to
-        subsequent `get_job_state` / `cancel_job` calls."""
+        subsequent `get_job_state` / `cancel_job` calls.
+
+        The Batch job_id is derived as `<truncated-runId>-<ms-timestamp>`
+        per `_derive_batch_job_id` so a maintainer replay of the same
+        `(snapshot, seed)` doesn't 409 on Batch's "job_id already
+        exists" rule. Artifact GCS keys (under `runId/...`) remain
+        idempotent — only the Batch job ID namespace gets per-call
+        uniqueness."""
         from google.protobuf import json_format
 
         job = json_format.ParseDict(job_spec, self._batch_v1.Job())
         parent = "projects/" + project + "/locations/" + region
-        # job_id MUST be unique per project+region; using run_id keeps it
-        # deterministic + traceable. Cloud Batch accepts lowercase
-        # alphanumerics + dashes only — orchestrator-side runId
-        # construction MUST conform.
+        unique_suffix = str(int(self._time_fn() * 1000))
+        job_id = _derive_batch_job_id(run_id, unique_suffix=unique_suffix)
         result = self._client.create_job(
-            parent=parent, job=job, job_id=run_id,
+            parent=parent, job=job, job_id=job_id,
         )
         return result.name
 
@@ -97,10 +131,15 @@ class InMemoryBatchClient:
     advances one step per `get_job_state` call. The default
     `state_sequence=["SUCCEEDED"]` makes the first poll terminal.
 
-    `submitted_jobs` exposes the `(project, region, run_id, job_spec)`
-    tuple of every submitted job for assertion in tests; `cancelled_jobs`
-    exposes the names of cancelled jobs for assertion of the
-    orchestrator's deadline-cancel path.
+    `submitted_jobs` exposes the `(project, region, run_id, job_id,
+    job_spec)` tuple of every submitted job for assertion in tests;
+    `cancelled_jobs` exposes the names of cancelled jobs for assertion
+    of the orchestrator's deadline-cancel path.
+
+    Mirrors `BatchClient`'s per-call unique Batch job_id derivation but
+    uses a monotonic counter (vs `time.time()`) so test assertions
+    don't have to mock clocks — the Nth submit always uses
+    `<run_id>-call-N`.
     """
 
     def __init__(
@@ -109,6 +148,7 @@ class InMemoryBatchClient:
     ) -> None:
         self._state_sequence = state_sequence or [JOB_STATE_SUCCEEDED]
         self._poll_count = 0
+        self._submit_count = 0
         self.submitted_jobs: list[dict[str, Any]] = []
         self.cancelled_jobs: list[str] = []
 
@@ -119,13 +159,17 @@ class InMemoryBatchClient:
         run_id: str,
         job_spec: dict[str, Any],
     ) -> str:
+        self._submit_count += 1
+        unique_suffix = "call-" + str(self._submit_count)
+        job_id = _derive_batch_job_id(run_id, unique_suffix=unique_suffix)
         self.submitted_jobs.append({
             "project": project,
             "region": region,
             "run_id": run_id,
+            "job_id": job_id,
             "job_spec": job_spec,
         })
-        return "projects/" + project + "/locations/" + region + "/jobs/" + run_id
+        return "projects/" + project + "/locations/" + region + "/jobs/" + job_id
 
     def get_job_state(self, *, job_name: str) -> str:
         # Advance through the configured sequence; clamp to the last

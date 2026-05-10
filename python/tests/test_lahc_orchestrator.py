@@ -94,9 +94,10 @@ def _virtual_clock(start: float = 0.0, step: float = 1.0):
 
 def test_derive_run_id_sanitizes_special_chars() -> None:
     """Cloud Batch job_id accepts lowercase alphanumerics + dashes only.
-    Snapshot IDs may contain `_` / `:` / `/` / camelCase — sanitize."""
+    Snapshot IDs may contain `_` / `:` / `/` / camelCase — sanitize.
+    Output layout: `<sanitized-prefix>-<8hex>-seed-<label>`."""
     out = lo.derive_run_id("MySnapshot/ID:123_v2", master_seed=42)
-    assert out.startswith("mysnapshot-id-123-v2")
+    assert out.startswith("mysnapshot-id-123-v2-")
     assert "-seed-42" in out
     assert all(c.isalnum() or c == "-" for c in out)
 
@@ -133,6 +134,25 @@ def test_derive_run_id_truncates_long_input() -> None:
     out = lo.derive_run_id(long_id, master_seed=42)
     assert len(out) <= 63
     assert "-seed-42" in out, "seed label must survive truncation"
+
+
+def test_derive_run_id_distinguishes_truncated_long_snapshots() -> None:
+    """Codex P2 finding: real bound-shim `snapshot_<spreadsheetId>_<extractionTimestamp>`
+    IDs are long enough that right-truncation alone would drop the
+    timestamp, collapsing two distinct extractions of the same
+    spreadsheet to the same runId. The content-hash component MUST
+    keep them distinct even after truncation."""
+    # Both IDs share a 60-char prefix that, after sanitization +
+    # truncation, would collapse to the same string without the hash.
+    sheet_id = "10p2TvME4gmPB39PFCsmAB6tCrPo96zSbpnTvKKKOAvI"  # 44 chars
+    snap_a = "snapshot_" + sheet_id + "_2026-05-10T12:34:56"
+    snap_b = "snapshot_" + sheet_id + "_2026-05-10T13:45:67"
+    run_a = lo.derive_run_id(snap_a, master_seed=42)
+    run_b = lo.derive_run_id(snap_b, master_seed=42)
+    assert run_a != run_b, (
+        "Two extractions of the same spreadsheet at different timestamps "
+        "MUST produce different runIds — Codex P2 finding regression."
+    )
 
 
 def test_derive_run_id_rejects_empty_snapshot_id() -> None:

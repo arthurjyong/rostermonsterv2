@@ -47,6 +47,7 @@ real `BatchClient` + `make_gcs_adapter(...)`; tests pass
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from typing import Any, Callable
@@ -97,12 +98,22 @@ def _gcs_uri(bucket: str, run_id: str, *parts: str) -> str:
 def derive_run_id(snapshot_id: str, master_seed: int) -> str:
     """Derive a unique-but-deterministic runId from `(snapshotId,
     masterSeed)` so re-runs with identical parameters overwrite GCS
-    artifacts (idempotent forensic replay) while different parameters
-    get distinct paths.
+    artifacts (idempotent forensic replay) while different parameters —
+    including different extractions of the same spreadsheet at
+    different timestamps — get distinct paths.
 
-    Cloud Batch's `job_id` field accepts lowercase alphanumerics +
-    dashes only — sanitize the snapshot ID to that range so
-    `client.create_job(job_id=...)` doesn't reject the input.
+    Real bound-shim snapshot IDs are `snapshot_<spreadsheetId>_<extractionTimestamp>`
+    per `docs/snapshot_adapter_contract.md`. The spreadsheetId portion
+    alone can run ~44 chars; sanitization + a `-seed-N` suffix would
+    exceed Cloud Batch's 63-char `job_id` cap and force right-truncation
+    that drops the timestamp, collapsing two distinct extractions of
+    the same spreadsheet to the same runId. To preserve uniqueness
+    under truncation, we mix a content hash of the FULL `(snapshot_id,
+    master_seed)` tuple into the runId and reserve fixed-length slots
+    for the readable prefix + entropy hash + seed label. Two
+    extractions of the same spreadsheet with the same seed produce
+    different snapshot_ids → different content hashes → different
+    runIds. Idempotency is preserved by hashing the same input tuple.
     """
     if not isinstance(snapshot_id, str) or not snapshot_id:
         raise ValueError(
@@ -117,17 +128,31 @@ def derive_run_id(snapshot_id: str, master_seed: int) -> str:
             "snapshot_id sanitized to empty string; original was "
             + repr(snapshot_id)
         )
+
+    # 8-hex-char content hash over the full unsanitized input tuple
+    # disambiguates collisions when sanitized + truncated forms would
+    # match. 16^8 = 4.3B distinct values per (snapshot_id, master_seed)
+    # combination — collision-resistant for the maintainer test path's
+    # request volume.
+    content_hash = hashlib.sha256(
+        (snapshot_id + ":" + str(master_seed)).encode("utf-8")
+    ).hexdigest()[:8]
+
     seed_label = "n" + str(abs(master_seed)) if master_seed < 0 else str(master_seed)
-    candidate = sanitized + "-seed-" + seed_label
-    # Cloud Batch job_id max length is 63 chars per its v1 docs. Truncate
-    # if needed; the suffix carries the entropy-bearing seed_label so
-    # truncation favors keeping the seed identifier intact.
-    max_len = 63
-    if len(candidate) > max_len:
-        suffix = "-seed-" + seed_label
-        prefix_room = max_len - len(suffix)
-        candidate = sanitized[:prefix_room] + suffix
-    return candidate
+
+    # Layout: <readable-prefix>-<8hex>-seed-<label>
+    # Reserve room for the entropy hash + seed suffix; truncate the
+    # readable prefix as needed.
+    suffix = "-" + content_hash + "-seed-" + seed_label
+    max_len = 63  # Cloud Batch v1 job_id length cap
+
+    prefix_room = max_len - len(suffix)
+    if prefix_room < 1:
+        # Suffix alone exceeds budget (extreme seed values). Fall back
+        # to hash-only — still unique per tuple + still job_id-conformant.
+        return ("h-" + content_hash + "-seed-" + seed_label)[:max_len]
+
+    return sanitized[:prefix_room] + suffix
 
 
 def _partition_seeds(seeds: list[int], per_task: int = TRAJECTORIES_PER_TASK) -> list[list[int]]:
