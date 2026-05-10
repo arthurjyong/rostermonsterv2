@@ -9,3 +9,10 @@ gunicorn>=23.0,<24.0
 # audience-mismatch finding from M4 C1 Phase 2 testing).
 google-auth>=2.30,<3.0
 requests>=2.32,<3.0
+# GCS read/write for the M7 C2 Cloud Batch worker
+# (`rostermonster_service.worker`) — pulls input snapshot + per-task seed
+# slice, writes per-task result.json per `docs/cloud_compute_contract.md`
+# §8.7. Lazy-imported at adapter-construction time so test environments
+# without google-cloud-storage installed (in-memory GCS adapter) can
+# still import the worker module.
+google-cloud-storage>=2.18,<4.0
