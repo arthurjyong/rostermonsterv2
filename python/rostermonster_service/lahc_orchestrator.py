@@ -2,23 +2,20 @@
 `docs/cloud_compute_contract.md` §8.7 + `docs/delivery_plan.md` §9 M7 C2
 Task 2F.
 
-**Concurrent-replay race (acceptable for the maintainer-only test path):**
+**Concurrent-replay race closed at T2G via attempt-id validation:**
 the runId is deterministic per `(snapshotId, masterSeed)` so two
 maintainer-issued replays of the same parameters share the same GCS
 artifact prefix. The pre-write `gcs_delete_prefix(runId/)` step
-(below) keeps a serial replay clean — any prior attempt's artifacts
-get wiped before the new attempt writes its inputs. But two
-orchestrator calls running concurrently against the same `(snapshot,
-seed)` can interleave clears + writes + reads, producing mixed K'
-aggregations that include candidates from both attempts. Codex
-flagged this as a P1 finding on PR #143; the fix lands at M7 C3
-when the §9 amendment promotes the LAHC path from this maintainer-
-only test route to the public `POST /compute` route — at that point
-attempt-id validation (orchestrator stamps an `attemptId` into
-seeds.json, worker echoes back into result.json, orchestrator
-validates on read) closes the race for unbounded operator traffic.
-For T2F's single-maintainer test usage, the serial-replay clean
-path is sufficient and the concurrent-race window is acceptable.
+(below) keeps a serial replay clean. Concurrent replays were a P1
+race window flagged at T2F (PR #143) — closed at T2G by stamping a
+fresh `attemptId` (uuid4 hex) into every per-task `seeds.json`, the
+worker echoes it back into `result.json`, and aggregation validates
+`result.attemptId == expected_attempt_id` on read; mismatched /
+missing attemptIds are treated as missing per §8.7's primary K'
+definition. So if two orchestrator calls overlap on the same runId,
+each sees only its own attempt's results — at worst one attempt
+sees all its inputs stomped (UNSATISFIED) but never a polluted /
+mixed K' aggregation.
 
 `orchestrate_lahc_run(snapshot_dict, ...)` is the entry point the M7 C2
 Task 2F maintainer-only `/compute-lahc-test` route calls. End-to-end
@@ -65,12 +62,40 @@ real `BatchClient` + `make_gcs_adapter(...)`; tests pass
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import logging
 import time
+import uuid
 from typing import Any, Callable
 
-from rostermonster.solver import derive_K_seeds
+from rostermonster.domain import AssignmentUnit, IssueSeverity, ValidationIssue
+from rostermonster.parser import Consumability, parse
+from rostermonster.pipeline import _assemble_writeback_wrapper, _snapshot_from_dict
+from rostermonster.scorer import ScoringConfig, score
+from rostermonster.selector import (
+    AllocationResult,
+    LahcParamsRecord,
+    LahcStrategyConfig,
+    RetentionMode,
+    RunEnvelope,
+    ScoredCandidateSet,
+    ScoredTrialCandidate,
+    select,
+)
+from rostermonster.solver import (
+    STRATEGY_LAHC,
+    CandidateSet,
+    LahcParams,
+    PreferenceSeedingConfig,
+    SearchDiagnostics,
+    TrialCandidate,
+    UnfilledDemandEntry,
+    UnsatisfiedResult,
+    compute_cr_floor,
+    derive_K_seeds,
+)
+from rostermonster.templates import icu_hd_template_artifact
 from rostermonster_service.batch_client import (
     JOB_STATE_CANCELLED,
     JOB_STATE_FAILED,
@@ -223,12 +248,22 @@ def _aggregate_results(
     task_count: int,
     bucket: str,
     run_id: str,
+    expected_attempt_id: str,
     gcs_read_json: ReadJsonFn,
 ) -> dict[str, Any]:
     """Read per-task `result.json` files from GCS and aggregate.
     Missing / unreadable results contribute 0 candidates per §8.7's
     primary K' definition; they're counted in `incomplete_task_indices`
-    so the response surfaces which tasks contributed nothing."""
+    so the response surfaces which tasks contributed nothing.
+
+    Validates each result.json's `attemptId` against the
+    `expected_attempt_id` per the §8.7 concurrent-replay race fix
+    (T2G): a result.json with a mismatched / missing attemptId belongs
+    to a different attempt at the same runId prefix and MUST NOT
+    contribute candidates to this attempt's K'. Mismatches are counted
+    in `mismatched_attempt_task_indices` for diagnostics + treated the
+    same as missing results.
+    """
     candidates: list[dict] = []
     failed_trajectories: list[dict] = []
     trajectory_exceptions: list[dict] = []
@@ -236,6 +271,7 @@ def _aggregate_results(
     aggregate_rejections: dict[str, int] = {}
     completed_task_indices: list[int] = []
     incomplete_task_indices: list[int] = []
+    mismatched_attempt_task_indices: list[int] = []
     per_task_results: list[dict | None] = []
 
     for task_index in range(task_count):
@@ -251,6 +287,22 @@ def _aggregate_results(
             )
             per_task_results.append(None)
             incomplete_task_indices.append(task_index)
+            continue
+
+        # §8.7 attemptId validation per the T2G concurrent-replay race
+        # fix: a result.json from a different attempt (or pre-T2G with
+        # no attemptId) at the same runId prefix MUST NOT contribute
+        # to this attempt's K'.
+        result_attempt_id = result.get("attemptId")
+        if result_attempt_id != expected_attempt_id:
+            log.warning(
+                "Task %d result.json has attemptId=%r; expected %r — "
+                "treating as missing (stale from a prior attempt)",
+                task_index, result_attempt_id, expected_attempt_id,
+            )
+            per_task_results.append(None)
+            incomplete_task_indices.append(task_index)
+            mismatched_attempt_task_indices.append(task_index)
             continue
 
         per_task_results.append(result)
@@ -273,8 +325,338 @@ def _aggregate_results(
         "aggregateRejectionsByReason": aggregate_rejections,
         "completedTaskIndices": completed_task_indices,
         "incompleteTaskIndices": incomplete_task_indices,
+        "mismatchedAttemptTaskIndices": mismatched_attempt_task_indices,
         "perTaskResults": per_task_results,
     }
+
+
+def _assignment_unit_from_dict(d: dict) -> AssignmentUnit:
+    """Inverse of `_to_jsonable(AssignmentUnit)` — rebuilds an
+    `AssignmentUnit` from the worker's serialized dict form so the
+    orchestrator's downstream scorer/selector can consume it."""
+    return AssignmentUnit(
+        dateKey=d["dateKey"],
+        slotType=d["slotType"],
+        unitIndex=int(d["unitIndex"]),
+        doctorId=d["doctorId"],
+    )
+
+
+def _build_post_aggregation_envelope(
+    *,
+    snapshot_dict: dict,
+    agg: dict,
+    master_seed: int,
+    K_approved: int,
+    run_id: str,
+) -> dict | None:
+    """T2G post-aggregation pipeline: take the K' candidates the orchestrator
+    aggregated from per-task result.json files + run them through the
+    standard scorer → selector → wrapper-envelope chain (matching what
+    `pipeline.run_pipeline()` does for the local CLI path) so the
+    `/compute-lahc-test` route returns the same `writebackEnvelope` shape
+    as the existing `POST /compute` route.
+
+    Returns the wrapper envelope dict, or `None` if K' == 0 (caller
+    should surface UNSATISFIED state without a wrapper). The orchestrator
+    stays the only post-T2D module that consumes the scorer/selector
+    surface for the LAHC path; worker stays scoring-blind end-to-end per
+    `docs/solver_contract.md` §9 / §11.
+    """
+    candidates_raw = agg["candidates"]
+
+    # Re-parse snapshot. Worker also did this per-task, but the
+    # orchestrator needs its own NormalizedModel + ScoringConfig to
+    # score candidates + run selector. Cost is one parse on the
+    # operator-response wall (~50ms for K=104 at production scale,
+    # ~5ms per `tests/test_pipeline.py` measurements) — acceptable
+    # vs the alternative of serializing model state through GCS.
+    # `orchestrate_lahc_run` pre-validates snapshot deserializability
+    # at entry (returning COMPUTE_ERROR on failure) so this call is
+    # guaranteed to succeed when the helper is invoked.
+    snapshot = _snapshot_from_dict(snapshot_dict)
+    template = icu_hd_template_artifact()
+    parser_result = parse(snapshot, template)
+    # `orchestrate_lahc_run` pre-validates parser consumability at entry
+    # (returning INPUT_ERROR with code PARSER_REJECTED on NON_CONSUMABLE)
+    # and writes the snapshot to GCS BEFORE Batch dispatch. The snapshot
+    # is immutable in GCS, so re-parse here MUST also be CONSUMABLE.
+    # Assert the invariant rather than carrying a defensive `return None`
+    # branch (which Codex's pattern-matcher flagged as the still-stale
+    # "parser rejections before Batch dispatch" finding even after the
+    # entry-level pre-validation landed).
+    assert parser_result.consumability is Consumability.CONSUMABLE, (
+        "post-Batch parser_result is " + repr(parser_result.consumability)
+        + " despite orchestrator pre-dispatch CONSUMABLE check + "
+        "GCS-immutable snapshot — internal invariant broken"
+    )
+
+    model = parser_result.normalizedModel
+    scoring_config = (parser_result.scoringConfig
+                      or ScoringConfig.first_release_defaults(model))
+    # §13.4 audit requirement: the computed CR floor MUST be logged in
+    # SearchDiagnostics + RunEnvelope. Both surfaces below derive the
+    # value the same way `solve()` does (via compute_cr_floor on the
+    # SMART_MEDIAN default config) so wrapper diagnostics match the
+    # actual solver run that produced the candidates. Codex P2 finding
+    # on PR #144 commit f9f9afe.
+    cr_floor_seeding = PreferenceSeedingConfig()
+    cr_floor_x = compute_cr_floor(model, cr_floor_seeding.crFloor)
+
+    # Reconstruct trial candidates from agg["candidates"]. Each
+    # candidate's assignments came from the worker as JSON dicts;
+    # convert back to AssignmentUnit objects so the scorer/selector
+    # can consume them. `candidateId` is 1-indexed dense per
+    # `docs/selector_contract.md` §16; the orchestrator's emission
+    # order = aggregation order across tasks (task-0 candidates first,
+    # then task-1, ...). Empty when K' == 0 (failure-branch path
+    # below).
+    trial_candidates = tuple(
+        TrialCandidate(
+            candidateId=i + 1,
+            assignments=tuple(
+                _assignment_unit_from_dict(a) for a in cand["assignments"]
+            ),
+        )
+        for i, cand in enumerate(candidates_raw)
+    )
+
+    # Build SearchDiagnostics. Per `docs/solver_contract.md` §12A.9, the
+    # per-trajectory arrays MUST have an entry for EVERY trajectory the
+    # solver attempted, with `0` / `None` for `SEED_FAILED` entries.
+    # Walk the original (task_index, candidate_seed) emission order so
+    # the arrays are flattened in the same order the local-CLI's
+    # `solve()` produces — this is the §12A.9 invariant the analyzer +
+    # writeback consumers depend on.
+    #
+    # Missing tasks (no result.json on aggregation) contribute no
+    # per-trajectory entries; this is a Cloud-Batch-specific gap with
+    # no local-CLI analog. Operators see those tasks counted in
+    # `lahcSummary.incompleteTaskIndices` instead.
+    candidate_lookup = {
+        (c["taskIndex"], c["candidateSeed"]): c
+        for c in candidates_raw
+    }
+    failed_lookup = {
+        (f["taskIndex"], f["candidateSeed"]): f
+        for f in agg["failedTrajectories"]
+    }
+    all_seeds = derive_K_seeds(master_seed, K_approved)
+    # Local re-import to avoid circular: _partition_seeds is module-level.
+    per_task_seeds = _partition_seeds(all_seeds)
+    per_traj_status_list: list[str] = []
+    per_traj_iters_list: list[int] = []
+    per_traj_accepted_list: list[int] = []
+    per_traj_best_list: list[float | None] = []
+    per_traj_terminal_list: list[float | None] = []
+    for t_idx, t_seeds in enumerate(per_task_seeds):
+        for seed in t_seeds:
+            key = (t_idx, seed)
+            if key in candidate_lookup:
+                c = candidate_lookup[key]
+                per_traj_status_list.append("SUCCEEDED")
+                per_traj_iters_list.append(int(c["iters"]))
+                per_traj_accepted_list.append(int(c["acceptedMoves"]))
+                per_traj_best_list.append(c["bestScore"])
+                per_traj_terminal_list.append(c["terminalScore"])
+            elif key in failed_lookup:
+                per_traj_status_list.append("SEED_FAILED")
+                per_traj_iters_list.append(0)
+                per_traj_accepted_list.append(0)
+                per_traj_best_list.append(None)
+                per_traj_terminal_list.append(None)
+            # else: missing task — no per-trajectory entry recorded;
+            # surfaces via `lahcSummary.incompleteTaskIndices`.
+    per_traj_status = tuple(per_traj_status_list)
+    per_traj_iters = tuple(per_traj_iters_list)
+    per_traj_accepted = tuple(per_traj_accepted_list)
+    per_traj_best = tuple(per_traj_best_list)
+    per_traj_terminal = tuple(per_traj_terminal_list)
+
+    diagnostics = SearchDiagnostics(
+        strategyId=STRATEGY_LAHC,
+        fillOrderPolicy="MOST_CONSTRAINED_FIRST",
+        crFloorMode="SMART_MEDIAN",
+        crFloorComputed=cr_floor_x,
+        seed=master_seed,
+        placementAttempts=int(agg["aggregateAttempts"]),
+        ruleEngineRejectionsByReason=dict(agg["aggregateRejectionsByReason"]),
+        candidateEmitCount=len(trial_candidates),
+        unfilledDemandCount=0,
+        lahcHistoryListLength=50,   # FW-0037 elbow tuple per worker.py
+        # `worker.py` constructs `LahcParams(historyListLength=50,
+        # idleThreshold=3500, swapProbability=0.5)` with `maxIters`
+        # defaulted to the §12A.5 default (100,000). Surface the
+        # default value here so the SearchDiagnostics + RunEnvelope
+        # agree on which iteration cap shaped the search (Codex P2
+        # finding on PR #144 commit 83c10be — pre-fix the field was
+        # None, contradicting RunEnvelope which already reported
+        # 100000 via LahcParamsRecord(maxIters=LahcParams().maxIters).
+        lahcMaxIters=LahcParams().maxIters,
+        lahcIdleThreshold=3500,
+        lahcSwapProbability=0.5,
+        seedDerivationFunction="python.Random.getrandbits.candidate_seed",
+        perTrajectoryStatus=per_traj_status,
+        perTrajectoryIters=per_traj_iters,
+        perTrajectoryAcceptedMoves=per_traj_accepted,
+        perTrajectoryBestScore=per_traj_best,
+        perTrajectoryTerminalScore=per_traj_terminal,
+    )
+    # Build RunEnvelope mirroring pipeline._build_run_envelope's LAHC
+    # branch. The orchestrator's run_id is per-call unique (encodes
+    # snapshotId + masterSeed + content hash); the standard runEnvelope
+    # uses `snapshot.metadata.snapshotId`, but for the cloud-LAHC path
+    # surfacing the orchestrator's runId in the envelope keeps GCS
+    # forensic replay traceable from the writeback artifact.
+    md = snapshot.metadata
+    # §13 byte-identity invariant: writebackEnvelope MUST match local-
+    # CLI's `pipeline._build_run_envelope` for the same snapshot +
+    # explicit seed. Local CLI uses `runId=md.snapshotId` and
+    # `crFloorComputed=0` in the RunEnvelope (the actual computed
+    # floor lives in `AllocationResult.searchDiagnostics.crFloorComputed`
+    # below — that surface IS aligned across both paths). Cloud-Batch
+    # must mirror to preserve byte-identity per Codex P2 finding on
+    # PR #144 commit 1235345. The orchestrator's per-call run_id
+    # encoding (with hash + seed suffix) lives in
+    # `lahcSummary.runId` for forensic GCS replay; envelope-level
+    # divergence between paths would break the §13 contract.
+    run_envelope = RunEnvelope(
+        runId=md.snapshotId,
+        snapshotRef=md.snapshotId,
+        configRef="first_release_defaults",
+        seed=master_seed,
+        fillOrderPolicy="MOST_CONSTRAINED_FIRST",
+        crFloorMode="SMART_MEDIAN",
+        crFloorComputed=0,
+        generationTimestamp=md.generationTimestamp,
+        sourceSpreadsheetId=md.sourceSpreadsheetId,
+        sourceTabName=md.sourceTabName,
+        solverStrategy=STRATEGY_LAHC,
+        solverStrategyConfig=LahcStrategyConfig(
+            lahcParams=LahcParamsRecord(
+                historyListLength=50,
+                idleThreshold=3500,
+                maxIters=LahcParams().maxIters,
+                swapProbability=0.5,
+            ),
+        ),
+    )
+
+    # Branch on K'. Both paths produce a FinalResultEnvelope (success
+    # OR failure-branch) per `docs/cloud_compute_contract.md` §10.2 +
+    # §10.3 — UNSATISFIED responses MUST still carry a wrapper so the
+    # bound shim's `RMLib.applyWriteback(response.writebackEnvelope)`
+    # call doesn't crash on null. Codex P2 finding on PR #144 commit
+    # c990f16.
+    if trial_candidates:
+        # SUCCESS branch — score K' candidates + run selector.
+        candidate_set = CandidateSet(
+            candidates=trial_candidates,
+            diagnostics=diagnostics,
+        )
+        scored = ScoredCandidateSet(
+            candidates=tuple(
+                ScoredTrialCandidate(
+                    candidate=cand,
+                    score=score(cand.assignments, model, scoring_config),
+                )
+                for cand in candidate_set.candidates
+            ),
+            diagnostics=diagnostics,
+        )
+        envelope = select(
+            scored,
+            retentionMode=RetentionMode.BEST_ONLY,
+            runEnvelope=run_envelope,
+        )
+    else:
+        # FAILURE branch (K' == 0) — synthesize an UnsatisfiedResult
+        # from the per-task failedTrajectories aggregation; selector
+        # forwards via the failure-branch wrapper per
+        # `docs/selector_contract.md` §15.
+        unsatisfied = _build_unsatisfied_from_aggregation(
+            agg=agg, diagnostics=diagnostics, master_seed=master_seed,
+        )
+        envelope = select(
+            unsatisfied,
+            retentionMode=RetentionMode.BEST_ONLY,
+            runEnvelope=run_envelope,
+        )
+
+    return _assemble_writeback_wrapper(envelope, snapshot, template)
+
+
+def _build_unsatisfied_from_aggregation(
+    *, agg: dict, diagnostics: SearchDiagnostics, master_seed: int,
+) -> UnsatisfiedResult:
+    """Synthesize an `UnsatisfiedResult` from the orchestrator's
+    aggregated `failedTrajectories` for the K'==0 path. The selector
+    then wraps it in the failure-branch FinalResultEnvelope per
+    `docs/selector_contract.md` §15 + §10.2, so the
+    `/compute-lahc-test` route can return a non-null wrapper even
+    when every trajectory failed (Codex P2 finding on PR #144 commit
+    c990f16; bound shim's `RMLib.applyWriteback(envelope)` requires
+    a non-null envelope per `docs/cloud_compute_contract.md` §10.3).
+
+    `unfilledDemand` is deduped by `(dateKey, slotType, unitIndex)`
+    matching `solver.py::_build_unsatisfied`'s discipline.
+    `reasons` carries one ValidationIssue per (failed_trajectory,
+    unit) pair so analyzer / writeback consumers can see which seed
+    hit which failure (per §12A.8 "complete per-trajectory failure
+    data")."""
+    seen_units: set[tuple[str, str, int]] = set()
+    unfilled_list: list[UnfilledDemandEntry] = []
+    reasons_list: list[ValidationIssue] = []
+    for failed in agg["failedTrajectories"]:
+        candidate_seed = failed.get("candidateSeed")
+        task_index = failed.get("taskIndex")
+        for u in failed.get("unfilledDemand", []) or []:
+            date_key = u.get("dateKey", "")
+            slot_type = u.get("slotType", "")
+            unit_index = int(u.get("unitIndex", 0))
+            reasons_list.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code="UNFILLABLE_DEMAND",
+                    message=(
+                        "No eligible-and-rule-valid doctor for ("
+                        + str(date_key) + ", " + str(slot_type)
+                        + ", unit " + str(unit_index)
+                        + ") under LAHC seed=" + str(candidate_seed)
+                        + " (Cloud Batch task " + str(task_index) + ")"
+                    ),
+                    context={
+                        "dateKey": date_key,
+                        "slotType": slot_type,
+                        "unitIndex": unit_index,
+                        "taskIndex": task_index,
+                        "seed": candidate_seed,
+                    },
+                )
+            )
+            key = (date_key, slot_type, unit_index)
+            if key in seen_units:
+                continue
+            seen_units.add(key)
+            unfilled_list.append(
+                UnfilledDemandEntry(
+                    dateKey=date_key,
+                    slotType=slot_type,
+                    unitIndex=unit_index,
+                )
+            )
+    # The input `diagnostics` was built with `unfilledDemandCount=0`
+    # (matching the success branch). Override here so the failure-
+    # branch SearchDiagnostics correctly reports the deduped unfilled
+    # count per `docs/solver_contract.md` §18 audit invariant.
+    failure_diagnostics = dataclasses.replace(
+        diagnostics, unfilledDemandCount=len(unfilled_list),
+    )
+    return UnsatisfiedResult(
+        unfilledDemand=tuple(unfilled_list),
+        reasons=tuple(reasons_list),
+        diagnostics=failure_diagnostics,
+    )
 
 
 def orchestrate_lahc_run(
@@ -294,6 +676,7 @@ def orchestrate_lahc_run(
     poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
     sleep_fn: Callable[[float], None] = time.sleep,
     time_fn: Callable[[], float] = time.monotonic,
+    attempt_id_fn: Callable[[], str] = lambda: uuid.uuid4().hex,
 ) -> dict[str, Any]:
     """Orchestrate one M7 LAHC Cloud Batch run end-to-end. Returns a
     structured response dict the maintainer-only `/compute-lahc-test`
@@ -361,6 +744,79 @@ def orchestrate_lahc_run(
     snapshot_id = metadata["snapshotId"]
     run_id = derive_run_id(snapshot_id, master_seed)
 
+    # Validate the snapshot is fully deserializable BEFORE dispatching
+    # to Cloud Batch. The route's body validation only checks the
+    # shallow `snapshot.metadata.snapshotId` presence; a snapshot can
+    # have a valid snapshotId but be otherwise malformed (e.g., missing
+    # required `periodRef` / `doctorRecords` / etc.). Without this
+    # check, workers fail uniformly + K'==0 + the post-aggregation
+    # wrapper helper can't re-parse the snapshot to build a failure-
+    # branch envelope, leaving `writebackEnvelope=null` while still
+    # reporting `state=UNSATISFIED` (§10.3 violation). Codex P2
+    # finding on PR #144 commit 80e0ceb. Surfacing as COMPUTE_ERROR
+    # here keeps the §10.3 invariant + saves the maintainer the
+    # Cloud Batch round-trip cost on a snapshot that can't possibly
+    # produce a valid envelope.
+    try:
+        snapshot_obj = _snapshot_from_dict(snapshot_dict)
+    except (KeyError, TypeError, ValueError) as e:
+        return _build_compute_error(
+            run_id=run_id,
+            master_seed=master_seed,
+            K_approved=K_approved,
+            code="SNAPSHOT_NOT_DESERIALIZABLE",
+            message=(
+                "snapshot has a valid snapshotId but is otherwise not "
+                "deserializable (" + type(e).__name__ + ": " + str(e)
+                + "). Surfacing as COMPUTE_ERROR here per §10.3 — "
+                "the maintainer test path can't produce a valid "
+                "writebackEnvelope without a parseable snapshot."
+            ),
+        )
+
+    # Validate parser consumability BEFORE dispatching to Cloud Batch.
+    # A snapshot that deserializes but is parser-NON_CONSUMABLE (per
+    # `docs/parser_normalizer_contract.md`) is an input defect — the
+    # local `/compute` path surfaces it as INPUT_ERROR with code
+    # PARSER_REJECTED + a truncated issue summary, NOT COMPUTE_ERROR.
+    # Without this check, Cloud-Batch workers all fail uniformly on
+    # the same parser rejection and the orchestrator maps the resulting
+    # K'==0 + null wrapper to COMPUTE_ERROR / WRAPPER_ASSEMBLY_FAILED
+    # — losing the actionable parser issues + wasting Batch compute on
+    # a request that can't produce a valid envelope. Codex P2 finding
+    # on PR #144 commit bad297f.
+    template = icu_hd_template_artifact()
+    parser_result = parse(snapshot_obj, template)
+    if parser_result.consumability is not Consumability.CONSUMABLE:
+        issue_summary = "; ".join(
+            "[" + getattr(i.severity, "name", str(i.severity)) + "] "
+            + i.code + ": " + i.message
+            for i in parser_result.issues[:5]
+        )
+        if len(parser_result.issues) > 5:
+            issue_summary += (
+                " (+" + str(len(parser_result.issues) - 5) + " more "
+                "issues — truncated for response brevity)"
+            )
+        return _build_input_error(
+            run_id=run_id,
+            master_seed=master_seed,
+            K_approved=K_approved,
+            code="PARSER_REJECTED",
+            message=(
+                "Parser rejected the snapshot at admission with "
+                + str(len(parser_result.issues)) + " issue(s): "
+                + issue_summary
+            ),
+        )
+
+    # Per-attempt unique ID for the §8.7 concurrent-replay race fix
+    # (T2G). Stamped into every per-task seeds.json; worker echoes
+    # back into result.json; aggregation validates on read so a
+    # concurrent attempt at the same runId can't pollute this
+    # attempt's K' aggregation.
+    attempt_id = attempt_id_fn()
+
     # --- Seed pre-derivation + partition -----------------------------
     all_seeds = derive_K_seeds(master_seed, K_approved)
     per_task_seeds = _partition_seeds(all_seeds)
@@ -405,6 +861,7 @@ def orchestrate_lahc_run(
             "runId": run_id,
             "taskIndex": task_index,
             "masterSeed": master_seed,
+            "attemptId": attempt_id,
             "seeds": seeds,
         })
 
@@ -436,6 +893,7 @@ def orchestrate_lahc_run(
         task_count=task_count,
         bucket=bucket,
         run_id=run_id,
+        expected_attempt_id=attempt_id,
         gcs_read_json=gcs_read_json,
     )
 
@@ -445,6 +903,7 @@ def orchestrate_lahc_run(
 
     summary = {
         "runId": run_id,
+        "attemptId": attempt_id,
         "masterSeed": master_seed,
         "kApproved": K_approved,
         "kPrime": k_prime,
@@ -452,6 +911,7 @@ def orchestrate_lahc_run(
         "taskCount": task_count,
         "completedTaskCount": len(agg["completedTaskIndices"]),
         "incompleteTaskIndices": agg["incompleteTaskIndices"],
+        "mismatchedAttemptTaskIndices": agg["mismatchedAttemptTaskIndices"],
         "totalAttempts": agg["aggregateAttempts"],
         "rejectionsByReason": agg["aggregateRejectionsByReason"],
         "batchJobName": job_name,
@@ -459,9 +919,48 @@ def orchestrate_lahc_run(
         "elapsedSeconds": round(elapsed, 3),
     }
 
+    # T2G: post-aggregation pipeline — score K' candidates (success
+    # branch) OR build failure-branch envelope from
+    # failedTrajectories aggregation (UNSATISFIED branch). Either way
+    # produces a non-null wrapper per `docs/cloud_compute_contract.md`
+    # §10.3 (OK/UNSATISFIED MUST carry a non-null
+    # writebackEnvelope). The helper only returns None on a defensive
+    # post-Batch parser rejection (snapshot deserialized fine at
+    # orchestrator entry but parse() rejected — shouldn't happen since
+    # snapshot is immutable in GCS); detect + promote to COMPUTE_ERROR
+    # rather than violating §10.3.
+    wrapper_envelope = _build_post_aggregation_envelope(
+        snapshot_dict=snapshot_dict,
+        agg=agg,
+        master_seed=master_seed,
+        K_approved=K_approved,
+        run_id=run_id,
+    )
+
+    if wrapper_envelope is None:
+        log.error(
+            "Wrapper envelope assembly returned None despite orchestrator "
+            "pre-validation; promoting to COMPUTE_ERROR per §10.3"
+        )
+        return _build_compute_error(
+            run_id=run_id,
+            master_seed=master_seed,
+            K_approved=K_approved,
+            code="WRAPPER_ASSEMBLY_FAILED",
+            message=(
+                "Post-aggregation wrapper envelope assembly failed "
+                "despite the orchestrator's pre-dispatch snapshot "
+                "deserializability check. Parser rejected the snapshot "
+                "post-Batch, suggesting state corruption between entry "
+                "and aggregation. Surfacing as COMPUTE_ERROR per §10.3 "
+                "to honor the OK/UNSATISFIED non-null-wrapper invariant."
+            ),
+        )
+
     response: dict[str, Any] = {
         "state": state,
         "lahcSummary": summary,
+        "writebackEnvelope": wrapper_envelope,
         "candidates": candidates,
         "failedTrajectories": agg["failedTrajectories"],
         "error": None,
@@ -469,6 +968,41 @@ def orchestrate_lahc_run(
     if agg["trajectoryExceptions"]:
         response["trajectoryExceptions"] = agg["trajectoryExceptions"]
     return response
+
+
+def _build_input_error(
+    *, run_id: str, master_seed: int, K_approved: int,
+    code: str, message: str,
+) -> dict:
+    """Orchestrator-level input-error response (e.g., parser rejected
+    the snapshot at admission). Mirrors `_build_compute_error`'s shape
+    but with `state="INPUT_ERROR"` + `writebackEnvelope=None` per
+    `docs/cloud_compute_contract.md` §10.1 — INPUT_ERROR responses
+    MAY have a null wrapper since they fire before any compute."""
+    return {
+        "state": "INPUT_ERROR",
+        "lahcSummary": {
+            "runId": run_id,
+            "attemptId": "",
+            "masterSeed": master_seed,
+            "kApproved": K_approved,
+            "kPrime": 0,
+            "droppedCount": K_approved,
+            "taskCount": 0,
+            "completedTaskCount": 0,
+            "incompleteTaskIndices": [],
+            "mismatchedAttemptTaskIndices": [],
+            "totalAttempts": 0,
+            "rejectionsByReason": {},
+            "batchJobName": "",
+            "batchFinalState": "NOT_SUBMITTED",
+            "elapsedSeconds": 0.0,
+        },
+        "writebackEnvelope": None,
+        "candidates": [],
+        "failedTrajectories": [],
+        "error": {"code": code, "message": message},
+    }
 
 
 def _build_compute_error(
@@ -482,6 +1016,7 @@ def _build_compute_error(
         "state": "COMPUTE_ERROR",
         "lahcSummary": {
             "runId": run_id,
+            "attemptId": "",
             "masterSeed": master_seed,
             "kApproved": K_approved,
             "kPrime": 0,
@@ -489,12 +1024,14 @@ def _build_compute_error(
             "taskCount": 0,
             "completedTaskCount": 0,
             "incompleteTaskIndices": [],
+            "mismatchedAttemptTaskIndices": [],
             "totalAttempts": 0,
             "rejectionsByReason": {},
             "batchJobName": "",
             "batchFinalState": "NOT_SUBMITTED",
             "elapsedSeconds": 0.0,
         },
+        "writebackEnvelope": None,
         "candidates": [],
         "failedTrajectories": [],
         "error": {"code": code, "message": message},

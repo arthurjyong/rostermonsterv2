@@ -82,9 +82,16 @@ def _gcs_uri(*parts: str) -> str:
     return "gs://" + _BUCKET + "/" + _RUN_ID + "/" + "/".join(parts)
 
 
-def _build_storage(*, candidate_seeds: list[int], master_seed: int = 12345) -> dict:
+_ATTEMPT_ID = "attempt-test-aaaa1111"
+
+
+def _build_storage(*, candidate_seeds: list[int], master_seed: int = 12345,
+                    attempt_id: str | None = _ATTEMPT_ID) -> dict:
     """Pre-populate in-memory storage with the orchestrator-written
-    snapshot.json + seeds.json the worker reads."""
+    snapshot.json + seeds.json the worker reads. `attempt_id` is the
+    T2G concurrent-replay race fix per §8.7 — orchestrator stamps it
+    into seeds.json; worker echoes back into result.json. Tests can
+    pass `None` to simulate a pre-T2G seeds.json without the field."""
     return {
         _gcs_uri("snapshot.json"): _load_snapshot_dict(),
         _gcs_uri("task-0", "seeds.json"): {
@@ -92,6 +99,7 @@ def _build_storage(*, candidate_seeds: list[int], master_seed: int = 12345) -> d
             "runId": _RUN_ID,
             "taskIndex": 0,
             "masterSeed": master_seed,
+            "attemptId": attempt_id,
             "seeds": candidate_seeds,
         },
     }
@@ -147,6 +155,8 @@ def test_worker_main_round_trips_snapshot_to_result() -> None:
     assert result["runId"] == _RUN_ID
     assert result["taskIndex"] == 0
     assert result["masterSeed"] == 12345
+    # T2G attemptId echo per §8.7 concurrent-replay race fix
+    assert result["attemptId"] == _ATTEMPT_ID
     assert "candidates" in result
     assert "failedTrajectories" in result
     assert "aggregateAttempts" in result
@@ -196,6 +206,42 @@ def test_worker_result_candidate_fields_match_schema() -> None:
         "missing fields: " + repr(expected - cand.keys())
     )
     assert isinstance(cand["assignments"], list) and cand["assignments"]
+
+
+def test_worker_echoes_attempt_id_into_result_json() -> None:
+    """T2G concurrent-replay race fix per §8.7: worker reads attemptId
+    from seeds.json and writes it back into result.json so the
+    orchestrator can validate on aggregation. Echo, not derive — the
+    orchestrator owns attempt-id generation."""
+    seeds = [111, 222]
+    storage_init = _build_storage(
+        candidate_seeds=seeds, attempt_id="attempt-custom-zzz",
+    )
+    read_json, write_json, _ = _make_inmem_gcs(storage_init)
+
+    result = worker_mod.worker_main(
+        _RUN_ID, 0,
+        read_json=read_json, write_json=write_json,
+        pool_executor=_serial_executor, bucket=_BUCKET,
+    )
+    assert result["attemptId"] == "attempt-custom-zzz"
+
+
+def test_worker_handles_missing_attempt_id_in_seeds_json() -> None:
+    """Pre-T2G seeds.json files lack `attemptId`. Worker MUST echo
+    `None` instead of raising — orchestrator's validation surfaces
+    the missing-attemptId case as a stale-result mismatch via the
+    standard partial-failure path."""
+    seeds = [111]
+    storage_init = _build_storage(candidate_seeds=seeds, attempt_id=None)
+    read_json, write_json, _ = _make_inmem_gcs(storage_init)
+
+    result = worker_mod.worker_main(
+        _RUN_ID, 0,
+        read_json=read_json, write_json=write_json,
+        pool_executor=_serial_executor, bucket=_BUCKET,
+    )
+    assert result["attemptId"] is None
 
 
 def test_worker_main_byte_identical_across_calls() -> None:
