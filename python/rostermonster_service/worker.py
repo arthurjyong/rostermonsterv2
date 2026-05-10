@@ -78,8 +78,6 @@ local CLI's K-trajectory loop.
 from __future__ import annotations
 
 import argparse
-import dataclasses
-import json
 import logging
 import multiprocessing
 import os
@@ -99,6 +97,11 @@ from rostermonster.solver import (
     solve,
 )
 from rostermonster.templates import icu_hd_template_artifact
+from rostermonster_service.gcs import (
+    ReadJsonFn,
+    WriteJsonFn,
+    make_gcs_adapter,
+)
 
 
 log = logging.getLogger("rostermonster_service.worker")
@@ -135,10 +138,8 @@ _RESULT_SCHEMA_VERSION = 1
 _SEEDS_SCHEMA_VERSION = 1
 
 
-# I/O ports — injectable for testability. Real GCS adapter lives in
-# `_make_real_gcs_adapter`; tests pass an in-memory implementation.
-ReadJsonFn = Callable[[str], dict]
-WriteJsonFn = Callable[[str, dict], None]
+# I/O ports — `ReadJsonFn` + `WriteJsonFn` come from `gcs.py` (shared
+# with the M7 C2 Task 2F orchestrator). `PoolExecutorFn` is worker-only.
 # `pool_executor(fn, args_iter) -> list` — defaults to multiprocessing.Pool;
 # tests pass a serial executor to keep test time bounded + avoid spawn issues.
 PoolExecutorFn = Callable[[Callable[..., Any], list[Any]], list[Any]]
@@ -400,43 +401,6 @@ def _build_parser_failure_result(
     }
 
 
-def _make_real_gcs_adapter(bucket: str) -> tuple[ReadJsonFn, WriteJsonFn]:
-    """Production GCS adapter using the google-cloud-storage SDK. Lazy-
-    imports so the worker module can be imported in test environments
-    without google-cloud-storage installed (tests pass an in-memory
-    adapter and never touch this factory)."""
-    from google.cloud import storage  # local import per docstring rationale
-
-    client = storage.Client()
-    bkt = client.bucket(bucket)
-    prefix = "gs://" + bucket + "/"
-
-    def read_json(uri: str) -> dict:
-        if not uri.startswith(prefix):
-            raise ValueError(
-                "GCS URI '" + uri + "' does not start with expected prefix '"
-                + prefix + "' (worker is bound to bucket '" + bucket + "')"
-            )
-        key = uri[len(prefix):]
-        blob = bkt.blob(key)
-        return json.loads(blob.download_as_text())
-
-    def write_json(uri: str, data: dict) -> None:
-        if not uri.startswith(prefix):
-            raise ValueError(
-                "GCS URI '" + uri + "' does not start with expected prefix '"
-                + prefix + "' (worker is bound to bucket '" + bucket + "')"
-            )
-        key = uri[len(prefix):]
-        blob = bkt.blob(key)
-        blob.upload_from_string(
-            json.dumps(data),
-            content_type="application/json",
-        )
-
-    return read_json, write_json
-
-
 def main(argv: list[str] | None = None) -> int:
     """CLI entry: `python -m rostermonster_service.worker --run-id <runId>`.
     `--task-index` defaults to the `BATCH_TASK_INDEX` env var Cloud Batch
@@ -473,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
         args.run_id, args.task_index, bucket,
     )
 
-    read_json, write_json = _make_real_gcs_adapter(bucket)
+    read_json, write_json = make_gcs_adapter(bucket)
     try:
         worker_main(
             args.run_id, args.task_index,
