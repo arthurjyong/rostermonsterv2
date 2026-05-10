@@ -476,8 +476,24 @@ def _compute_lahc_test_endpoint() -> Response:
             "--set-env-vars " + _GCP_PROJECT_ENV + "=<project-id>.",
         )
     K_approved_str = os.environ.get(_LAHC_K_APPROVED_ENV)
-    K_approved = (int(K_approved_str)
-                  if K_approved_str else _LAHC_DEFAULT_K_APPROVED)
+    if K_approved_str:
+        # Wrap the int() conversion so a malformed deploy-time env value
+        # (e.g., LAHC_K_APPROVED=fast) surfaces as the structured
+        # COMPUTE_ERROR envelope this endpoint documents — without the
+        # wrap, the conversion raises ValueError pre-orchestrator-try
+        # and the endpoint returns a Flask 500 instead.
+        try:
+            K_approved = int(K_approved_str)
+        except ValueError:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
+                + repr(K_approved_str) + " which is not a valid integer. "
+                "Maintainer must redeploy with --set-env-vars "
+                + _LAHC_K_APPROVED_ENV + "=<positive integer>.",
+            )
+    else:
+        K_approved = _LAHC_DEFAULT_K_APPROVED
 
     # --- Stage 4: dispatch to the orchestrator ------------------------
     # Lazy-imports keep `app.py` importable without google-cloud-batch

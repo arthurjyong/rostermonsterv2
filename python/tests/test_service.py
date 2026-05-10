@@ -303,6 +303,49 @@ def test_compute_invalid_json_request_body() -> None:
     assert resp.status_code in {200, 400}
 
 
+def test_compute_lahc_test_malformed_K_approved_returns_compute_error() -> None:
+    """Codex P2 finding regression: deploy-time `LAHC_K_APPROVED` env
+    that isn't a valid integer (e.g., a typo like `LAHC_K_APPROVED=fast`)
+    used to raise `ValueError` in `int()` BEFORE the orchestrator try
+    block, surfacing as a Flask 500 instead of the documented HTTP-200
+    `COMPUTE_ERROR` envelope. The fix wraps the conversion in its own
+    try-except and returns SERVICE_MISCONFIGURED."""
+    saved_k = os.environ.get("LAHC_K_APPROVED")
+    saved_image = os.environ.get("CONTAINER_IMAGE_URI")
+    saved_project = os.environ.get("GCP_PROJECT")
+    os.environ["LAHC_K_APPROVED"] = "fast"
+    # CONTAINER_IMAGE_URI + GCP_PROJECT must be set to reach the
+    # K_approved parsing step (they're checked first).
+    os.environ["CONTAINER_IMAGE_URI"] = "gcr.io/x/y:tag"
+    os.environ["GCP_PROJECT"] = "rostermonsterv2"
+    try:
+        client = _client()
+        resp = client.post(
+            "/compute-lahc-test",
+            json={"snapshot": _load_snapshot_dict()},
+        )
+        assert resp.status_code == 200, (
+            "expected HTTP 200 always per §10; got " + str(resp.status_code)
+        )
+        data = resp.get_json()
+        assert data["state"] == "COMPUTE_ERROR", (
+            "expected structured COMPUTE_ERROR for malformed env; got "
+            + repr(data.get("state"))
+        )
+        assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+        assert "LAHC_K_APPROVED" in data["error"]["message"]
+    finally:
+        for name, prior in (
+            ("LAHC_K_APPROVED", saved_k),
+            ("CONTAINER_IMAGE_URI", saved_image),
+            ("GCP_PROJECT", saved_project),
+        ):
+            if prior is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = prior
+
+
 # Minimal pytest-equivalent runner.
 def _run() -> int:
     tests = [
@@ -333,6 +376,8 @@ def _run() -> int:
          test_compute_cross_mode_parity_with_pipeline),
         ("test_compute_invalid_json_request_body",
          test_compute_invalid_json_request_body),
+        ("test_compute_lahc_test_malformed_K_approved_returns_compute_error",
+         test_compute_lahc_test_malformed_K_approved_returns_compute_error),
     ]
     passed = 0
     failed = 0

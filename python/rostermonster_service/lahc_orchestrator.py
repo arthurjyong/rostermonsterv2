@@ -2,6 +2,24 @@
 `docs/cloud_compute_contract.md` §8.7 + `docs/delivery_plan.md` §9 M7 C2
 Task 2F.
 
+**Concurrent-replay race (acceptable for the maintainer-only test path):**
+the runId is deterministic per `(snapshotId, masterSeed)` so two
+maintainer-issued replays of the same parameters share the same GCS
+artifact prefix. The pre-write `gcs_delete_prefix(runId/)` step
+(below) keeps a serial replay clean — any prior attempt's artifacts
+get wiped before the new attempt writes its inputs. But two
+orchestrator calls running concurrently against the same `(snapshot,
+seed)` can interleave clears + writes + reads, producing mixed K'
+aggregations that include candidates from both attempts. Codex
+flagged this as a P1 finding on PR #143; the fix lands at M7 C3
+when the §9 amendment promotes the LAHC path from this maintainer-
+only test route to the public `POST /compute` route — at that point
+attempt-id validation (orchestrator stamps an `attemptId` into
+seeds.json, worker echoes back into result.json, orchestrator
+validates on read) closes the race for unbounded operator traffic.
+For T2F's single-maintainer test usage, the serial-replay clean
+path is sufficient and the concurrent-race window is acceptable.
+
 `orchestrate_lahc_run(snapshot_dict, ...)` is the entry point the M7 C2
 Task 2F maintainer-only `/compute-lahc-test` route calls. End-to-end
 flow:
