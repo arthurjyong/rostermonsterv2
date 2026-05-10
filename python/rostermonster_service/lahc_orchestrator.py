@@ -63,7 +63,11 @@ from rostermonster_service.batch_job_spec import (
     build_lahc_batch_job_spec,
     task_count_for_K,
 )
-from rostermonster_service.gcs import ReadJsonFn, WriteJsonFn
+from rostermonster_service.gcs import (
+    DeletePrefixFn,
+    ReadJsonFn,
+    WriteJsonFn,
+)
 
 
 log = logging.getLogger("rostermonster_service.lahc_orchestrator")
@@ -264,6 +268,7 @@ def orchestrate_lahc_run(
     batch_client,  # BatchClient | InMemoryBatchClient
     gcs_read_json: ReadJsonFn,
     gcs_write_json: WriteJsonFn,
+    gcs_delete_prefix: DeletePrefixFn,
     project: str,
     bucket: str = _DEFAULT_BUCKET,
     region: str = _DEFAULT_REGION,
@@ -347,6 +352,28 @@ def orchestrate_lahc_run(
         "partition produced " + str(task_count)
         + " tasks; task_count_for_K(K) = " + str(task_count_for_K(K_approved))
     )
+
+    # --- Invalidate stale artifacts from a prior replay attempt -------
+    # The runId is intentionally deterministic per (snapshotId, masterSeed)
+    # so forensic replay is idempotent at the artifact-prefix level —
+    # but Batch job_id is per-call unique (a replay submits a fresh
+    # Batch job, not the same one). Without this clear step, a partial-
+    # failure on a replay would silently inherit stale per-task
+    # result.json files from the prior attempt at the same runId
+    # prefix, inflating K' with rosters that didn't come from this
+    # attempt. Codex P1 finding on PR #143.
+    #
+    # `gcs_delete_prefix` is REQUIRED (no default) so production callers
+    # cannot silently skip the clear. Tests that exercise aggregation
+    # in isolation (pre-seeding result.jsons before calling this
+    # function) opt into a no-op delete fn explicitly with a comment.
+    prefix_uri = _gcs_uri(bucket, run_id) + "/"
+    deleted_count = gcs_delete_prefix(prefix_uri)
+    if deleted_count:
+        log.info(
+            "Cleared %d stale artifacts at %s before fresh attempt",
+            deleted_count, prefix_uri,
+        )
 
     # --- Write snapshot + per-task seeds to GCS ----------------------
     snapshot_uri = _gcs_uri(bucket, run_id, "snapshot.json")

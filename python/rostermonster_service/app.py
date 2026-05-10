@@ -484,7 +484,10 @@ def _compute_lahc_test_endpoint() -> Response:
     # in test environments (route is only reached in production).
     try:
         from rostermonster_service.batch_client import BatchClient
-        from rostermonster_service.gcs import make_gcs_adapter
+        from rostermonster_service.gcs import (
+            make_gcs_adapter,
+            make_gcs_delete_prefix_fn,
+        )
         from rostermonster_service.lahc_orchestrator import (
             orchestrate_lahc_run,
             _DEFAULT_BUCKET,
@@ -498,6 +501,7 @@ def _compute_lahc_test_endpoint() -> Response:
 
     bucket = os.environ.get("LAHC_BUCKET", _DEFAULT_BUCKET).strip()
     read_json, write_json = make_gcs_adapter(bucket)
+    delete_prefix = make_gcs_delete_prefix_fn(bucket)
     batch_client = BatchClient()
 
     try:
@@ -509,6 +513,7 @@ def _compute_lahc_test_endpoint() -> Response:
             batch_client=batch_client,
             gcs_read_json=read_json,
             gcs_write_json=write_json,
+            gcs_delete_prefix=delete_prefix,
             project=project,
             bucket=bucket,
         )

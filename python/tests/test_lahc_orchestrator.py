@@ -77,6 +77,31 @@ def _no_sleep(_seconds: float) -> None:
     return None
 
 
+def _no_delete(_prefix: str) -> int:
+    """Test delete_prefix — no-op for tests that pre-seed result.jsons
+    BEFORE calling orchestrate_lahc_run and want to keep them. The
+    real production path passes a delete fn that clears the runId
+    prefix to invalidate stale state from prior replay attempts (Codex
+    P1 finding on PR #143). The dedicated stale-clear regression test
+    `test_orchestrator_clears_stale_artifacts_before_replay` exercises
+    the real delete behavior."""
+    return 0
+
+
+def _make_inmem_delete_prefix(storage: dict[str, dict]):
+    """In-memory delete_prefix mirroring the production semantics:
+    deletes every key in storage that starts with the supplied URI
+    prefix. Returns the count for parity with `make_gcs_delete_prefix_fn`."""
+
+    def delete_prefix(uri: str) -> int:
+        keys_to_delete = [k for k in storage if k.startswith(uri)]
+        for k in keys_to_delete:
+            del storage[k]
+        return len(keys_to_delete)
+
+    return delete_prefix
+
+
 def _virtual_clock(start: float = 0.0, step: float = 1.0):
     """Test time_fn — returns monotonically increasing values."""
     state = {"now": start}
@@ -272,6 +297,7 @@ def _orchestrate_with_pre_seeded_results(
         batch_client=batch_client,
         gcs_read_json=read_json,
         gcs_write_json=write_json,
+        gcs_delete_prefix=_no_delete,
         project=_PROJECT,
         bucket=_BUCKET,
         region=_REGION,
@@ -363,6 +389,7 @@ def test_orchestrator_cancels_on_deadline_overrun() -> None:
         batch_client=batch_client,
         gcs_read_json=read_json,
         gcs_write_json=write_json,
+        gcs_delete_prefix=_no_delete,
         project=_PROJECT, bucket=_BUCKET, region=_REGION,
         completion_deadline_seconds=240,
         poll_interval_seconds=3,
@@ -407,6 +434,7 @@ def test_orchestrator_handles_missing_result_json_per_task() -> None:
         batch_client=batch_client,
         gcs_read_json=read_json,
         gcs_write_json=write_json,
+        gcs_delete_prefix=_no_delete,
         project=_PROJECT, bucket=_BUCKET, region=_REGION,
         sleep_fn=_no_sleep,
         time_fn=_virtual_clock(),
@@ -417,6 +445,79 @@ def test_orchestrator_handles_missing_result_json_per_task() -> None:
     assert response["lahcSummary"]["droppedCount"] == 8  # task 1 missing
     assert response["lahcSummary"]["completedTaskCount"] == 1
     assert response["lahcSummary"]["incompleteTaskIndices"] == [1]
+
+
+def test_orchestrator_clears_stale_artifacts_before_replay() -> None:
+    """Codex P1 finding regression: a maintainer replay of the same
+    `(snapshot, seed)` reuses the same artifact runId — the new Batch
+    job (with a unique job_id) writes to the same GCS prefix as a
+    prior attempt. If the new attempt's task-N fails to rewrite its
+    result.json, the orchestrator's aggregation step would silently
+    pick up the prior attempt's surviving result.json + count those
+    stale candidates as the current run's K' (turning a partial-failed
+    replay into a fake `OK`).
+
+    Fix: orchestrator MUST call `gcs_delete_prefix(runId/)` before
+    writing fresh inputs. This test seeds storage with stale data at
+    the runId prefix, then runs the orchestrator with NO new
+    result.json (simulating "Batch job ran but every task failed
+    silently") and asserts:
+    1. The stale data is gone after orchestrator exit (cleared by
+       orchestrator's invalidation step).
+    2. K' == 0 (UNSATISFIED) — the orchestrator did NOT count the
+       stale data toward K'.
+    """
+    snapshot_dict = {"metadata": {"snapshotId": "snap-replay-test"}}
+    expected_run_id = lo.derive_run_id("snap-replay-test", master_seed=42)
+
+    # Pre-seed STALE result.json from a "prior attempt" — has 8
+    # SUCCEEDED candidates that should NOT show up in this attempt.
+    stale_uri = lo._gcs_uri(
+        _BUCKET, expected_run_id, "task-0", "result.json",
+    )
+    storage_init = {
+        stale_uri: _build_pre_seeded_result(
+            run_id=expected_run_id, task_index=0,
+            seeds=[1, 2, 3, 4, 5, 6, 7, 8], candidate_count=8,
+        ),
+    }
+    read_json, write_json, storage = _make_inmem_gcs(storage_init)
+    batch_client = InMemoryBatchClient(state_sequence=[JOB_STATE_SUCCEEDED])
+
+    # Use the REAL in-memory delete (not _no_delete) so the
+    # invalidation step actually runs against this storage.
+    real_delete = _make_inmem_delete_prefix(storage)
+
+    response = lo.orchestrate_lahc_run(
+        snapshot_dict,
+        master_seed=42,
+        K_approved=8,  # 1 task; "all tasks failed silently" means no
+                      # result.json gets written by simulated Batch
+        container_image_uri=_IMAGE,
+        batch_client=batch_client,
+        gcs_read_json=read_json,
+        gcs_write_json=write_json,
+        gcs_delete_prefix=real_delete,
+        project=_PROJECT, bucket=_BUCKET, region=_REGION,
+        sleep_fn=_no_sleep,
+        time_fn=_virtual_clock(),
+    )
+
+    # Orchestrator did NOT count the stale data (K' must be 0)
+    assert response["state"] == "UNSATISFIED"
+    assert response["lahcSummary"]["kPrime"] == 0, (
+        "Stale result.json from a prior attempt was counted toward "
+        "this attempt's K' — Codex P1 finding regression."
+    )
+    # Storage no longer contains the stale URI (it was cleared)
+    assert stale_uri not in storage, (
+        "Stale result.json at " + stale_uri
+        + " survived the orchestrator's invalidation step — "
+        "subsequent partial-failure replays would inherit it."
+    )
+    # Fresh snapshot.json + seeds.json DID get written (post-clear)
+    assert lo._gcs_uri(_BUCKET, expected_run_id, "snapshot.json") in storage
+    assert lo._gcs_uri(_BUCKET, expected_run_id, "task-0", "seeds.json") in storage
 
 
 def test_orchestrator_zero_candidates_returns_UNSATISFIED() -> None:
@@ -452,6 +553,7 @@ def test_orchestrator_zero_candidates_returns_UNSATISFIED() -> None:
         batch_client=batch_client,
         gcs_read_json=read_json,
         gcs_write_json=write_json,
+        gcs_delete_prefix=_no_delete,
         project=_PROJECT, bucket=_BUCKET, region=_REGION,
         sleep_fn=_no_sleep,
         time_fn=_virtual_clock(),
@@ -515,6 +617,7 @@ def test_orchestrator_worker_integration_round_trip() -> None:
         batch_client=batch_client,
         gcs_read_json=read_json,
         gcs_write_json=write_json,
+        gcs_delete_prefix=_no_delete,
         project=_PROJECT, bucket=_BUCKET, region=_REGION,
         sleep_fn=_no_sleep,
         time_fn=_virtual_clock(),
@@ -552,6 +655,7 @@ def test_orchestrator_missing_snapshot_id_returns_compute_error() -> None:
         batch_client=batch_client,
         gcs_read_json=read_json,
         gcs_write_json=write_json,
+        gcs_delete_prefix=_no_delete,
         project=_PROJECT, bucket=_BUCKET, region=_REGION,
         sleep_fn=_no_sleep,
         time_fn=_virtual_clock(),
@@ -576,6 +680,7 @@ def test_orchestrator_rejects_non_int_master_seed() -> None:
                 container_image_uri=_IMAGE,
                 batch_client=batch_client,
                 gcs_read_json=read_json, gcs_write_json=write_json,
+                gcs_delete_prefix=_no_delete,
                 project=_PROJECT, bucket=_BUCKET, region=_REGION,
                 sleep_fn=_no_sleep, time_fn=_virtual_clock(),
             )
@@ -602,6 +707,7 @@ def test_orchestrator_rejects_non_positive_K_approved() -> None:
                 container_image_uri=_IMAGE,
                 batch_client=batch_client,
                 gcs_read_json=read_json, gcs_write_json=write_json,
+                gcs_delete_prefix=_no_delete,
                 project=_PROJECT, bucket=_BUCKET, region=_REGION,
                 sleep_fn=_no_sleep, time_fn=_virtual_clock(),
             )
