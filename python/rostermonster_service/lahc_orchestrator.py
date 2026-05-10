@@ -86,8 +86,10 @@ from rostermonster.solver import (
     STRATEGY_LAHC,
     CandidateSet,
     LahcParams,
+    PreferenceSeedingConfig,
     SearchDiagnostics,
     TrialCandidate,
+    compute_cr_floor,
     derive_K_seeds,
 )
 from rostermonster.templates import icu_hd_template_artifact
@@ -401,6 +403,14 @@ def _build_post_aggregation_envelope(
     model = parser_result.normalizedModel
     scoring_config = (parser_result.scoringConfig
                       or ScoringConfig.first_release_defaults(model))
+    # §13.4 audit requirement: the computed CR floor MUST be logged in
+    # SearchDiagnostics + RunEnvelope. Both surfaces below derive the
+    # value the same way `solve()` does (via compute_cr_floor on the
+    # SMART_MEDIAN default config) so wrapper diagnostics match the
+    # actual solver run that produced the candidates. Codex P2 finding
+    # on PR #144 commit f9f9afe.
+    cr_floor_seeding = PreferenceSeedingConfig()
+    cr_floor_x = compute_cr_floor(model, cr_floor_seeding.crFloor)
 
     # Reconstruct CandidateSet from agg["candidates"]. Each candidate's
     # assignments came from the worker as JSON dicts; convert back to
@@ -473,16 +483,8 @@ def _build_post_aggregation_envelope(
     diagnostics = SearchDiagnostics(
         strategyId=STRATEGY_LAHC,
         fillOrderPolicy="MOST_CONSTRAINED_FIRST",
-        # cr_floor + crFloorMode aren't recoverable from per-task
-        # result.json (worker doesn't write them). Use the SMART_MEDIAN
-        # default — matches what worker computed internally per
-        # `docs/solver_contract.md` §13.1. Re-deriving the exact value
-        # locally would require the same compute_cr_floor call the
-        # worker did; for T2G's wrapper-envelope shape this is
-        # sufficient (operator-facing diagnostics surface other LAHC
-        # fields more prominently).
         crFloorMode="SMART_MEDIAN",
-        crFloorComputed=0,
+        crFloorComputed=cr_floor_x,
         seed=master_seed,
         placementAttempts=int(agg["aggregateAttempts"]),
         ruleEngineRejectionsByReason=dict(agg["aggregateRejectionsByReason"]),
@@ -531,7 +533,7 @@ def _build_post_aggregation_envelope(
         seed=master_seed,
         fillOrderPolicy="MOST_CONSTRAINED_FIRST",
         crFloorMode="SMART_MEDIAN",
-        crFloorComputed=0,
+        crFloorComputed=cr_floor_x,
         generationTimestamp=md.generationTimestamp,
         sourceSpreadsheetId=md.sourceSpreadsheetId,
         sourceTabName=md.sourceTabName,
