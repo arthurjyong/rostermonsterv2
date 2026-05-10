@@ -491,7 +491,15 @@ def _build_post_aggregation_envelope(
         candidateEmitCount=len(trial_candidates),
         unfilledDemandCount=0,
         lahcHistoryListLength=50,   # FW-0037 elbow tuple per worker.py
-        lahcMaxIters=None,
+        # `worker.py` constructs `LahcParams(historyListLength=50,
+        # idleThreshold=3500, swapProbability=0.5)` with `maxIters`
+        # defaulted to the §12A.5 default (100,000). Surface the
+        # default value here so the SearchDiagnostics + RunEnvelope
+        # agree on which iteration cap shaped the search (Codex P2
+        # finding on PR #144 commit 83c10be — pre-fix the field was
+        # None, contradicting RunEnvelope which already reported
+        # 100000 via LahcParamsRecord(maxIters=LahcParams().maxIters).
+        lahcMaxIters=LahcParams().maxIters,
         lahcIdleThreshold=3500,
         lahcSwapProbability=0.5,
         seedDerivationFunction="python.Random.getrandbits.candidate_seed",
