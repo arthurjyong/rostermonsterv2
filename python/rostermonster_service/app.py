@@ -496,8 +496,15 @@ def _compute_lahc_test_endpoint() -> Response:
         K_approved = _LAHC_DEFAULT_K_APPROVED
 
     # --- Stage 4: dispatch to the orchestrator ------------------------
-    # Lazy-imports keep `app.py` importable without google-cloud-batch
-    # in test environments (route is only reached in production).
+    # The rostermonster_service modules import cleanly at the top-level
+    # `from`-import statements below — google-cloud-storage and
+    # google-cloud-batch are lazy-imported INSIDE the constructors
+    # (`make_gcs_adapter`, `make_gcs_delete_prefix_fn`, `BatchClient()`),
+    # so a deploy missing those SDKs raises ImportError at construction
+    # time, not at the import line. The try block wraps BOTH the
+    # imports AND the constructor calls so either failure mode surfaces
+    # as the documented `ORCHESTRATOR_DEPS_UNAVAILABLE` envelope rather
+    # than a Flask 500.
     try:
         from rostermonster_service.batch_client import BatchClient
         from rostermonster_service.gcs import (
@@ -508,17 +515,16 @@ def _compute_lahc_test_endpoint() -> Response:
             orchestrate_lahc_run,
             _DEFAULT_BUCKET,
         )
+        bucket = os.environ.get("LAHC_BUCKET", _DEFAULT_BUCKET).strip()
+        read_json, write_json = make_gcs_adapter(bucket)
+        delete_prefix = make_gcs_delete_prefix_fn(bucket)
+        batch_client = BatchClient()
     except ImportError as e:
         return _compute_error(
             "ORCHESTRATOR_DEPS_UNAVAILABLE",
             "Cloud Batch / Storage SDK missing on the service. "
             "Maintainer should redeploy. (" + str(e) + ")",
         )
-
-    bucket = os.environ.get("LAHC_BUCKET", _DEFAULT_BUCKET).strip()
-    read_json, write_json = make_gcs_adapter(bucket)
-    delete_prefix = make_gcs_delete_prefix_fn(bucket)
-    batch_client = BatchClient()
 
     try:
         response_dict = orchestrate_lahc_run(
