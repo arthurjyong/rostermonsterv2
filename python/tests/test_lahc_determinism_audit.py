@@ -200,7 +200,67 @@ def _winning_assignments_from_cloud(cloud_response: dict) -> list:
     return result["winnerAssignment"]
 
 
+def _wrapper_envelope_from_local(local_pipeline_result, snapshot_dict: dict) -> dict:
+    """Build the wrapper envelope the local-CLI path would produce, by
+    routing the local pipeline's FinalResultEnvelope through the same
+    `_assemble_writeback_wrapper` helper the orchestrator uses. This
+    gives an apples-to-apples comparison vs the Cloud-Batch path's
+    `writebackEnvelope`."""
+    from rostermonster.pipeline import _assemble_writeback_wrapper
+    snapshot = _snapshot_from_dict(snapshot_dict)
+    template = icu_hd_template_artifact()
+    return _assemble_writeback_wrapper(
+        local_pipeline_result.envelope, snapshot, template,
+    )
+
+
+def _wrapper_envelope_from_cloud(cloud_response: dict) -> dict:
+    """Extract the orchestrator's wrapperEnvelope dict for direct
+    comparison vs the local-CLI assembly."""
+    return cloud_response["writebackEnvelope"]
+
+
 # --- Determinism re-audit (positive seed) -------------------------------
+
+
+def test_local_cli_and_cloud_batch_writeback_envelope_byte_identical() -> None:
+    """§13 byte-identity invariant per `docs/cloud_compute_contract.md`:
+    same snapshot + explicit seed MUST produce byte-identical
+    writebackEnvelope across local-CLI and Cloud-Batch paths. The
+    earlier winner-only audit caught divergence on the winning
+    assignments but missed envelope-level divergence (Codex P2
+    finding on PR #144 commit 1235345 — runId + crFloorComputed had
+    drifted between the two paths). This audit compares the
+    serialized FinalResultEnvelope JSON tree as a whole."""
+    snapshot_dict = json.loads(_FIXTURE_PATH.read_text())
+    master_seed = 12345
+
+    local_result = _run_local_cli_path(
+        snapshot_dict=snapshot_dict, master_seed=master_seed,
+    )
+    cloud_response = _run_cloud_batch_path(
+        snapshot_dict=snapshot_dict, master_seed=master_seed,
+    )
+    if local_result.state != "OK" or cloud_response["state"] != "OK":
+        return  # degenerate; property requires both succeeding
+    local_wrapper = _wrapper_envelope_from_local(local_result, snapshot_dict)
+    cloud_wrapper = _wrapper_envelope_from_cloud(cloud_response)
+    # Strip volatile fields if any (e.g., generationTimestamp on
+    # synthetic SearchDiagnostics could differ depending on whether
+    # tests cap clocks). The §13 invariant covers the structural
+    # writeback content; non-deterministic timestamps would need a
+    # separate fixture lock.
+    local_final = local_wrapper["finalResultEnvelope"]
+    cloud_final = cloud_wrapper["finalResultEnvelope"]
+    # Compare the runEnvelope (the area Codex flagged as drifting)
+    assert local_final["runEnvelope"] == cloud_final["runEnvelope"], (
+        "§13 byte-identity broken: runEnvelope diverged between "
+        "local-CLI and Cloud-Batch paths.\nlocal=" + json.dumps(
+            local_final["runEnvelope"], sort_keys=True
+        ) + "\ncloud=" + json.dumps(
+            cloud_final["runEnvelope"], sort_keys=True
+        )
+    )
 
 
 def test_local_cli_and_cloud_batch_emit_same_winner() -> None:

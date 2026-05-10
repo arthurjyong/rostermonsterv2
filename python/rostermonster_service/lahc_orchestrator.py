@@ -509,14 +509,25 @@ def _build_post_aggregation_envelope(
     # surfacing the orchestrator's runId in the envelope keeps GCS
     # forensic replay traceable from the writeback artifact.
     md = snapshot.metadata
+    # §13 byte-identity invariant: writebackEnvelope MUST match local-
+    # CLI's `pipeline._build_run_envelope` for the same snapshot +
+    # explicit seed. Local CLI uses `runId=md.snapshotId` and
+    # `crFloorComputed=0` in the RunEnvelope (the actual computed
+    # floor lives in `AllocationResult.searchDiagnostics.crFloorComputed`
+    # below — that surface IS aligned across both paths). Cloud-Batch
+    # must mirror to preserve byte-identity per Codex P2 finding on
+    # PR #144 commit 1235345. The orchestrator's per-call run_id
+    # encoding (with hash + seed suffix) lives in
+    # `lahcSummary.runId` for forensic GCS replay; envelope-level
+    # divergence between paths would break the §13 contract.
     run_envelope = RunEnvelope(
-        runId=run_id,
+        runId=md.snapshotId,
         snapshotRef=md.snapshotId,
         configRef="first_release_defaults",
         seed=master_seed,
         fillOrderPolicy="MOST_CONSTRAINED_FIRST",
         crFloorMode="SMART_MEDIAN",
-        crFloorComputed=cr_floor_x,
+        crFloorComputed=0,
         generationTimestamp=md.generationTimestamp,
         sourceSpreadsheetId=md.sourceSpreadsheetId,
         sourceTabName=md.sourceTabName,
