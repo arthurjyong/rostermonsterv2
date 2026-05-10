@@ -26,12 +26,14 @@ from rostermonster.solver.result import (
     UnfilledDemandEntry,
     UnsatisfiedResult,
 )
+from rostermonster.solver.seeds import derive_K_seeds
 from rostermonster.solver.solver import solve
 from rostermonster.solver.strategy import RuleEngineFn
 
 __all__ = [
     "solve",
     "compute_cr_floor",
+    "derive_K_seeds",
     "CandidateSet",
     "UnsatisfiedResult",
     "TrialCandidate",
