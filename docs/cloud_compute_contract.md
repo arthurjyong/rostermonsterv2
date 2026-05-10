@@ -55,7 +55,9 @@ Proposed in this checkpoint (normative):
 The cloud compute service is owned by the Python side per the D-0017 / D-0018 stack split. The Flask wrapper is a thin HTTP adapter; substantive compute logic lives in the existing parser / solver / scorer / selector modules. No domain logic lands in the cloud-service code.
 
 ### 6.2 Single endpoint
-The service exposes exactly one operation in first release: `POST /compute`. No additional endpoints (no `/health`, `/version`, `/extract`, etc.) are pinned by this contract; if Cloud Run requires a health-check path, it MAY be added as an implementation-slice concern. The contract pins only the compute-call behavior.
+The service exposes exactly one operator-facing operation: `POST /compute`. No additional operator-facing endpoints (no `/health`, `/version`, `/extract`, etc.) are pinned by this contract; if Cloud Run requires a health-check path, it MAY be added as an implementation-slice concern. The contract pins only the compute-call behavior.
+
+**Maintainer-only test routes (M7 C2 onward, per `docs/decision_log.md` D-0070):** the service MAY additionally expose maintainer-only routes that bypass the §9 input contract for pre-promotion implementation testing. These routes are out-of-band — invoked by curl with the same operator-token auth (§7) restricted to the maintainer's email, NOT operator-reachable from the bound shim, and NOT part of the §9 / §10 boundary contract. The first such route is the **LAHC Cloud Batch test path**, added at M7 C2 to let the maintainer trigger the parallel cloud LAHC compute pipeline before §9 is amended at M7 C3 to recognize `solverStrategy="LAHC"` as a public input value. The test route accepts the same snapshot body as §9 but routes through the M7 C2 Cloud Batch worker code path rather than the in-process direct-compute path. Specific URL path is implementation-slice. The route is removed when the §9 amendment lands at M7 C3 (operator path then carries the public `solverStrategy` switch and the test-only path is no longer needed).
 
 ### 6.3 Stateless service
 The service is stateless across requests. No per-operator state, no session cookies, no in-memory caching of snapshots between requests. Each request carries everything the service needs (snapshot + optional config); each response carries the full computed envelope.
@@ -121,6 +123,37 @@ The 5-min cap is not a comfortable ceiling at default config — the cold-path m
 
 ### 8.6 Cold-start expectation
 **M6 C4 cloud benchmark (2026-05-09 per `docs/decision_log.md` D-0069):** measured cold-vs-warm delta is **~13s** at default `_DEFAULT_MAX_CANDIDATES=32` (cold ~283s − warm ~270s per §8.4). This is substantially larger than the pre-M6-C4 framing that cited "~1-2 seconds" container Flask cold start — that older number measured Flask process startup in isolation and missed (a) the Cloud Run container scheduling + image pull on scale-to-zero spinup and (b) Python module-import time for the heavy compute core (`rostermonster.solver`, `rostermonster.scorer`, `rostermonster.parser_normalizer`, etc.) the cloud wrapper transitively imports. Operator-visible latency at first invocation includes cold-start + compute; under the §8.4 timeout math the cold-path margin is the load-bearing one, and ~13s cold-start overhead consumes most of the available headroom under the 5-min Cloud Run cap. If cold-start latency becomes operator-friction (e.g., the first daily request consistently exceeds the timeout under any `maxCandidates` override or under future cloud LAHC at FW-0035 promotion), the platform's `min-instances ≥ 1` setting (paid — keeps at least one container warm so subsequent requests skip the ~13s cold tax) is the documented mitigation; this becomes more compelling under cloud-mode LAHC (FW-0035) + parallel-solver M7 (FW-0038) since both compress the per-request budget further. First release accepts cold start as a tradeoff for scale-to-zero cost savings.
+
+### 8.7 Cloud Batch posture (M7 C2 onward, LAHC strategy path)
+Pinned in M7 C2 Task 1 (2026-05-10) per `docs/decision_log.md` D-0070 + the M7 C2 design conversation. Cloud Batch is the parallel-execution layer underneath the Cloud Run Service for the LAHC strategy path. SRB stays on the existing in-process direct-compute path (§8.1..§8.6 unchanged for SRB). LAHC dispatches to Cloud Batch via the orchestrator wiring landed in M7 C2 Task 2D.
+
+**Bucket posture:**
+- **Bucket:** `rostermonsterv2-lahc` (region `asia-southeast1`, dual-region disabled, uniform bucket-level access enabled). Single project-owned bucket holds all M7 LAHC run artifacts. If `rostermonsterv2-lahc` is globally taken at create time, fall back to `rostermonsterv2-lahc-runs`.
+- **Lifecycle rule:** auto-delete objects older than 90 days. Keeps the bucket bounded without explicit per-run cleanup logic. 90 days gives audit headroom for any run within a quarter-cycle.
+- **Object naming convention** (per-run keys, where `{runId}` is the same `runEnvelope.runId` per `docs/selector_contract.md` v2 §9):
+  ```
+  gs://rostermonsterv2-lahc/{runId}/snapshot.json          # input snapshot, written by orchestrator
+  gs://rostermonsterv2-lahc/{runId}/task-{n}/seeds.json    # per-task seed slice, written by orchestrator (one file per Batch task index n in [0, taskCount))
+  gs://rostermonsterv2-lahc/{runId}/task-{n}/result.json   # per-task result, written by Batch task on completion
+  gs://rostermonsterv2-lahc/{runId}/candidates_full.json   # aggregated K-trajectory FULL retention output, written by orchestrator after Batch aggregation (FW-0030 co-promotion side-effect)
+  ```
+  All keys MUST be derivable deterministically from `(runId, task_index)` — no opaque IDs. The `candidates_full.json` shape mirrors the local CLI's `--retention FULL --sidecar-dir` output (`python/rostermonster/selector/`) so maintainer can replay analyzer locally against the same data.
+
+**Cloud Batch job spec invariants** (job submitted by Cloud Run Service orchestrator on every LAHC request):
+- **Machine type:** `c3-highcpu-8` (8 vCPU, 16 GB RAM; Intel Sapphire Rapids per D-0070 sub-decision 3).
+- **Region:** `asia-southeast1` (intra-region with Cloud Run Service + GCS bucket; free egress).
+- **Allocation policy:** on-demand only (NOT Spot per D-0070 sub-decision 4 — sync-wall-time predictability).
+- **Task count:** derived per D-0070 sub-decision 7's three-quota rule from K_approved (currently 104 per M7 C1 closure → `taskCount=13`, `parallelism=13`, all tasks fully packed at 8 trajectories each).
+- **Per-task timeout:** **180s** (`taskGroups[0].taskSpec.maxRunDuration: "180s"`). Covers VM provisioning ~30-60s + 8 parallel trajectories ~50-75s + GCS I/O ~5-10s + buffer ~5s with comfortable margin.
+- **Per-task retry policy:** **1 retry on failure, fail-fast on second** (`taskGroups[0].taskSpec.maxRetryCount: 1`). Default Cloud Batch retry is 0; a single retry shrugs off transient VM stalls without doubling worst-case wall time on every run.
+- **Job-overall timeout:** **240s** (job-level cap). 240s leaves ~10s buffer before the Cloud Run Service's 250s wall (M7 C3 setting per D-0070 sub-decision 5) and accommodates 13 parallel tasks with staggered VM provisioning.
+- **Service account:** the same default Compute Engine SA used by Cloud Run (`{project_number}-compute@developer.gserviceaccount.com`). Required IAM additions for M7 C2 (one-time setup, recorded in project memory): `roles/batch.jobsEditor` (project-wide; submit + manage Batch jobs), `roles/storage.objectAdmin` scoped to bucket `rostermonsterv2-lahc` only (read/write run artifacts). Existing roles from M4 C1 (`cloudbuild.builds.builder`, `storage.objectViewer`, `logging.logWriter`) carry through; the new bucket-scoped `objectAdmin` supersedes the project-wide read-only `objectViewer` for the LAHC bucket only.
+
+**Container image strategy:** Cloud Run Service and Cloud Batch worker share a **single container image** dispatched by `--worker-mode` flag (added to `python/rostermonster/run.py`'s CLI surface in M7 C2 Task 2B). Cloud Run Service container starts in service mode (Flask HTTP wrapper); Cloud Batch tasks start in worker mode via the job spec's `command` field. One image to keep in sync across CI; one Dockerfile bakes both modes. The single-image discipline pins the same Python compute core to both surfaces, preserving the D-0050 dual-track guarantee.
+
+**Partial-task failure tolerance:** if 1+ Batch task fails after retry, the orchestrator MUST aggregate from the surviving task results and proceed with `K' = K_approved - dropped_count` candidates rather than fail the whole run. LAHC's `K' >= 1` exit criterion per `docs/solver_contract.md` §12A.8 is preserved by this aggregation (surviving trajectories produce valid `bestRoster` candidates per §12A.1 step 5). The actual `K'` MUST be surfaced in `SearchDiagnostics` (added field at M7 C3 contract amendment). Whole-run `UnsatisfiedResult` only fires when ALL `K_approved` trajectories' seed-construction step fails (§12A.8) OR when 0 surviving tasks return any candidate (degenerate case).
+
+**GCS read/write discipline at the boundary:** the pipeline reads from / writes to GCS only inside the orchestrator + Batch worker code paths. Drive is NOT a pipeline data path — operator-facing data flows continue per the §9 / §10 contract (snapshot in via HTTP body, envelope back via HTTP response). The `candidates_full.json` artifact in GCS is maintainer-accessible via `gsutil cp` for post-hoc analysis; operator never reads from GCS.
 
 ## 9) Request shape
 Proposed in this checkpoint (normative):
@@ -285,6 +318,11 @@ The following are explicitly NOT pinned by this contract:
 - §13 determinism: shared compute core guarantees byte-identical results across local CLI vs cloud.
 - §14 consistency with adjacent contracts.
 - §15 explicit out-of-scope items.
+
+### Pinned in M7 C2 Task 1 (2026-05-10) per D-0070 + post-D-0070 sequencing conversation
+- §6.2 acknowledges **maintainer-only test routes** beyond the operator-facing `POST /compute` endpoint. M7 C2 adds the LAHC Cloud Batch test path; route is removed when §9 is amended at M7 C3 to recognize `solverStrategy="LAHC"` publicly.
+- §8.7 pins the **Cloud Batch posture for the LAHC strategy path**: bucket name `rostermonsterv2-lahc` (asia-southeast1, 90-day lifecycle); GCS object naming convention; Cloud Batch job spec invariants (`c3-highcpu-8`, on-demand, per-task timeout 180s, per-task retry 1, job-overall timeout 240s); IAM additions on the default Compute SA (`roles/batch.jobsEditor` project-wide + `roles/storage.objectAdmin` bucket-scoped); single-container-image dispatch via `--worker-mode`; partial-task failure tolerance (`K' >= K_approved - dropped_count`); GCS-only data path (Drive is NOT a pipeline data path).
+- No `contractVersion` bump (additive deployment-posture pinning per §11.1's bump rule). M7 C3 is where §9 + §10 amend additively for `solverStrategy` + `lahcParams` + OK-only `analyzerOutput` (also additive — no bump).
 
 ### Still open / deferred
 - Async / queue-based compute mode → FW-0027.

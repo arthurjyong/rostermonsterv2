@@ -291,6 +291,27 @@ Per §18.1, LAHC's `SearchDiagnostics` MUST include strategy-specific transparen
 
 These fields support post-run analysis via the M5 analyzer per `docs/decision_log.md` D-0066 sub-decision 7 — operator runs LAHC and `SEEDED_RANDOM_BLIND`, renders each `AnalyzerOutput` separately via the launcher, and manually cross-references the two comparison tabs in the source spreadsheet.
 
+### 12A.10 Shared seed-derivation helper (`derive_K_seeds`)
+Pinned in M7 C2 Task 1 (2026-05-10) per `docs/decision_log.md` D-0070 sub-decision 8 + post-D-0070 sequencing.
+
+LAHC's K-trajectory emission per §12A.2 requires K independent seeds derived deterministically from `(masterSeed, K)`. Because `_per_candidate_seed(rng: Random)` advances a single sequential `Random` stream (not index-addressable) and the `Random(masterSeed & _UINT64_MASK)` masking step is load-bearing for negative-seed handling (CPython's `Random.seed(int)` calls `abs(seed)` internally, which would otherwise alias `seed` and `-seed` to the same stream), the contract pins a shared helper:
+
+```
+derive_K_seeds(masterSeed: int, K: int) -> list[int]
+```
+
+Normative properties:
+- Returns a list of length `K` containing the K trajectory seeds the LAHC outer loop (§12A.2) consumes, in trajectory-index order (`[trajectorySeed_0, trajectorySeed_1, ..., trajectorySeed_{K-1}]`).
+- Deterministic: same `(masterSeed, K)` produces byte-identical output across invocations and across surfaces (local CLI vs Cloud Run Service orchestrator vs any future surface).
+- MUST apply the existing `_UINT64_MASK` step on `masterSeed` before initializing the underlying `Random` stream, preserving negative-seed semantics. Implementations MUST NOT skip the mask or apply `abs(masterSeed)` directly.
+- MUST advance the underlying stream sequentially via `_per_candidate_seed`-equivalent calls, NOT compute trajectory seeds in parallel or via index-addressable derivation. This guarantees byte-identical output with the existing local CLI's pre-helper sequential loop.
+
+The helper is the single source of truth for K-seed derivation: M7 C2's local CLI K-trajectory loop AND the Cloud Run Service orchestrator's pre-derivation step both call this same helper. The orchestrator then partitions the K-length seed list into per-task slices written to Cloud Storage per `docs/cloud_compute_contract.md` §8.7.
+
+Implementation location: a shared module accessible to both the local CLI and Cloud Run Service orchestrator. M7 C2 Task 2A pins the exact file path; current direction (per the M7 C2 design conversation) is `python/rostermonster/solver/seeds.py` to keep `solver.py` focused on strategy dispatch + the existing `_per_candidate_seed` primitive.
+
+This addition is additive only — no `contractVersion` bump on the solver contract. The §12A.2 K-trajectory independence invariant is unchanged; the shared helper is a refactor of existing seed-derivation behavior, NOT a new boundary input or output.
+
 ## 13) CR floor computation
 Proposed in this checkpoint (normative):
 
@@ -438,6 +459,9 @@ The following are explicitly deferred and not fixed by this document:
 - `LAHC` algorithm spec per §12A (K-independent-seeds emission, idle/hard-iter inner termination, history-list `L=1000` default, `maxIters=100,000` default, `idleThreshold=5,000` default, deterministic trajectory-seed derivation),
 - activated §11.2's `scoringConsultation: "READ_ONLY_ORACLE"` extension clause for score-aware strategies (`LAHC` opts in per §12A.6),
 - `LAHC`'s `lahcParams` declared as strategy-specific via `additionalInputs.lahcParams` (NOT part of `terminationBounds` boundary surface; maintainer-only operator surface per §12A.7 — Python module constants for cloud defaults, CLI flag overrides for local tuning; no scorer-config tab additions).
+
+### Adopted in M7 C2 Task 1 (2026-05-10 per `docs/decision_log.md` D-0070 + post-D-0070 sequencing)
+- §12A.10 pins the shared `derive_K_seeds(masterSeed: int, K: int) -> list[int]` helper as the single source of truth for K-trajectory seed derivation across the local CLI and the Cloud Run Service orchestrator. Preserves the existing `_UINT64_MASK` negative-seed semantics; sequential stream advance (NOT index-addressable). No `contractVersion` bump (refactor of existing seed-derivation behavior, not a boundary input/output change).
 
 ### Still open / deferred
 - concrete API signatures and module decomposition,
