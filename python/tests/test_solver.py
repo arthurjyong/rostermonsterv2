@@ -312,6 +312,155 @@ def test_different_seeds_can_produce_different_outputs() -> None:
     )
 
 
+# --- M7 C2 Task 2C: _candidate_seeds private override -------------------
+
+
+def test_candidate_seeds_override_byte_identical_to_default() -> None:
+    """Cross-surface byte-identity invariant per `docs/solver_contract.md`
+    §12A.10 + M7 C2 Task 2C: passing `_candidate_seeds=derive_K_seeds(seed,
+    K)` MUST produce byte-identical output to omitting the override and
+    letting `solve()` derive internally. This is the property the Cloud
+    Batch worker relies on — the orchestrator pre-derives all K_approved
+    seeds via `derive_K_seeds`, partitions them per-task, and each worker
+    calls `solve(_candidate_seeds=its_8_seeds)`. If override-vs-derive
+    diverges, the local-CLI vs Cloud-Batch determinism re-audit at M7 C2
+    T2G fails."""
+    from rostermonster.solver import derive_K_seeds  # noqa: PLC0415
+
+    model = _model()
+    bounds = TerminationBounds(maxCandidates=3)
+    r_default = _solve(model, seed=12345, terminationBounds=bounds)
+    derived = derive_K_seeds(12345, 3)
+    r_override = _solve(
+        model, seed=12345, terminationBounds=bounds,
+        _candidate_seeds=derived,
+    )
+    assert isinstance(r_default, CandidateSet)
+    assert isinstance(r_override, CandidateSet)
+    assert tuple(c.assignments for c in r_default.candidates) == tuple(
+        c.assignments for c in r_override.candidates
+    ), (
+        "_candidate_seeds=derive_K_seeds(seed,K) diverged from omitting the "
+        "override — Task 2C escape hatch is not byte-identical to default "
+        "K-seed derivation; orchestrator/worker determinism is broken."
+    )
+
+
+def test_candidate_seeds_override_uses_provided_seeds() -> None:
+    """Different `_candidate_seeds` values MUST drive different
+    trajectories. If override is silently ignored and `solve()` falls back
+    to deriving from `seed`, two runs with the same `seed` but different
+    overrides would emit identical candidate sets — this test guards
+    against that regression."""
+    model = _model()
+    bounds = TerminationBounds(maxCandidates=2)
+    seeds_a = [111, 222]
+    seeds_b = [333, 444]
+    r_a = _solve(
+        model, seed=12345, terminationBounds=bounds,
+        _candidate_seeds=seeds_a,
+    )
+    r_b = _solve(
+        model, seed=12345, terminationBounds=bounds,
+        _candidate_seeds=seeds_b,
+    )
+    assert isinstance(r_a, CandidateSet)
+    assert isinstance(r_b, CandidateSet)
+    assert tuple(c.assignments for c in r_a.candidates) != tuple(
+        c.assignments for c in r_b.candidates
+    ), (
+        "different _candidate_seeds produced byte-identical CandidateSets "
+        "— override is being silently ignored"
+    )
+
+
+def test_candidate_seeds_length_mismatch_rejected() -> None:
+    """`len(_candidate_seeds)` MUST equal `terminationBounds.maxCandidates`
+    — the loop iterates over the seed list and any mismatch would either
+    truncate trajectories silently or raise IndexError deep in the loop."""
+    model = _model()
+    bounds = TerminationBounds(maxCandidates=3)
+    for bad in ([1, 2], [1, 2, 3, 4]):
+        try:
+            _solve(
+                model, seed=42, terminationBounds=bounds,
+                _candidate_seeds=bad,
+            )
+        except ValueError as e:
+            assert "length" in str(e).lower() or "maxCandidates" in str(e)
+            continue
+        raise AssertionError(
+            f"_candidate_seeds={bad!r} (vs maxCandidates=3) should have "
+            f"raised ValueError"
+        )
+
+
+def test_candidate_seeds_non_list_rejected() -> None:
+    """`_candidate_seeds` is typed `list[int]` and the validator MUST
+    reject non-list inputs — tuples / strings / dicts at the boundary
+    rather than letting them slip through and fail downstream."""
+    model = _model()
+    bounds = TerminationBounds(maxCandidates=2)
+    for bad in ((1, 2), "12", {1: 2}):
+        try:
+            _solve(
+                model, seed=42, terminationBounds=bounds,
+                _candidate_seeds=bad,  # type: ignore[arg-type]
+            )
+        except ValueError as e:
+            assert "list" in str(e)
+            continue
+        raise AssertionError(
+            f"_candidate_seeds={bad!r} (non-list) should have raised "
+            f"ValueError"
+        )
+
+
+def test_candidate_seeds_non_int_element_rejected() -> None:
+    """Each element MUST be `int` (matching `derive_K_seeds`'s emitted
+    type). Non-int elements (str, float, None) MUST reject so a bad
+    upstream serialization (e.g., orchestrator JSON-decode glitch
+    surfacing seeds as strings) fails fast at the solver boundary rather
+    than degrading the trajectory silently."""
+    model = _model()
+    bounds = TerminationBounds(maxCandidates=2)
+    for bad in (["1", "2"], [1.5, 2.5], [1, None]):
+        try:
+            _solve(
+                model, seed=42, terminationBounds=bounds,
+                _candidate_seeds=bad,  # type: ignore[arg-type]
+            )
+        except ValueError as e:
+            assert "int" in str(e)
+            continue
+        raise AssertionError(
+            f"_candidate_seeds={bad!r} (non-int element) should have "
+            f"raised ValueError"
+        )
+
+
+def test_candidate_seeds_bool_element_rejected() -> None:
+    """`bool` is an `int` subclass in Python; reject `True`/`False`
+    elements explicitly so they don't slip through as `1`/`0` — same
+    isinstance-with-bool-rejection discipline `solve()` applies to
+    `seed` and `terminationBounds.maxCandidates` at §9 / §15."""
+    model = _model()
+    bounds = TerminationBounds(maxCandidates=2)
+    for bad in ([True, False], [1, True]):
+        try:
+            _solve(
+                model, seed=42, terminationBounds=bounds,
+                _candidate_seeds=bad,  # type: ignore[arg-type]
+            )
+        except ValueError as e:
+            assert "int" in str(e)
+            continue
+        raise AssertionError(
+            f"_candidate_seeds={bad!r} (bool element) should have raised "
+            f"ValueError"
+        )
+
+
 # --- crFloor modes -------------------------------------------------------
 
 

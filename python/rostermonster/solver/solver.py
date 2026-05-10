@@ -149,6 +149,7 @@ def solve(
     strategyId: str = STRATEGY_SEEDED_RANDOM_BLIND,
     scoringConfig=None,
     lahcParams: LahcParams | None = None,
+    _candidate_seeds: list[int] | None = None,
 ) -> CandidateSet | UnsatisfiedResult:
     """Run the active solver strategy for `terminationBounds.maxCandidates`
     candidates per `docs/solver_contract.md`.
@@ -168,6 +169,20 @@ def solve(
     `preferenceSeeding=None` defaults to `SMART_MEDIAN` per §13.1 ("default
     mode when `preferenceSeeding` is omitted or when
     `preferenceSeeding.crFloor` is omitted").
+
+    `_candidate_seeds` is a private escape hatch added in M7 C2 Task 2C for
+    the Cloud Batch worker (`python/rostermonster_service/worker.py`). When
+    provided, the solver bypasses the `derive_K_seeds(seed, maxCandidates)`
+    step and uses the supplied list as the K trajectory seeds directly.
+    The orchestrator (Task 2F) calls `derive_K_seeds` once for all
+    K_approved seeds, partitions them per-task, and each Batch worker calls
+    `solve(..., _candidate_seeds=its_8_seeds, terminationBounds=K=8)`. The
+    `seed` argument MUST still be supplied (recorded in `SearchDiagnostics`
+    + used to reconstruct the master-RNG context downstream); the override
+    affects ONLY the K-seed derivation step. Length MUST equal
+    `terminationBounds.maxCandidates`. Underscore prefix marks this as
+    orchestrator/worker-only — public callers should keep using `seed`
+    alone.
     """
     # §11.1: strategy resolution rejects unregistered ids BEFORE any §10
     # output construction begins. Registered ids dispatch through the
@@ -246,7 +261,35 @@ def solve(
     # owns the load-bearing `_UINT64_MASK` step that prevents CPython's
     # `Random.seed(int)` `abs(...)` from aliasing contract-valid `seed` and
     # `-seed` inputs to the same RNG stream.
-    candidate_seeds = derive_K_seeds(seed, terminationBounds.maxCandidates)
+    #
+    # M7 C2 Task 2C escape hatch: when `_candidate_seeds` is provided
+    # (Cloud Batch worker code path — orchestrator pre-derives all K
+    # seeds + partitions them per-task), bypass `derive_K_seeds` and use
+    # the supplied list directly. Length MUST match `maxCandidates` so
+    # the loop's iteration contract is preserved. Validation lives at
+    # the boundary so a caller bug surfaces here, not deep in
+    # `descriptor.run`.
+    if _candidate_seeds is not None:
+        if not isinstance(_candidate_seeds, list):
+            raise ValueError(
+                f"_candidate_seeds must be a list[int]; got "
+                f"{type(_candidate_seeds).__name__}"
+            )
+        if len(_candidate_seeds) != max_candidates:
+            raise ValueError(
+                f"_candidate_seeds length must equal "
+                f"terminationBounds.maxCandidates ({max_candidates}); "
+                f"got len(_candidate_seeds)={len(_candidate_seeds)}"
+            )
+        for i, s in enumerate(_candidate_seeds):
+            if isinstance(s, bool) or not isinstance(s, int):
+                raise ValueError(
+                    f"_candidate_seeds[{i}] must be an int; got "
+                    f"{type(s).__name__}={s!r}"
+                )
+        candidate_seeds = list(_candidate_seeds)
+    else:
+        candidate_seeds = derive_K_seeds(seed, max_candidates)
     candidates: list[TrialCandidate] = []
     aggregate_attempts = 0
     aggregate_rejections: dict[str, int] = {}
