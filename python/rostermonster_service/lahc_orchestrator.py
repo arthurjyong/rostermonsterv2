@@ -377,19 +377,19 @@ def _build_post_aggregation_envelope(
     snapshot = _snapshot_from_dict(snapshot_dict)
     template = icu_hd_template_artifact()
     parser_result = parse(snapshot, template)
-    if parser_result.consumability is not Consumability.CONSUMABLE:
-        # Parser rejected the snapshot post-Batch despite the
-        # orchestrator's pre-dispatch deserializability check.
-        # Shouldn't happen unless the snapshot mutated mid-flight
-        # (which it can't, since the orchestrator wrote it to GCS at
-        # entry). Returning None here propagates a null wrapper to
-        # the orchestrator response, which the caller now detects +
-        # promotes to COMPUTE_ERROR per §10.3.
-        log.error(
-            "Orchestrator parse rejected snapshot post-Batch: %d issues",
-            len(parser_result.issues),
-        )
-        return None
+    # `orchestrate_lahc_run` pre-validates parser consumability at entry
+    # (returning INPUT_ERROR with code PARSER_REJECTED on NON_CONSUMABLE)
+    # and writes the snapshot to GCS BEFORE Batch dispatch. The snapshot
+    # is immutable in GCS, so re-parse here MUST also be CONSUMABLE.
+    # Assert the invariant rather than carrying a defensive `return None`
+    # branch (which Codex's pattern-matcher flagged as the still-stale
+    # "parser rejections before Batch dispatch" finding even after the
+    # entry-level pre-validation landed).
+    assert parser_result.consumability is Consumability.CONSUMABLE, (
+        "post-Batch parser_result is " + repr(parser_result.consumability)
+        + " despite orchestrator pre-dispatch CONSUMABLE check + "
+        "GCS-immutable snapshot — internal invariant broken"
+    )
 
     model = parser_result.normalizedModel
     scoring_config = (parser_result.scoringConfig

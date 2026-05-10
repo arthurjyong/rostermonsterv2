@@ -252,14 +252,25 @@ def test_local_cli_and_cloud_batch_writeback_envelope_byte_identical() -> None:
     # separate fixture lock.
     local_final = local_wrapper["finalResultEnvelope"]
     cloud_final = cloud_wrapper["finalResultEnvelope"]
-    # Compare the runEnvelope (the area Codex flagged as drifting)
-    assert local_final["runEnvelope"] == cloud_final["runEnvelope"], (
-        "§13 byte-identity broken: runEnvelope diverged between "
-        "local-CLI and Cloud-Batch paths.\nlocal=" + json.dumps(
-            local_final["runEnvelope"], sort_keys=True
-        ) + "\ncloud=" + json.dumps(
-            cloud_final["runEnvelope"], sort_keys=True
-        )
+    # Codex P2 finding on PR #144 commit 0153fc6: the audit MUST
+    # compare the FULL writeback envelope, not just runEnvelope —
+    # divergence in `result` (allocation result + searchDiagnostics),
+    # snapshot subset, or doctorIdMap would otherwise pass undetected.
+    # Compare the full finalResultEnvelope (run envelope + result
+    # block) AND the wrapper-level snapshot subset + doctorIdMap.
+    assert local_final == cloud_final, (
+        "§13 byte-identity broken: finalResultEnvelope diverged "
+        "between local-CLI and Cloud-Batch paths.\nlocal="
+        + json.dumps(local_final, sort_keys=True)
+        + "\ncloud=" + json.dumps(cloud_final, sort_keys=True)
+    )
+    # Wrapper-level fields (snapshot subset, doctorIdMap, schemaVersion)
+    # MUST also match for byte-identity per §13. Compare the whole
+    # wrapper.
+    assert local_wrapper == cloud_wrapper, (
+        "§13 byte-identity broken: wrapper envelope (snapshot subset / "
+        "doctorIdMap / schemaVersion) diverged between local-CLI and "
+        "Cloud-Batch paths."
     )
 
 
