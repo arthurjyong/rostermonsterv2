@@ -272,6 +272,16 @@ def worker_main(
 
     candidate_seeds = seeds_dict["seeds"]
     master_seed = int(seeds_dict["masterSeed"])
+    # `attemptId` per the M7 C2 Task 2G concurrent-replay race fix
+    # (`docs/cloud_compute_contract.md` §8.7): orchestrator stamps an
+    # attemptId into seeds.json; worker echoes it back into result.json
+    # so the orchestrator can validate on read that result.json belongs
+    # to THIS attempt (not a stale prior attempt at the same runId
+    # prefix). Pre-T2G seeds.json files lacked this field; treat
+    # missing as a non-fatal None so the orchestrator's validation
+    # logic surfaces the mismatch rather than the worker raising on
+    # historical replays.
+    attempt_id = seeds_dict.get("attemptId")
 
     if not isinstance(candidate_seeds, list) or not candidate_seeds:
         raise ValueError(
@@ -294,7 +304,7 @@ def worker_main(
         # the orchestrator can aggregate (0 candidates contributed).
         result = _build_parser_failure_result(
             run_id=run_id, task_index=task_index, master_seed=master_seed,
-            parser_issues=parser_result.issues,
+            attempt_id=attempt_id, parser_issues=parser_result.issues,
         )
         write_json(result_uri, result)
         return result
@@ -355,6 +365,12 @@ def worker_main(
         "runId": run_id,
         "taskIndex": task_index,
         "masterSeed": master_seed,
+        # Echo attemptId from seeds.json so orchestrator can validate
+        # this result.json belongs to its attempt (T2G concurrent-replay
+        # race fix per §8.7). Pre-T2G seeds.json without attemptId
+        # results in `None` here; orchestrator's validation surfaces the
+        # mismatch as "missing" per the standard partial-failure path.
+        "attemptId": attempt_id,
         "candidates": candidates,
         "failedTrajectories": failed,
         "aggregateAttempts": aggregate_attempts,
@@ -372,7 +388,7 @@ def worker_main(
 
 def _build_parser_failure_result(
     *, run_id: str, task_index: int, master_seed: int,
-    parser_issues,
+    attempt_id, parser_issues,
 ) -> dict:
     """Result-shaped envelope when the parser rejects the snapshot. The
     orchestrator's §8.7 aggregation treats this the same as a missing
@@ -383,6 +399,7 @@ def _build_parser_failure_result(
         "runId": run_id,
         "taskIndex": task_index,
         "masterSeed": master_seed,
+        "attemptId": attempt_id,
         "candidates": [],
         "failedTrajectories": [],
         "aggregateAttempts": 0,
@@ -460,6 +477,11 @@ def main(argv: list[str] | None = None) -> int:
                 "schemaVersion": _RESULT_SCHEMA_VERSION,
                 "runId": args.run_id,
                 "taskIndex": args.task_index,
+                # attemptId unknown at this layer (worker_main raised
+                # before reading seeds.json or after); orchestrator's
+                # validation treats null attemptId as a stale-result
+                # mismatch unless its expected attemptId is also null.
+                "attemptId": None,
                 "candidates": [],
                 "failedTrajectories": [],
                 "aggregateAttempts": 0,
