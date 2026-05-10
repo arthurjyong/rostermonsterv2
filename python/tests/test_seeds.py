@@ -210,6 +210,61 @@ def test_bool_K_rejected() -> None:
         raise AssertionError(f"derive_K_seeds(_, {bad_K!r}) should have raised ValueError")
 
 
+def test_non_int_master_seed_rejected() -> None:
+    """`masterSeed` must satisfy §9 input #3 — a 64-bit signed integer.
+    Validation lives in the helper (NOT only in `solve()`) because the M7
+    C2 Task 2D orchestrator calls `derive_K_seeds` directly with decoded
+    request data BEFORE the per-task workers invoke `solve()`. Without the
+    helper-side guard, non-int seeds would either TypeError deep in the
+    `& _UINT64_MASK` step or silently produce wrong trajectory seeds."""
+    for bad_seed in ("42", 1.5, None, b"\x00\x00"):
+        try:
+            derive_K_seeds(bad_seed, 3)  # type: ignore[arg-type]
+        except ValueError as e:
+            assert "masterSeed" in str(e)
+            continue
+        raise AssertionError(f"derive_K_seeds({bad_seed!r}, 3) should have raised ValueError")
+
+
+def test_bool_master_seed_rejected() -> None:
+    """`bool` is an `int` subclass — reject `True`/`False` explicitly so
+    they don't slip through as `masterSeed=1`/`masterSeed=0`. Same
+    isinstance-with-bool-rejection discipline `solve()` applies to its
+    `seed` parameter at the §9 boundary."""
+    for bad_seed in (True, False):
+        try:
+            derive_K_seeds(bad_seed, 3)  # type: ignore[arg-type]
+        except ValueError as e:
+            assert "masterSeed" in str(e)
+            continue
+        raise AssertionError(f"derive_K_seeds({bad_seed!r}, 3) should have raised ValueError")
+
+
+def test_master_seed_above_int64_max_rejected() -> None:
+    """§9 input #3 caps `seed` at `INT64_MAX = 2**63 - 1`. Out-of-range
+    ints would silently alias modulo `_UINT64_MASK = 2**64 - 1` if the
+    helper's range check were bypassed — this test guards the §9 ceiling."""
+    int64_max = 2**63 - 1
+    try:
+        derive_K_seeds(int64_max + 1, 3)
+    except ValueError as e:
+        assert "masterSeed" in str(e)
+        return
+    raise AssertionError("derive_K_seeds(INT64_MAX + 1, 3) should have raised ValueError")
+
+
+def test_master_seed_below_int64_min_rejected() -> None:
+    """§9 input #3 floors `seed` at `INT64_MIN = -(2**63)`. Mirror of the
+    `INT64_MAX + 1` test — guards the §9 lower bound."""
+    int64_min = -(2**63)
+    try:
+        derive_K_seeds(int64_min - 1, 3)
+    except ValueError as e:
+        assert "masterSeed" in str(e)
+        return
+    raise AssertionError("derive_K_seeds(INT64_MIN - 1, 3) should have raised ValueError")
+
+
 # --- Internal primitives still match contract ---------------------------
 
 

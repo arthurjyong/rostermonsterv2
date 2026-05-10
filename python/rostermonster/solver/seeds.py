@@ -17,6 +17,14 @@ from __future__ import annotations
 
 from random import Random
 
+# 64-bit signed integer bounds per `docs/solver_contract.md` §9 input #3.
+# Mirrored here (vs imported from solver.py) because seeds.py is the direct
+# entry point for the Cloud Run Service orchestrator (M7 C2 Task 2D) — the
+# orchestrator MUST NOT depend on going through `solve()` to get seed
+# validation, since the orchestrator's pre-derivation step happens BEFORE
+# the per-task workers call `solve()`.
+_INT64_MIN = -(2**63)
+_INT64_MAX = 2**63 - 1
 # 64-bit unsigned mask applied to `masterSeed` before initializing the
 # underlying `Random` stream. CPython's `Random.seed(int)` normalizes via
 # `abs(seed)`, which would otherwise collapse `seed`/`-seed` pairs into the
@@ -46,6 +54,17 @@ def derive_K_seeds(masterSeed: int, K: int) -> list[int]:
     orchestrator) per §12A.10.
 
     `K = 0` returns `[]`. `K < 0` is a caller bug (rejected at the boundary).
+
+    `masterSeed` MUST satisfy the §9 input #3 contract — a 64-bit signed
+    integer, with `bool` rejected explicitly (per the same isinstance-with-
+    bool-rejection discipline `solve()` applies at its boundary). Validation
+    lives here (NOT only in `solve()`) because the Cloud Run Service
+    orchestrator (M7 C2 Task 2D) calls this helper directly with decoded
+    request data BEFORE the per-task workers invoke `solve()` — without the
+    helper-side guard, an out-of-range int would silently alias modulo 2^64
+    via the `_UINT64_MASK` step, and `bool` would slip through as `1`/`0`,
+    producing deterministic-but-wrong trajectory seeds rather than failing
+    fast at the orchestrator boundary.
     """
     if isinstance(K, bool) or not isinstance(K, int):
         raise ValueError(
@@ -57,6 +76,18 @@ def derive_K_seeds(masterSeed: int, K: int) -> list[int]:
         raise ValueError(
             f"K must be a non-negative integer per "
             f"docs/solver_contract.md §12A.10; got {K!r}"
+        )
+    if isinstance(masterSeed, bool) or not isinstance(masterSeed, int):
+        raise ValueError(
+            f"masterSeed must be a 64-bit signed integer per "
+            f"docs/solver_contract.md §9; got "
+            f"{type(masterSeed).__name__}={masterSeed!r}"
+        )
+    if not (_INT64_MIN <= masterSeed <= _INT64_MAX):
+        raise ValueError(
+            f"masterSeed must fit in a 64-bit signed integer per "
+            f"docs/solver_contract.md §9 "
+            f"({_INT64_MIN} <= masterSeed <= {_INT64_MAX}); got {masterSeed!r}"
         )
     rng = Random(masterSeed & _UINT64_MASK)
     return [_per_candidate_seed(rng) for _ in range(K)]
