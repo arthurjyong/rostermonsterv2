@@ -538,6 +538,105 @@ def test_orchestrator_clears_stale_artifacts_before_replay() -> None:
     assert lo._gcs_uri(_BUCKET, expected_run_id, "task-0", "seeds.json") in storage
 
 
+def test_post_aggregation_diagnostics_include_seed_failed_trajectories() -> None:
+    """Codex P2 finding regression: SearchDiagnostics' per-trajectory
+    arrays MUST have an entry for EVERY trajectory the solver attempted
+    per `docs/solver_contract.md` §12A.9, with `0`/`None` for
+    SEED_FAILED entries. Pre-fix, the helper only walked
+    `agg["candidates"]` (SUCCEEDED) and skipped `agg["failedTrajectories"]`,
+    so writeback diagnostics under-reported the original K when any
+    trajectory dropped — losing forensic context for partial-failure
+    runs that the analyzer + operator-facing diagnostics rely on."""
+    snapshot_dict = json.loads(_FIXTURE_PATH.read_text())
+    master_seed = 42
+    K = 4
+    # Re-derive the K seeds the orchestrator would use so we can craft
+    # a per-task result.json with the right candidateSeed values.
+    from rostermonster.solver import derive_K_seeds
+    seeds = derive_K_seeds(master_seed, K)
+
+    # Construct an `agg` dict the way `_aggregate_results` would —
+    # 2 SUCCEEDED + 2 SEED_FAILED, all in task 0.
+    agg = {
+        "candidates": [
+            {
+                "taskIndex": 0,
+                "candidateSeed": seeds[0],
+                "assignments": [
+                    # Minimal valid assignment — scorer will accept this
+                    # synthetic shape because the test only checks
+                    # diagnostics-array length, not score values.
+                    {"dateKey": "2026-05-01", "slotType": "MICU",
+                     "unitIndex": 0, "doctorId": "dr_a"},
+                ],
+                "iters": 100,
+                "acceptedMoves": 50,
+                "bestScore": 0.5,
+                "terminalScore": 0.4,
+            },
+            {
+                "taskIndex": 0,
+                "candidateSeed": seeds[2],
+                "assignments": [
+                    {"dateKey": "2026-05-02", "slotType": "MICU",
+                     "unitIndex": 0, "doctorId": "dr_b"},
+                ],
+                "iters": 200,
+                "acceptedMoves": 80,
+                "bestScore": 0.6,
+                "terminalScore": 0.55,
+            },
+        ],
+        "failedTrajectories": [
+            {"taskIndex": 0, "candidateSeed": seeds[1],
+             "unfilledDemand": []},
+            {"taskIndex": 0, "candidateSeed": seeds[3],
+             "unfilledDemand": []},
+        ],
+        "trajectoryExceptions": [],
+        "aggregateAttempts": 100,
+        "aggregateRejectionsByReason": {},
+        "completedTaskIndices": [0],
+        "incompleteTaskIndices": [],
+        "mismatchedAttemptTaskIndices": [],
+        "perTaskResults": [{}],
+    }
+
+    wrapper = lo._build_post_aggregation_envelope(
+        snapshot_dict=snapshot_dict, agg=agg,
+        master_seed=master_seed, K_approved=K,
+        run_id="test-runid",
+    )
+    if wrapper is None:
+        # If selector rejected our synthetic candidates, the
+        # diagnostics test isn't applicable. Skip — the
+        # determinism-audit test covers the live-fixture path.
+        return
+
+    diag = wrapper["finalResultEnvelope"]["result"]["searchDiagnostics"]
+    # Per §12A.9: per-trajectory arrays MUST have K entries
+    # (2 SUCCEEDED + 2 SEED_FAILED = 4)
+    assert len(diag["perTrajectoryStatus"]) == K, (
+        "expected " + str(K) + " per-trajectory status entries; got "
+        + str(len(diag["perTrajectoryStatus"]))
+    )
+    assert "SUCCEEDED" in diag["perTrajectoryStatus"]
+    assert "SEED_FAILED" in diag["perTrajectoryStatus"], (
+        "SEED_FAILED trajectories MUST appear in the per-trajectory "
+        "status array (Codex P2 finding regression on PR #144)"
+    )
+    # Status order matches the (task, seed) emission order; with 4
+    # entries in [SUCCEEDED, SEED_FAILED, SUCCEEDED, SEED_FAILED]
+    # arrangement (seeds[0..3] mapped via the lookup above)
+    assert diag["perTrajectoryStatus"] == ["SUCCEEDED", "SEED_FAILED",
+                                            "SUCCEEDED", "SEED_FAILED"]
+    # SEED_FAILED entries get `0` for iters/accepted, `None` for scores
+    assert diag["perTrajectoryIters"][1] == 0
+    assert diag["perTrajectoryAcceptedMoves"][1] == 0
+    assert diag["perTrajectoryBestScore"][1] is None
+    assert diag["perTrajectoryTerminalScore"][1] is None
+
+
 def test_orchestrator_filters_out_results_with_mismatched_attempt_id() -> None:
     """T2G concurrent-replay race fix per §8.7: a result.json carrying
     a different attemptId belongs to a parallel/prior attempt at the

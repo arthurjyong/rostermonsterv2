@@ -418,17 +418,57 @@ def _build_post_aggregation_envelope(
         for i, cand in enumerate(candidates_raw)
     )
 
-    # Build SearchDiagnostics. LAHC fields populated from per-task
-    # diagnostics aggregated by the worker per `docs/solver_contract.md`
-    # §12A.9. Per-trajectory tuples are flattened across all tasks in
-    # candidate emission order.
-    per_traj_status = tuple(
-        "SUCCEEDED" for _ in candidates_raw
-    )
-    per_traj_iters = tuple(int(c["iters"]) for c in candidates_raw)
-    per_traj_accepted = tuple(int(c["acceptedMoves"]) for c in candidates_raw)
-    per_traj_best = tuple(c["bestScore"] for c in candidates_raw)
-    per_traj_terminal = tuple(c["terminalScore"] for c in candidates_raw)
+    # Build SearchDiagnostics. Per `docs/solver_contract.md` §12A.9, the
+    # per-trajectory arrays MUST have an entry for EVERY trajectory the
+    # solver attempted, with `0` / `None` for `SEED_FAILED` entries.
+    # Walk the original (task_index, candidate_seed) emission order so
+    # the arrays are flattened in the same order the local-CLI's
+    # `solve()` produces — this is the §12A.9 invariant the analyzer +
+    # writeback consumers depend on.
+    #
+    # Missing tasks (no result.json on aggregation) contribute no
+    # per-trajectory entries; this is a Cloud-Batch-specific gap with
+    # no local-CLI analog. Operators see those tasks counted in
+    # `lahcSummary.incompleteTaskIndices` instead.
+    candidate_lookup = {
+        (c["taskIndex"], c["candidateSeed"]): c
+        for c in candidates_raw
+    }
+    failed_lookup = {
+        (f["taskIndex"], f["candidateSeed"]): f
+        for f in agg["failedTrajectories"]
+    }
+    all_seeds = derive_K_seeds(master_seed, K_approved)
+    # Local re-import to avoid circular: _partition_seeds is module-level.
+    per_task_seeds = _partition_seeds(all_seeds)
+    per_traj_status_list: list[str] = []
+    per_traj_iters_list: list[int] = []
+    per_traj_accepted_list: list[int] = []
+    per_traj_best_list: list[float | None] = []
+    per_traj_terminal_list: list[float | None] = []
+    for t_idx, t_seeds in enumerate(per_task_seeds):
+        for seed in t_seeds:
+            key = (t_idx, seed)
+            if key in candidate_lookup:
+                c = candidate_lookup[key]
+                per_traj_status_list.append("SUCCEEDED")
+                per_traj_iters_list.append(int(c["iters"]))
+                per_traj_accepted_list.append(int(c["acceptedMoves"]))
+                per_traj_best_list.append(c["bestScore"])
+                per_traj_terminal_list.append(c["terminalScore"])
+            elif key in failed_lookup:
+                per_traj_status_list.append("SEED_FAILED")
+                per_traj_iters_list.append(0)
+                per_traj_accepted_list.append(0)
+                per_traj_best_list.append(None)
+                per_traj_terminal_list.append(None)
+            # else: missing task — no per-trajectory entry recorded;
+            # surfaces via `lahcSummary.incompleteTaskIndices`.
+    per_traj_status = tuple(per_traj_status_list)
+    per_traj_iters = tuple(per_traj_iters_list)
+    per_traj_accepted = tuple(per_traj_accepted_list)
+    per_traj_best = tuple(per_traj_best_list)
+    per_traj_terminal = tuple(per_traj_terminal_list)
 
     diagnostics = SearchDiagnostics(
         strategyId=STRATEGY_LAHC,
