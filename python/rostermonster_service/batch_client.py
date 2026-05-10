@@ -19,6 +19,7 @@ job-level state polling.
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Any, Callable
 
 
@@ -66,15 +67,22 @@ class BatchClient:
     test environments without google-cloud-batch installed is safe
     (tests use `InMemoryBatchClient` and never construct this class).
 
-    `time_fn` is injectable so deterministic Batch job_id derivation
-    is testable (production defaults to `time.time`)."""
+    `time_fn` and `uuid_fn` are injectable so the deterministic Batch
+    job_id derivation is testable (production defaults to
+    `time.time` and `uuid.uuid4`)."""
 
-    def __init__(self, *, time_fn: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        *,
+        time_fn: Callable[[], float] = time.time,
+        uuid_fn: Callable[[], uuid.UUID] = uuid.uuid4,
+    ) -> None:
         from google.cloud import batch_v1  # local import per docstring rationale
 
         self._batch_v1 = batch_v1
         self._client = batch_v1.BatchServiceClient()
         self._time_fn = time_fn
+        self._uuid_fn = uuid_fn
 
     def submit_job(
         self, *,
@@ -88,17 +96,24 @@ class BatchClient:
         name (`projects/X/locations/Y/jobs/Z`) the caller passes to
         subsequent `get_job_state` / `cancel_job` calls.
 
-        The Batch job_id is derived as `<truncated-runId>-<ms-timestamp>`
-        per `_derive_batch_job_id` so a maintainer replay of the same
+        The Batch job_id is derived as
+        `<truncated-runId>-<ms-timestamp>-<8hex>` per
+        `_derive_batch_job_id` so a maintainer replay of the same
         `(snapshot, seed)` doesn't 409 on Batch's "job_id already
-        exists" rule. Artifact GCS keys (under `runId/...`) remain
+        exists" rule. The 8-hex UUID nonce eliminates the residual
+        same-millisecond collision risk from concurrent Cloud Run
+        instances or immediate double-submits (Codex P2 finding on PR
+        #143). Artifact GCS keys (under `runId/...`) remain
         idempotent — only the Batch job ID namespace gets per-call
         uniqueness."""
         from google.protobuf import json_format
 
         job = json_format.ParseDict(job_spec, self._batch_v1.Job())
         parent = "projects/" + project + "/locations/" + region
-        unique_suffix = str(int(self._time_fn() * 1000))
+        unique_suffix = (
+            str(int(self._time_fn() * 1000))
+            + "-" + self._uuid_fn().hex[:8]
+        )
         job_id = _derive_batch_job_id(run_id, unique_suffix=unique_suffix)
         result = self._client.create_job(
             parent=parent, job=job, job_id=job_id,
