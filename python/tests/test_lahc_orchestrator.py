@@ -764,6 +764,78 @@ def test_orchestrator_zero_candidates_returns_UNSATISFIED() -> None:
     assert len(response["failedTrajectories"]) == 8
 
 
+def test_orchestrator_failure_branch_wrapper_envelope_present() -> None:
+    """Codex P2 finding regression on PR #144 commit c990f16:
+    UNSATISFIED responses (K'==0) MUST still carry a non-null
+    `writebackEnvelope` per `docs/cloud_compute_contract.md` §10.2 +
+    §10.3 — the bound shim's `RMLib.applyWriteback(envelope)` requires
+    a non-null wrapper. Pre-fix the orchestrator returned None for
+    the failure branch; post-fix it builds the failure-branch
+    envelope via `_build_unsatisfied_from_aggregation` + selector."""
+    snapshot_dict = json.loads(_FIXTURE_PATH.read_text())
+    snapshot_id = snapshot_dict["metadata"]["snapshotId"]
+    expected_run_id = lo.derive_run_id(snapshot_id, master_seed=42)
+
+    # Pre-seed result.json with all SEED_FAILED (no candidates)
+    pre_seeded = {
+        lo._gcs_uri(_BUCKET, expected_run_id, "task-0", "result.json"): {
+            "schemaVersion": 1,
+            "runId": expected_run_id,
+            "taskIndex": 0,
+            "masterSeed": 42,
+            "attemptId": _FIXED_ATTEMPT_ID,
+            "candidates": [],
+            "failedTrajectories": [
+                {"taskIndex": 0, "candidateSeed": s,
+                 "unfilledDemand": [
+                     {"dateKey": "2026-05-01", "slotType": "MICU",
+                      "unitIndex": 0},
+                 ]}
+                for s in [11, 22, 33, 44, 55, 66, 77, 88]
+            ],
+            "aggregateAttempts": 100,
+            "aggregateRejectionsByReason": {"BASELINE_ELIGIBILITY_FAIL": 5},
+        },
+    }
+    read_json, write_json, _ = _make_inmem_gcs(pre_seeded)
+    batch_client = InMemoryBatchClient(state_sequence=[JOB_STATE_SUCCEEDED])
+
+    response = lo.orchestrate_lahc_run(
+        snapshot_dict,
+        master_seed=42,
+        K_approved=8,
+        container_image_uri=_IMAGE,
+        batch_client=batch_client,
+        gcs_read_json=read_json,
+        gcs_write_json=write_json,
+        gcs_delete_prefix=_no_delete,
+        project=_PROJECT, bucket=_BUCKET, region=_REGION,
+        sleep_fn=_no_sleep,
+        time_fn=_virtual_clock(),
+        attempt_id_fn=_fixed_attempt_id_fn,
+    )
+
+    assert response["state"] == "UNSATISFIED"
+    assert response["lahcSummary"]["kPrime"] == 0
+    # Wrapper envelope MUST be non-null even on UNSATISFIED
+    assert response["writebackEnvelope"] is not None, (
+        "UNSATISFIED responses MUST carry a failure-branch "
+        "writebackEnvelope per cloud_compute_contract.md §10.2 — "
+        "Codex P2 finding regression."
+    )
+    final = response["writebackEnvelope"]["finalResultEnvelope"]
+    # Failure-branch result has unfilledDemand + reasons populated
+    result = final["result"]
+    assert "unfilledDemand" in result
+    assert len(result["unfilledDemand"]) >= 1, (
+        "failure-branch envelope MUST carry the unfilled demand list"
+    )
+    assert "reasons" in result
+    assert len(result["reasons"]) >= 1, (
+        "failure-branch envelope MUST carry per-trajectory failure reasons"
+    )
+
+
 # --- Worker integration (orchestrator + real worker_main) --------------
 
 

@@ -62,13 +62,14 @@ real `BatchClient` + `make_gcs_adapter(...)`; tests pass
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import logging
 import time
 import uuid
 from typing import Any, Callable
 
-from rostermonster.domain import AssignmentUnit
+from rostermonster.domain import AssignmentUnit, IssueSeverity, ValidationIssue
 from rostermonster.parser import Consumability, parse
 from rostermonster.pipeline import _assemble_writeback_wrapper, _snapshot_from_dict
 from rostermonster.scorer import ScoringConfig, score
@@ -89,6 +90,8 @@ from rostermonster.solver import (
     PreferenceSeedingConfig,
     SearchDiagnostics,
     TrialCandidate,
+    UnfilledDemandEntry,
+    UnsatisfiedResult,
     compute_cr_floor,
     derive_K_seeds,
 )
@@ -361,8 +364,6 @@ def _build_post_aggregation_envelope(
     `docs/solver_contract.md` §9 / §11.
     """
     candidates_raw = agg["candidates"]
-    if not candidates_raw:
-        return None
 
     # Re-parse snapshot. Worker also did this per-task, but the
     # orchestrator needs its own NormalizedModel + ScoringConfig to
@@ -412,12 +413,14 @@ def _build_post_aggregation_envelope(
     cr_floor_seeding = PreferenceSeedingConfig()
     cr_floor_x = compute_cr_floor(model, cr_floor_seeding.crFloor)
 
-    # Reconstruct CandidateSet from agg["candidates"]. Each candidate's
-    # assignments came from the worker as JSON dicts; convert back to
-    # AssignmentUnit objects so the scorer/selector can consume them.
-    # `candidateId` is 1-indexed dense per `docs/selector_contract.md`
-    # §16; the orchestrator's emission order = aggregation order across
-    # tasks (task-0 candidates first, then task-1, ...).
+    # Reconstruct trial candidates from agg["candidates"]. Each
+    # candidate's assignments came from the worker as JSON dicts;
+    # convert back to AssignmentUnit objects so the scorer/selector
+    # can consume them. `candidateId` is 1-indexed dense per
+    # `docs/selector_contract.md` §16; the orchestrator's emission
+    # order = aggregation order across tasks (task-0 candidates first,
+    # then task-1, ...). Empty when K' == 0 (failure-branch path
+    # below).
     trial_candidates = tuple(
         TrialCandidate(
             candidateId=i + 1,
@@ -509,24 +512,6 @@ def _build_post_aggregation_envelope(
         perTrajectoryBestScore=per_traj_best,
         perTrajectoryTerminalScore=per_traj_terminal,
     )
-    candidate_set = CandidateSet(
-        candidates=trial_candidates,
-        diagnostics=diagnostics,
-    )
-
-    # Score each candidate and assemble ScoredCandidateSet (mirrors
-    # pipeline.run_pipeline()'s post-solve step).
-    scored = ScoredCandidateSet(
-        candidates=tuple(
-            ScoredTrialCandidate(
-                candidate=cand,
-                score=score(cand.assignments, model, scoring_config),
-            )
-            for cand in candidate_set.candidates
-        ),
-        diagnostics=diagnostics,
-    )
-
     # Build RunEnvelope mirroring pipeline._build_run_envelope's LAHC
     # branch. The orchestrator's run_id is per-call unique (encodes
     # snapshotId + masterSeed + content hash); the standard runEnvelope
@@ -556,24 +541,121 @@ def _build_post_aggregation_envelope(
         ),
     )
 
-    # Select the winner + assemble FinalResultEnvelope.
-    envelope = select(
-        scored,
-        retentionMode=RetentionMode.BEST_ONLY,
-        runEnvelope=run_envelope,
-    )
-
-    if not isinstance(envelope.result, AllocationResult):
-        # Selector returned the failure-branch shape (e.g., zero scored
-        # candidates after filtering). Treat as no-wrapper.
-        log.warning(
-            "Selector failure-branch envelope returned with K'=%d; "
-            "no wrapper envelope produced",
-            len(trial_candidates),
+    # Branch on K'. Both paths produce a FinalResultEnvelope (success
+    # OR failure-branch) per `docs/cloud_compute_contract.md` §10.2 +
+    # §10.3 — UNSATISFIED responses MUST still carry a wrapper so the
+    # bound shim's `RMLib.applyWriteback(response.writebackEnvelope)`
+    # call doesn't crash on null. Codex P2 finding on PR #144 commit
+    # c990f16.
+    if trial_candidates:
+        # SUCCESS branch — score K' candidates + run selector.
+        candidate_set = CandidateSet(
+            candidates=trial_candidates,
+            diagnostics=diagnostics,
         )
-        return None
+        scored = ScoredCandidateSet(
+            candidates=tuple(
+                ScoredTrialCandidate(
+                    candidate=cand,
+                    score=score(cand.assignments, model, scoring_config),
+                )
+                for cand in candidate_set.candidates
+            ),
+            diagnostics=diagnostics,
+        )
+        envelope = select(
+            scored,
+            retentionMode=RetentionMode.BEST_ONLY,
+            runEnvelope=run_envelope,
+        )
+    else:
+        # FAILURE branch (K' == 0) — synthesize an UnsatisfiedResult
+        # from the per-task failedTrajectories aggregation; selector
+        # forwards via the failure-branch wrapper per
+        # `docs/selector_contract.md` §15.
+        unsatisfied = _build_unsatisfied_from_aggregation(
+            agg=agg, diagnostics=diagnostics, master_seed=master_seed,
+        )
+        envelope = select(
+            unsatisfied,
+            retentionMode=RetentionMode.BEST_ONLY,
+            runEnvelope=run_envelope,
+        )
 
     return _assemble_writeback_wrapper(envelope, snapshot, template)
+
+
+def _build_unsatisfied_from_aggregation(
+    *, agg: dict, diagnostics: SearchDiagnostics, master_seed: int,
+) -> UnsatisfiedResult:
+    """Synthesize an `UnsatisfiedResult` from the orchestrator's
+    aggregated `failedTrajectories` for the K'==0 path. The selector
+    then wraps it in the failure-branch FinalResultEnvelope per
+    `docs/selector_contract.md` §15 + §10.2, so the
+    `/compute-lahc-test` route can return a non-null wrapper even
+    when every trajectory failed (Codex P2 finding on PR #144 commit
+    c990f16; bound shim's `RMLib.applyWriteback(envelope)` requires
+    a non-null envelope per `docs/cloud_compute_contract.md` §10.3).
+
+    `unfilledDemand` is deduped by `(dateKey, slotType, unitIndex)`
+    matching `solver.py::_build_unsatisfied`'s discipline.
+    `reasons` carries one ValidationIssue per (failed_trajectory,
+    unit) pair so analyzer / writeback consumers can see which seed
+    hit which failure (per §12A.8 "complete per-trajectory failure
+    data")."""
+    seen_units: set[tuple[str, str, int]] = set()
+    unfilled_list: list[UnfilledDemandEntry] = []
+    reasons_list: list[ValidationIssue] = []
+    for failed in agg["failedTrajectories"]:
+        candidate_seed = failed.get("candidateSeed")
+        task_index = failed.get("taskIndex")
+        for u in failed.get("unfilledDemand", []) or []:
+            date_key = u.get("dateKey", "")
+            slot_type = u.get("slotType", "")
+            unit_index = int(u.get("unitIndex", 0))
+            reasons_list.append(
+                ValidationIssue(
+                    severity=IssueSeverity.ERROR,
+                    code="UNFILLABLE_DEMAND",
+                    message=(
+                        "No eligible-and-rule-valid doctor for ("
+                        + str(date_key) + ", " + str(slot_type)
+                        + ", unit " + str(unit_index)
+                        + ") under LAHC seed=" + str(candidate_seed)
+                        + " (Cloud Batch task " + str(task_index) + ")"
+                    ),
+                    context={
+                        "dateKey": date_key,
+                        "slotType": slot_type,
+                        "unitIndex": unit_index,
+                        "taskIndex": task_index,
+                        "seed": candidate_seed,
+                    },
+                )
+            )
+            key = (date_key, slot_type, unit_index)
+            if key in seen_units:
+                continue
+            seen_units.add(key)
+            unfilled_list.append(
+                UnfilledDemandEntry(
+                    dateKey=date_key,
+                    slotType=slot_type,
+                    unitIndex=unit_index,
+                )
+            )
+    # The input `diagnostics` was built with `unfilledDemandCount=0`
+    # (matching the success branch). Override here so the failure-
+    # branch SearchDiagnostics correctly reports the deduped unfilled
+    # count per `docs/solver_contract.md` §18 audit invariant.
+    failure_diagnostics = dataclasses.replace(
+        diagnostics, unfilledDemandCount=len(unfilled_list),
+    )
+    return UnsatisfiedResult(
+        unfilledDemand=tuple(unfilled_list),
+        reasons=tuple(reasons_list),
+        diagnostics=failure_diagnostics,
+    )
 
 
 def orchestrate_lahc_run(
