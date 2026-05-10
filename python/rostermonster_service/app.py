@@ -36,6 +36,13 @@ from rostermonster.pipeline import (
 )
 from rostermonster.templates import icu_hd_template_artifact
 
+# M7 C2 Task 2F maintainer-only LAHC test route — see `_compute_lahc_test`
+# below + `cloud_compute_contract.md` §6.2.
+_LAHC_K_APPROVED_ENV = "LAHC_K_APPROVED"
+_LAHC_DEFAULT_K_APPROVED = 104  # M7 C1 closure-K
+_CONTAINER_IMAGE_URI_ENV = "CONTAINER_IMAGE_URI"
+_GCP_PROJECT_ENV = "GCP_PROJECT"
+
 
 log = logging.getLogger("rostermonster_service")
 
@@ -72,6 +79,23 @@ def create_app() -> Flask:
         if auth_error is not None:
             return auth_error
         return _compute_endpoint()
+
+    @app.post("/compute-lahc-test")
+    def compute_lahc_test() -> Response:
+        """Maintainer-only LAHC Cloud Batch test route per
+        `docs/cloud_compute_contract.md` §6.2 — added at M7 C2 Task 2F
+        to let the maintainer trigger the parallel cloud LAHC compute
+        pipeline before §9 is amended at M7 C3 to recognize
+        `solverStrategy="LAHC"` as a public input value. Same auth as
+        `/compute` (operator-allowlist gating restricts to maintainer
+        emails by config). Removed when the §9 amendment lands at M7
+        C3 — the operator path then carries the public
+        `solverStrategy` switch and this test path is no longer needed.
+        """
+        auth_error = _check_operator_allowlist()
+        if auth_error is not None:
+            return auth_error
+        return _compute_lahc_test_endpoint()
 
     return app
 
@@ -385,6 +409,144 @@ def _coerce_optional_int(value: Any, field_name: str, *,
             f"`{field_name}` must be >= {min_val}; got {value!r}."
         )
     return value
+
+
+def _compute_lahc_test_endpoint() -> Response:
+    """POST /compute-lahc-test handler (M7 C2 Task 2F). Same body shape
+    as `/compute` but routes through the LAHC Cloud Batch orchestrator
+    instead of in-process direct compute. Always returns HTTP 200 with
+    a structured response per the M7 C2 Task 2F orchestrator contract."""
+    # --- Stage 1: parse body (mirrors /compute Stages 1-2) -------------
+    try:
+        raw = request.get_json(silent=False)
+    except Exception as e:
+        return _input_error(
+            "INVALID_REQUEST_BODY",
+            f"Could not parse request body as JSON: {e}",
+        )
+    if raw is None or not isinstance(raw, dict):
+        return _input_error(
+            "INVALID_REQUEST_BODY",
+            "Request body must be a JSON object with a `snapshot` field.",
+        )
+    if "snapshot" not in raw or not isinstance(raw["snapshot"], dict):
+        return _input_error(
+            "INVALID_REQUEST_BODY",
+            "Request body is missing the required `snapshot` field "
+            "(must be a JSON object) per `docs/cloud_compute_contract.md` §9.3.",
+        )
+    snapshot_dict = raw["snapshot"]
+
+    # --- Stage 2: optionalConfig (subset of /compute) ------------------
+    if "optionalConfig" not in raw or raw["optionalConfig"] is None:
+        optional_raw: dict[str, Any] = {}
+    else:
+        optional_raw = raw["optionalConfig"]
+        if not isinstance(optional_raw, dict):
+            return _input_error(
+                "INVALID_OPTIONAL_CONFIG",
+                "`optionalConfig` must be a JSON object when present.",
+            )
+    try:
+        master_seed = _coerce_optional_int(
+            optional_raw.get("seed"), "seed",
+        )
+    except _ConfigValidationError as e:
+        return _input_error("INVALID_OPTIONAL_CONFIG", str(e))
+    if master_seed is None:
+        # Per D-0053 — pick a fresh random seed when omitted.
+        import random
+        master_seed = random.randint(0, 2**31 - 1)
+
+    # --- Stage 3: deploy-time env vars + dependency wiring ------------
+    container_image_uri = os.environ.get(_CONTAINER_IMAGE_URI_ENV, "").strip()
+    if not container_image_uri:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has no " + _CONTAINER_IMAGE_URI_ENV
+            + " env var set. Maintainer must redeploy with "
+            "--set-env-vars " + _CONTAINER_IMAGE_URI_ENV + "=<image-uri>.",
+        )
+    project = os.environ.get(_GCP_PROJECT_ENV, "").strip()
+    if not project:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has no " + _GCP_PROJECT_ENV
+            + " env var set. Maintainer must redeploy with "
+            "--set-env-vars " + _GCP_PROJECT_ENV + "=<project-id>.",
+        )
+    K_approved_str = os.environ.get(_LAHC_K_APPROVED_ENV)
+    if K_approved_str:
+        # Wrap the int() conversion so a malformed deploy-time env value
+        # (e.g., LAHC_K_APPROVED=fast) surfaces as the structured
+        # COMPUTE_ERROR envelope this endpoint documents — without the
+        # wrap, the conversion raises ValueError pre-orchestrator-try
+        # and the endpoint returns a Flask 500 instead.
+        try:
+            K_approved = int(K_approved_str)
+        except ValueError:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
+                + repr(K_approved_str) + " which is not a valid integer. "
+                "Maintainer must redeploy with --set-env-vars "
+                + _LAHC_K_APPROVED_ENV + "=<positive integer>.",
+            )
+    else:
+        K_approved = _LAHC_DEFAULT_K_APPROVED
+
+    # --- Stage 4: dispatch to the orchestrator ------------------------
+    # The rostermonster_service modules import cleanly at the top-level
+    # `from`-import statements below — google-cloud-storage and
+    # google-cloud-batch are lazy-imported INSIDE the constructors
+    # (`make_gcs_adapter`, `make_gcs_delete_prefix_fn`, `BatchClient()`),
+    # so a deploy missing those SDKs raises ImportError at construction
+    # time, not at the import line. The try block wraps BOTH the
+    # imports AND the constructor calls so either failure mode surfaces
+    # as the documented `ORCHESTRATOR_DEPS_UNAVAILABLE` envelope rather
+    # than a Flask 500.
+    try:
+        from rostermonster_service.batch_client import BatchClient
+        from rostermonster_service.gcs import (
+            make_gcs_adapter,
+            make_gcs_delete_prefix_fn,
+        )
+        from rostermonster_service.lahc_orchestrator import (
+            orchestrate_lahc_run,
+            _DEFAULT_BUCKET,
+        )
+        bucket = os.environ.get("LAHC_BUCKET", _DEFAULT_BUCKET).strip()
+        read_json, write_json = make_gcs_adapter(bucket)
+        delete_prefix = make_gcs_delete_prefix_fn(bucket)
+        batch_client = BatchClient()
+    except ImportError as e:
+        return _compute_error(
+            "ORCHESTRATOR_DEPS_UNAVAILABLE",
+            "Cloud Batch / Storage SDK missing on the service. "
+            "Maintainer should redeploy. (" + str(e) + ")",
+        )
+
+    try:
+        response_dict = orchestrate_lahc_run(
+            snapshot_dict,
+            master_seed=master_seed,
+            K_approved=K_approved,
+            container_image_uri=container_image_uri,
+            batch_client=batch_client,
+            gcs_read_json=read_json,
+            gcs_write_json=write_json,
+            gcs_delete_prefix=delete_prefix,
+            project=project,
+            bucket=bucket,
+        )
+    except Exception as e:
+        log.exception("lahc orchestrator raised")
+        return _compute_error(
+            "ORCHESTRATOR_EXCEPTION",
+            "Orchestrator raised: " + type(e).__name__ + ": " + str(e),
+        )
+
+    return jsonify(response_dict)
 
 
 # Module-level app for `flask --app rostermonster_service.app run` and
