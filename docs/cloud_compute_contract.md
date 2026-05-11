@@ -57,7 +57,7 @@ The cloud compute service is owned by the Python side per the D-0017 / D-0018 st
 ### 6.2 Single endpoint
 The service exposes exactly one operator-facing operation: `POST /compute`. No additional operator-facing endpoints (no `/health`, `/version`, `/extract`, etc.) are pinned by this contract; if Cloud Run requires a health-check path, it MAY be added as an implementation-slice concern. The contract pins only the compute-call behavior.
 
-**Maintainer-only test routes (M7 C2 onward, per `docs/decision_log.md` D-0070):** the service MAY additionally expose maintainer-only routes that bypass the §9 input contract for pre-promotion implementation testing. These routes are out-of-band — invoked by curl with the same operator-token auth (§7) restricted to the maintainer's email, NOT operator-reachable from the bound shim, and NOT part of the §9 / §10 boundary contract. The first such route is the **LAHC Cloud Batch test path**, added at M7 C2 to let the maintainer trigger the parallel cloud LAHC compute pipeline before §9 is amended at M7 C3 to recognize `solverStrategy="LAHC"` as a public input value. The test route accepts the same snapshot body as §9 but routes through the M7 C2 Cloud Batch worker code path rather than the in-process direct-compute path. Specific URL path is implementation-slice. The route is removed when the §9 amendment lands at M7 C3 (operator path then carries the public `solverStrategy` switch and the test-only path is no longer needed).
+**Maintainer-only test routes (M7 C2 onward, per `docs/decision_log.md` D-0070 + D-0071 sub-decision 14):** the service MAY additionally expose maintainer-only routes that bypass the §9 input contract for pre-promotion implementation testing. These routes are out-of-band — invoked by curl with the same operator-token auth (§7) restricted to the maintainer's email, NOT operator-reachable from the bound shim, and NOT part of the §9 / §10 boundary contract. The first such route is the **LAHC Cloud Batch test path**, added at M7 C2 to let the maintainer trigger the parallel cloud LAHC compute pipeline. The test route accepts the same snapshot body as §9 but routes through the M7 C2 Cloud Batch worker code path rather than the in-process direct-compute path. Specific URL path is implementation-slice. **Per D-0071 sub-decision 14, the test route is KEPT after the M7 C3/C4 operator path goes live** (NOT removed as previously planned at M7 C2 docs-lock). Retained because the test route exposes the SYNCHRONOUS-from-curl invocation pattern (maintainer waits for the orchestrator response inline rather than receiving an async callback to a launcher Web App) which remains the simplest maintainer-side smoke test surface after the operator path moves to async per D-0071. Operator path uses the §9/§10 + §10A async-callback contract; maintainer test route uses its own out-of-band invocation pattern; both share the underlying Cloud Batch worker + finalizer chain.
 
 ### 6.3 Stateless service
 The service is stateless across requests. No per-operator state, no session cookies, no in-memory caching of snapshots between requests. Each request carries everything the service needs (snapshot + optional config); each response carries the full computed envelope.
@@ -114,7 +114,9 @@ Service-side timeout: 5 minutes (300s). **M6 C4 cloud benchmark (2026-05-09 per 
 - **Cold path: ~17s headroom** (300 − 283). The first operator request after Cloud Run scales to zero pays the cold-start tax and is the load-bearing case for "can the operator's first call time out before any `maxCandidates` override?". The answer is "yes, easily" — any per-cycle variance + container init drift can blow the budget at default K=32.
 - **Warm path: ~30s headroom** (300 − 270). Subsequent operator requests on a still-warm instance have more slack, but it's still a thin margin once `maxCandidates > 32` overrides land or `K × per-trajectory-time` grows under FW-0035 / FW-0036.
 
-The 5-min cap is not a comfortable ceiling at default config — the cold-path margin is what determines whether the first request fits, and at 17s any cold-start variance flips the request into a 504. Future expansions (cloud-mode LAHC per FW-0035, larger K under FW-0036, parallel solver per FW-0038) need the headroom calculation explicitly under both cold and warm assumptions; the cold-path margin is what bounds them. Pre-M6 C4 this section claimed "~50s on the ICU/HD May 2026 fixture; comfortable headroom" — that claim was uncalibrated against the live cloud service; the M6 C4 benchmark replaces it. The bound shim's `UrlFetchApp.fetch()` inherits Apps Script's per-script-execution 6 min wall clock; the alignment is intentional.
+The 5-min cap is not a comfortable ceiling at default config — the cold-path margin is what determines whether the first request fits, and at 17s any cold-start variance flips the request into a 504. The bound shim's `UrlFetchApp.fetch()` inherits Apps Script's per-script-execution 6 min wall clock; the alignment is intentional.
+
+**M7 C3 (D-0071, 2026-05-11) — async pivot for the LAHC strategy path:** The 300s timeout governs the **SRB strategy path only** going forward. The **LAHC strategy path no longer blocks on this timeout** — D-0071 pivots LAHC to an async architecture (M7 C4 implementation). On the LAHC path, the Cloud Run Service is a thin front door: validate input → submit Cloud Batch job → return `SUBMITTED` in ~3-5s (well under any timeout). Compute itself runs in Cloud Batch (worker task group → finalizer task group) under a separate **10-min hard cap** governed by §8.7 (per-task `maxRunDuration` + finalizer-task `maxRunDuration` + finalizer-task wall budget summing to ≤600s). The finalizer task POSTs the final envelope to a launcher Web App callback per §10A async-callback contract. The 300s Cloud Run Service timeout never participates in the LAHC compute deadline calculus — it only constrains the front-door `submit + return SUBMITTED` round-trip, which has no realistic chance of approaching 300s. **Pre-D-0071 framing** (Cloud Run Service timeout LOWERED to 250s + tail-case Apps Script wall budget of 10+250+30+60+10=360s) is **superseded for the LAHC path** by D-0071's async architecture; that framing remains accurate for the SRB path only.
 
 ### 8.5 Container
 - Base image: `python:3.12-slim` (or compatible — pinned at Dockerfile commit time).
@@ -125,7 +127,7 @@ The 5-min cap is not a comfortable ceiling at default config — the cold-path m
 **M6 C4 cloud benchmark (2026-05-09 per `docs/decision_log.md` D-0069):** measured cold-vs-warm delta is **~13s** at default `_DEFAULT_MAX_CANDIDATES=32` (cold ~283s − warm ~270s per §8.4). This is substantially larger than the pre-M6-C4 framing that cited "~1-2 seconds" container Flask cold start — that older number measured Flask process startup in isolation and missed (a) the Cloud Run container scheduling + image pull on scale-to-zero spinup and (b) Python module-import time for the heavy compute core (`rostermonster.solver`, `rostermonster.scorer`, `rostermonster.parser_normalizer`, etc.) the cloud wrapper transitively imports. Operator-visible latency at first invocation includes cold-start + compute; under the §8.4 timeout math the cold-path margin is the load-bearing one, and ~13s cold-start overhead consumes most of the available headroom under the 5-min Cloud Run cap. If cold-start latency becomes operator-friction (e.g., the first daily request consistently exceeds the timeout under any `maxCandidates` override or under future cloud LAHC at FW-0035 promotion), the platform's `min-instances ≥ 1` setting (paid — keeps at least one container warm so subsequent requests skip the ~13s cold tax) is the documented mitigation; this becomes more compelling under cloud-mode LAHC (FW-0035) + parallel-solver M7 (FW-0038) since both compress the per-request budget further. First release accepts cold start as a tradeoff for scale-to-zero cost savings.
 
 ### 8.7 Cloud Batch posture (M7 C2 onward, LAHC strategy path)
-Pinned in M7 C2 Task 1 (2026-05-10) per `docs/decision_log.md` D-0070 + the M7 C2 design conversation. Cloud Batch is the parallel-execution layer underneath the Cloud Run Service for the LAHC strategy path. SRB stays on the existing in-process direct-compute path (§8.1..§8.6 unchanged for SRB). LAHC dispatches to Cloud Batch via the orchestrator wiring landed in M7 C2 Task 2D.
+Pinned in M7 C2 Task 1 (2026-05-10) per `docs/decision_log.md` D-0070 + the M7 C2 design conversation. **Amended at M7 C3 Task 1 (2026-05-11) per `docs/decision_log.md` D-0071** — finalizer task group added; orchestrator-side 240s polling deadline replaced by Cloud Batch finalizer task that POSTs to launcher Web App callback per §10A; per-task wall budget unblocked from 180s to ~480s under a 10-min hard cap; concurrent-rejection enforced via Cloud Batch job labels. Cloud Batch is the parallel-execution layer underneath the Cloud Run Service for the LAHC strategy path. SRB stays on the existing in-process direct-compute path (§8.1..§8.6 unchanged for SRB). LAHC dispatches to Cloud Batch via the orchestrator wiring landed in M7 C2 Task 2D + M7 C4 finalizer task group landing.
 
 **Bucket posture:**
 - **Bucket:** `rostermonsterv2-lahc` (region `asia-southeast1`, dual-region disabled, uniform bucket-level access enabled). Single project-owned bucket holds all M7 LAHC run artifacts. The bucket name is referenced verbatim throughout §8.7 (object key paths, IAM scoping, the GCS read/write discipline note). If `rostermonsterv2-lahc` is globally unavailable at create time, the maintainer creates a bucket with an alternative name AND lands a docs-only contract amendment updating every §8.7 reference to the selected name before M7 C2 Task 2A proceeds. The contract refuses to dual-name the bucket implicitly because IAM scoping + object-path consistency would silently diverge if §8.7 references drifted from the live bucket.
@@ -144,11 +146,35 @@ Pinned in M7 C2 Task 1 (2026-05-10) per `docs/decision_log.md` D-0070 + the M7 C
 **Cloud Batch job spec invariants** (job submitted by Cloud Run Service orchestrator on every LAHC request):
 - **Machine type:** `c3-highcpu-8` (8 vCPU, 16 GB RAM; Intel Sapphire Rapids per D-0070 sub-decision 3).
 - **Region:** `asia-southeast1` (intra-region with Cloud Run Service + GCS bucket; free egress).
-- **Allocation policy:** on-demand only (NOT Spot per D-0070 sub-decision 4 — sync-wall-time predictability).
-- **Task count + packing:** derived per D-0070 sub-decision 7's three-quota rule from K_approved (currently 104 per M7 C1 closure → `taskCount=13`, `parallelism=13`, all tasks fully packed at 8 trajectories each). **`taskCountPerNode: 1`** MUST be set on the `taskGroup` so Cloud Batch provisions exactly one task per VM. Without this, Batch's bin-packing logic could co-schedule multiple tasks onto one `c3-highcpu-8` VM (8 vCPU); each task starts `multiprocessing.Pool(8)`, so co-scheduling would oversubscribe the VM and almost certainly miss the per-task 180s budget. The "1 task = 1 VM" pinning is what makes the dense-pack math (8 trajectories × 13 VMs = 104) match actual VM allocation.
-- **Per-task timeout:** **180s** (`taskGroups[0].taskSpec.maxRunDuration: "180s"`). Covers VM provisioning ~30-60s + 8 parallel trajectories ~50-75s + GCS I/O ~5-10s + buffer ~5s with comfortable margin.
-- **Per-task retry policy:** **1 retry on failure, fail-fast on second** (`taskGroups[0].taskSpec.maxRetryCount: 1`). Default Cloud Batch retry is 0; a single retry shrugs off transient VM stalls without doubling worst-case wall time on every run.
-- **Orchestrator-side completion deadline:** **240s** wall-clock cap on the Cloud Run Service's poll-for-Batch-completion loop. NOT a field in the Batch job spec — Cloud Batch's `Job` schema has no job-level `maxRunDuration`; only `TaskSpec.maxRunDuration` exists (the per-task 180s above). Implementation: orchestrator records `t_start` at `submitJob`, polls `batch.jobs.get` at ~3s cadence, and at `now - t_start > 240s` if the job isn't yet COMPLETED, calls `batch.jobs.cancel` on the running job + treats the run as a partial-failure aggregation (per the tolerance below — completed tasks contribute their `result.json` candidates, cancelled/missing tasks contribute 0 candidates). 240s leaves ~10s buffer before the Cloud Run Service's 250s wall (M7 C3 setting per D-0070 sub-decision 5) and accommodates 13 parallel tasks with staggered VM provisioning.
+- **Allocation policy:** on-demand only (NOT Spot per D-0070 sub-decision 4 — predictable wall-time).
+- **Task count + packing:** derived per D-0070 sub-decision 7's three-quota rule from K_approved (currently 104 per M7 C1 closure → `taskCount=13`, `parallelism=13`, all tasks fully packed at 8 trajectories each). **`taskCountPerNode: 1`** MUST be set on the `taskGroup` so Cloud Batch provisions exactly one task per VM. Without this, Batch's bin-packing logic could co-schedule multiple tasks onto one `c3-highcpu-8` VM (8 vCPU); each task starts `multiprocessing.Pool(8)`, so co-scheduling would oversubscribe the VM and almost certainly miss the per-task wall budget. The "1 task = 1 VM" pinning is what makes the dense-pack math (8 trajectories × 13 VMs = 104) match actual VM allocation.
+- **Per-task timeout (worker task group):** **480s** (`taskGroups[0].taskSpec.maxRunDuration: "480s"`) per **D-0071 sub-decision 6** (M7 C3 amendment). Pre-D-0071 setting was 180s under the sync framing; D-0071's async pivot unblocks this to ~480s to accommodate slow trajectories without the sync request budget pressure. Covers VM provisioning ~30-60s + 8 parallel LAHC trajectories ~360-400s (real production roster at the FW-0037 elbow tuple `L=50`/`idleThreshold=3500`) + GCS I/O ~5-10s + buffer with comfortable margin. The 480s setting holds tasks within the 10-min wall budget end-to-end (worker tasks + finalizer task; see "Finalizer task group" below).
+- **Per-task retry policy (worker task group):** **1 retry on failure, fail-fast on second** (`taskGroups[0].taskSpec.maxRetryCount: 1`). Default Cloud Batch retry is 0; a single retry shrugs off transient VM stalls without doubling worst-case wall time on every run.
+- **Job labels for concurrent-rejection (D-0071 sub-decision 4):** Cloud Run Service MUST attach `labels: {spreadsheetId: "<lowercased + hyphen-normalized snapshot.metadata.sourceSpreadsheetId>"}` to every submitted Cloud Batch job. Cloud Batch labels are limited to [a-z0-9-_]{1,63} so the spreadsheet ID is normalized (lowercase, non-alphanumeric → `-`, truncated to 63 chars) before attachment. Before submitting a new job, Cloud Run Service MUST `batch.jobs.list` with `filter='labels.spreadsheetId=<normalized>' AND state IN [QUEUED, SCHEDULED, RUNNING]` and **REJECT the new request with INPUT_ERROR code `CONCURRENT_RUN_REJECTED`** if any matching in-flight job exists. The operator-facing message surfaces: "Another roster solve is already in flight for this spreadsheet. Wait for it to complete (you'll receive an email when done)." This protects against duplicate work + protects against the B-prime callback writing to the same spreadsheet twice. Note: label-based query is best-effort (Cloud Batch eventual consistency on filtered list) — race window is tight but non-zero. Acceptable for v1 per D-0071 sub-decision 4 (acceptable-gap-for-v1; finalizer's writeback is idempotent at the spreadsheet level since each writeback creates a new tab — no destructive overwrite if a race slips through).
+- **Finalizer task group (D-0071 sub-decision 2 + 3):** a SECOND task group `taskGroups[1]` runs the finalizer **after the worker task group completes**, gated by:
+  ```
+  taskGroups[1]:
+    name: "finalizer"
+    taskCount: 1
+    parallelism: 1
+    taskSpec:
+      maxRunDuration: "120s"   # finalizer wall budget — sum of all worker + finalizer maxRunDurations ≤ 600s (10-min hard cap per D-0071 sub-decision 1)
+      maxRetryCount: 0          # finalizer is single-shot; retry semantics are operator-visible via the always-email-on-failure path
+      runnables: [...]          # invokes worker.py --finalizer-mode (single-image dispatch — see "Container image strategy" below)
+    dependencies:
+      - taskGroup: "group0"     # the worker task group
+        condition: "SUCCEEDED_OR_FAILED"   # finalizer runs whether workers succeed, fail, or partial — guarantees operator notification even on worker-side disasters
+  ```
+  Finalizer responsibilities (M7 C4 implementation):
+  1. **Aggregate** worker task results from `gs://rostermonsterv2-lahc/{runId}/task-{n}/result.json` (handles K' partial-failure tolerance per the existing aggregation logic — moved from orchestrator to finalizer).
+  2. **Score + select** K candidates → produce `FinalResultEnvelope` + `writebackEnvelope` per `docs/selector_contract.md` v2 §9.
+  3. **Analyze** in-memory K candidates → produce `AnalyzerOutput` per `docs/analysis_contract.md`.
+  4. **POST callback** to launcher Web App per §10A async-callback contract (with GCP ID-token auth + retry behavior pinned in §10A).
+  5. **Email operator** on any non-OK outcome per §10A.7 (always-email-on-failure).
+
+  Per D-0071 sub-decision 11, the finalizer **runs always** (regardless of worker outcome) — `SUCCEEDED_OR_FAILED` dependency guarantees this. If all workers fail entirely, the finalizer aggregates K'=0 → emits `UNSATISFIED` callback + always-email path fires. If the finalizer itself crashes, the operator's outcome is silent (FW-0039 captured this gap as accepted-for-v1; mitigations later).
+- **Total wall budget (D-0071 sub-decision 1):** sum of `taskGroups[0].taskSpec.maxRunDuration` (480s worker) + `taskGroups[1].taskSpec.maxRunDuration` (120s finalizer) + Cloud Batch scheduling overhead ≈ 600s (10-min hard cap). Workers run in parallel within the 480s budget; finalizer runs sequentially after them within its 120s budget; total is bounded.
+- **Orchestrator-side completion deadline:** **NO orchestrator-side polling under D-0071.** Pre-D-0071 the Cloud Run Service polled `batch.jobs.get` and called `batch.jobs.cancel` at 240s. Under D-0071's async pivot, the Cloud Run Service returns `SUBMITTED` immediately after `submitJob` returns — no poll loop, no cancel logic. The Cloud Batch finalizer task is now responsible for end-of-run aggregation + callback (replacing what the orchestrator used to do synchronously). Pre-D-0071 framing is **deprecated for the LAHC path** but retained in this contract's history (the M7 C2 lock language is preserved in §16 for cross-reference).
 - **Service account:** the same default Compute Engine SA used by Cloud Run (`{project_number}-compute@developer.gserviceaccount.com`) acts as both the **Batch job creator** (called by Cloud Run Service to submit jobs) AND the **Batch task identity** (the SA that Batch VMs run as). Required IAM additions for M7 C2 (one-time setup, recorded in project memory):
   - `roles/batch.jobsEditor` (project-wide; submit + manage Batch jobs) — required by the job creator.
   - `roles/batch.agentReporter` (project-wide; report VM agent state back to the Batch control plane) — required by the Batch task identity. Without this, VMs spin up but cannot report task progress, and Batch eventually fails the job.
@@ -292,7 +318,10 @@ JSON object with the following top-level fields:
 ```json
 {
   "snapshot": { ...full snapshot per docs/snapshot_contract.md §5..§11... },
+  "operatorEmail": "operator@example.com",
   "optionalConfig": {
+    "solverStrategy": "LAHC",
+    "lahcParams": { "L": 50, "idleThreshold": 3500, "swapProbability": 0.5 },
     "maxCandidates": 50,
     "seed": 20260430
   }
@@ -301,9 +330,12 @@ JSON object with the following top-level fields:
 
 Concrete properties:
 1. **`snapshot`** *(required)*: A full Snapshot per `docs/snapshot_contract.md` §5..§11, including all sections required by the parser/normalizer for ingestion. Same shape as the JSON file the bound shim's existing "Export Snapshot" menu produces — no schema divergence between local-mode (file-on-disk) and cloud-mode (in-request-body) extraction outputs. The bound shim assembles this in-memory via the central library's snapshot-builder API per D-0052.
-2. **`optionalConfig`** *(optional)*: An object overriding compute defaults. First-release recognized fields:
+2. **`operatorEmail`** *(required for LAHC strategy path; optional for SRB)*: The operator's email address sourced from `Session.getActiveUser().getEmail()` in the bound shim per **D-0071 sub-decision 5** (M7 C3 amendment). Used by the Cloud Batch finalizer for the always-email-on-failure path per §10A.7 + as the recipient of the operator-facing success notification email. MUST match the same authenticated operator's email (the Flask handler validates `operatorEmail` against the `email` claim from §7.1's OIDC token validation; mismatch returns `INPUT_ERROR` with code `OPERATOR_EMAIL_MISMATCH`). On the SRB strategy path this field is optional and ignored (SRB stays synchronous; no callback / no email needed). For LAHC paths under D-0071 the field is required because the finalizer task is the only surface that can email the operator after the front-door `SUBMITTED` response returns. Empty / missing on a LAHC request → `INPUT_ERROR` with code `OPERATOR_EMAIL_REQUIRED`.
+3. **`optionalConfig`** *(optional)*: An object overriding compute defaults. First-release recognized fields:
+   - `solverStrategy` *(string, optional)*: Solver strategy enum per `docs/solver_contract.md` §11.2 — `"SEEDED_RANDOM_BLIND"` or `"LAHC"` (M7 C3 amendment per **D-0070 + D-0071**). When omitted, the service falls back to `"SEEDED_RANDOM_BLIND"` (the M4-baseline strategy; preserves M4 client compatibility). When `"LAHC"` is passed, the service dispatches to the Cloud Batch async path per §8.7 + §10.6 — Cloud Run returns `SUBMITTED` immediately and the finalizer task POSTs to the launcher Web App callback per §10A. **Per D-0071 sub-decision 13**, the bound shim's operator menu `Roster Monster → Solve Roster` always passes `"LAHC"` (bound shim is LAHC-only on the operator path until FW-0035 parity work — SRB stays accessible via the local CLI for maintainer dev work). The maintainer-only `/compute-lahc-test` debug route (§6.2) also defaults to `"LAHC"` since its purpose is to exercise the LAHC path.
+   - `lahcParams` *(object, optional, only used when `solverStrategy="LAHC"`)*: LAHC algorithm parameters per `docs/solver_contract.md` §12A.6 — `{L: int, idleThreshold: int, swapProbability: float}`. When omitted, the service uses the FW-0037 elbow tuple defaults pinned in M7 (`L=50`, `idleThreshold=3500`, `swapProbability=0.5`) per §8.7 worker hardcoding. Passing this field is additive; the service falls back to the worker-hardcoded values when omitted. M7 C4 operator path SHOULD omit this field (defaults are already the M7 production tuple); maintainer-only experiments may override.
    - `maxCandidates` *(integer, optional)*: number of candidates the solver enumerates before selector cascade. When omitted, the service falls back to the local CLI's `_DEFAULT_MAX_CANDIDATES` constant in `python/rostermonster/run.py` (currently `32`). Tying both surfaces to the same Python constant guarantees that an operator running the CLI and the bound shim with no `maxCandidates` override gets the same candidate-count budget on both surfaces.
-   - `seed` *(integer, optional)*: random seed for the solver's `SEEDED_RANDOM_BLIND` strategy. When omitted, the service picks a fresh random seed per invocation via `random.randint(0, 2**31 - 1)` per `docs/decision_log.md` D-0053. The chosen seed is recorded in `RunEnvelope.seed` (per `docs/selector_contract.md` v2 §9 item 3) so the operator can reproduce a specific run by reading the seed off the writeback tab's traceability footer (per `docs/writeback_contract.md` §16) and replaying via `optionalConfig.seed=<that-value>`. Both surfaces share this random-default behavior — same shared compute core per D-0050. **Parity precondition refined**: D-0050's "byte-identical at same input" guarantee holds when `optionalConfig.seed` is explicitly set to the same value across both surfaces; with omitted seed each surface picks its own random seed and envelopes differ, which is expected operator-facing behavior (each invocation is a fresh attempt at the search space).
+   - `seed` *(integer, optional)*: random seed for the solver's `SEEDED_RANDOM_BLIND` strategy (or the master seed for LAHC's K-trajectory seed derivation per `docs/solver_contract.md` §12A.10). When omitted, the service picks a fresh random seed per invocation via `random.randint(0, 2**31 - 1)` per `docs/decision_log.md` D-0053. The chosen seed is recorded in `RunEnvelope.seed` (per `docs/selector_contract.md` v2 §9 item 3) so the operator can reproduce a specific run by reading the seed off the writeback tab's traceability footer (per `docs/writeback_contract.md` §16) and replaying via `optionalConfig.seed=<that-value>`. Both surfaces share this random-default behavior — same shared compute core per D-0050. **Parity precondition refined**: D-0050's "byte-identical at same input" guarantee holds when `optionalConfig.seed` is explicitly set to the same value across both surfaces; with omitted seed each surface picks its own random seed and envelopes differ, which is expected operator-facing behavior (each invocation is a fresh attempt at the search space).
    - Future config fields: additive only. New optional fields MAY be added without a contract version bump (§11). Removing or renaming fields is a contract bump.
 
 ### 9.4 Snapshot identity propagation
@@ -362,6 +394,134 @@ Errors that prevent the service code from running (Cloud Run cold-start failure,
 - `INFRASTRUCTURE_UNREACHABLE` — DNS / network failure preventing the request from completing.
 These are emitted by the bound shim as a side surface; the service contract doesn't pin them since the service never participates in the path.
 
+### 10.6 SUBMITTED state (M7 C4 onward, LAHC strategy path) — per D-0071
+Pinned in M7 C3 Task 1 (2026-05-11) per `docs/decision_log.md` D-0071. When `optionalConfig.solverStrategy = "LAHC"` (M7 C3 amendment), the Cloud Run Service responds **synchronously** with a SUBMITTED envelope after Cloud Batch job submission returns successfully (typically 3-5s end-to-end including OIDC validation + Cloud Batch `submitJob` round-trip):
+
+```json
+{
+  "state": "SUBMITTED",
+  "writebackEnvelope": null,
+  "error": null,
+  "submission": {
+    "batchJobName": "projects/{project_number}/locations/asia-southeast1/jobs/{job_id}",
+    "jobId": "<the Cloud Batch job id, distinct from runEnvelope.runId>",
+    "runId": "<the runEnvelope.runId for this run>"
+  }
+}
+```
+
+Top-level field additions to §10.1's response envelope shape:
+1. **`state = "SUBMITTED"`** — new enum value. Joins `OK` / `UNSATISFIED` / `INPUT_ERROR` / `COMPUTE_ERROR`. Indicates the service has accepted the request, validated input, and successfully submitted the Cloud Batch job; the actual compute outcome will arrive later via the §10A async-callback path. **Additive — no contract version bump** per §11.1's enum-bump rule. v1-targeted clients (SRB-only operators) never see `SUBMITTED` because SRB stays synchronous; the new value only fires on the LAHC path.
+2. **`submission`** *(present when `state = "SUBMITTED"`, null otherwise)* — diagnostic surface carrying the batch job identity. `batchJobName` is the full Cloud Batch job resource name (useful for `gcloud batch jobs describe`); `jobId` is the short id (useful for callback correlation); `runId` is the run envelope id (useful for cross-referencing the callback's writeback envelope).
+
+Bound shim dispatch on `state = "SUBMITTED"` (M7 C4 implementation per D-0071 sub-decision 8):
+- Show an in-flight toast: "Roster solve submitted. You'll receive an email when complete (typically 5-10 minutes)."
+- Return immediately to the operator (the toast is non-blocking). The actual writeback + analyzer tabs land asynchronously when the launcher Web App receives the §10A callback POST.
+
+The SUBMITTED-state response semantically aligns with §10.3's no-partial-state invariant: `writebackEnvelope` is null (compute hasn't run yet) + `error` is null (no failure) + `submission` is non-null. INPUT_ERROR / COMPUTE_ERROR cases on the LAHC front-door path still emit per §10.1 (no SUBMITTED → no callback expected — operator sees the error immediately in the bound shim dialog).
+
+## 10A) Async callback contract (LAHC strategy path, M7 C4 onward) — per D-0071
+Pinned in M7 C3 Task 1 (2026-05-11) per `docs/decision_log.md` D-0071. **A new boundary** between the Cloud Batch finalizer task and the launcher Web App — distinct from §9/§10's bound-shim → Cloud-Run boundary. The finalizer task POSTs the final envelope to the launcher Web App after Cloud Batch completes (whether worker tasks succeeded, partially-failed, or fully failed; the finalizer runs always per §8.7 + D-0071 sub-decision 11).
+
+### 10A.1 Boundary position
+- **Upstream** (caller): Cloud Batch finalizer task running on a `c3-highcpu-8` VM in `asia-southeast1` per §8.7. Invoked as the second task group in the Cloud Batch job (single task, runs after all worker tasks per the `SUCCEEDED_OR_FAILED` dependency).
+- **Boundary**: HTTPS POST request from the finalizer task's `requests.post(...)` to the launcher Web App's `/exec?action=async-render-callback` endpoint (existing launcher Web App URL per `docs/decision_log.md` D-0046; new action handler added at M7 C4 per D-0071 sub-decision 7).
+- **Downstream** (callee): launcher Web App in `apps_script/launcher/src/` adds a new `async-render-callback` action handler that invokes `RMLib.applyWriteback(envelope) + RMLib.renderAnalysis(envelope)` from the central library against the callback's POSTed envelope.
+
+### 10A.2 Why "B-prime"
+Per D-0071 sub-decision 3, the architecture name "B-prime" denotes the callback-delivery shape chosen over alternative options considered (A: in-Apps-Script polling; B: callback into the bound shim; B-prime: callback into the launcher Web App). B-prime was chosen because the launcher Web App is already operator-owned + already exposes a Web App URL surface (the existing writeback file-upload route at `/exec?action=writeback` per D-0046) — reusing it as the callback target requires zero new Apps Script projects, zero new Drive-level shares, zero new credential surfaces. The bound shim, by contrast, has no public Web App URL — exposing one for callbacks would require a new deployment + new OAuth scopes + new operator share. B-prime delivers without those costs.
+
+### 10A.3 HTTP method + path
+`POST <launcher-web-app-url>?action=async-render-callback&runId=<runId>&attemptId=<attemptId>` per D-0071 sub-decision 7.
+- `<launcher-web-app-url>` is the existing launcher's deployed Web App URL (the same `/exec` URL used for `?action=writeback` per D-0046). The Cloud Run Service propagates this URL into the Cloud Batch job spec as an env var on the finalizer task; the finalizer reads it at runtime.
+- `runId` query param: the `runEnvelope.runId` per `docs/selector_contract.md` v2 §9 — used by the launcher to correlate the callback with the operator's pending request (and for logging / audit).
+- `attemptId` query param: echoes the §8.7 per-call `attemptId` — used by the launcher to detect duplicate callbacks (idempotency surface, see §10A.6).
+
+### 10A.4 Headers
+- `Authorization: Bearer <id-token>` (required) — see §10A.5 for the auth mechanism.
+- `Content-Type: application/json` (required).
+
+### 10A.5 Authentication
+Per **D-0071 sub-decision 8** the callback uses **GCP ID-token auth** (NOT a shared secret, NOT an HMAC signature).
+
+- Finalizer task generates a Google OIDC ID token via the metadata server's `instance/service-accounts/default/identity?audience=<launcher-web-app-url>` endpoint (Cloud Batch VMs run as the default Compute Engine SA per §8.7; the metadata server is available on the VM by default). The token's `aud` claim is the launcher Web App URL.
+- Finalizer sends the token in the standard `Authorization: Bearer <token>` header.
+- Launcher Web App's `async-render-callback` handler validates the token by calling Google's tokeninfo endpoint (`https://oauth2.googleapis.com/tokeninfo?id_token=<token>`) — the same pattern the existing `writeback` action uses for its UrlFetchApp-side audit posture. Required claims:
+  - `aud` MUST match the launcher Web App URL (the token is unforgeable for any other audience).
+  - `email` MUST equal the Cloud Batch finalizer SA email (`{project_number}-compute@developer.gserviceaccount.com`) — confirms the caller is the legitimate finalizer task, not an arbitrary GCP identity. Email is hardcoded in the launcher (no env var; SA email is stable for the project).
+  - `email_verified` MUST be true.
+- Auth failures return HTTP 401 with a simple body `{"state": "AUTH_REJECTED"}` and the launcher logs the failed attempt. The finalizer treats 401 as terminal (does NOT retry — token issue indicates a config drift, not transience).
+
+Per D-0071 sub-decision 8 alternatives explicitly rejected:
+- **Shared secret in env var**: rejected as a credential surface (Apps Script Script Properties is a secret storage but introduces operational ceremony for rotation + accidental leakage risk).
+- **HMAC over body**: rejected because the body carries `writebackEnvelope` (~few-hundred-KB potentially) — HMAC computation + verification is fine technically but adds CPU + adds a secret-key rotation surface. GCP ID-token is the leastnew-credential-surface option.
+
+### 10A.6 Body schema
+```json
+{
+  "schemaVersion": 1,
+  "runId": "<echoes the query param>",
+  "attemptId": "<echoes the query param>",
+  "state": "OK" | "UNSATISFIED" | "COMPUTE_ERROR",
+  "writebackEnvelope": { ...wrapper envelope per D-0045 + writeback §9... } | null,
+  "analyzerOutput": { ...AnalyzerOutput per docs/analysis_contract.md... } | null,
+  "error": { "code": "...", "message": "..." } | null,
+  "diagnostics": {
+    "kApproved": <int>,
+    "kPrime": <int>,
+    "droppedCount": <int>,
+    "wallTimeSeconds": <float>,
+    "batchJobName": "<full Cloud Batch job resource name>"
+  }
+}
+```
+
+Top-level fields:
+1. **`schemaVersion`** *(required, integer)* — currently `1`. Bumps if the callback envelope's required-fields set changes (separate from the §11 contract version, which governs the §9 + §10 boundary).
+2. **`runId`** *(required, string)* — echoes the query param. Launcher uses it for cross-referencing with the operator's pending request.
+3. **`attemptId`** *(required, string)* — echoes the query param. Launcher uses it for idempotent dispatch (see "idempotency" below).
+4. **`state`** *(required, enum string)* — `"OK"` / `"UNSATISFIED"` / `"COMPUTE_ERROR"`. Same semantics as §10.1's response states minus `SUBMITTED` (the front-door already returned that) and minus `INPUT_ERROR` (input validation runs synchronously at the front door; if it fails the finalizer never runs). `COMPUTE_ERROR` here covers post-submission failures: worker tasks failed entirely (K'=0), aggregation raised, analyzer raised, or the finalizer itself caught an unhandled exception.
+5. **`writebackEnvelope`** *(nullable)* — present when `state ∈ {"OK", "UNSATISFIED"}`. Same shape as §10.1's `writebackEnvelope`; the launcher hands directly to `RMLib.applyWriteback(envelope)`.
+6. **`analyzerOutput`** *(nullable)* — present when `state = "OK"` (per D-0071 sub-decision 12 + the §10.6 OK-only convention). Same shape as `docs/analysis_contract.md` §4 `AnalyzerOutput`; the launcher hands directly to `RMLib.renderAnalysis(envelope, analyzerOutput, sourceSpreadsheetId)`. Null when `state ∈ {"UNSATISFIED", "COMPUTE_ERROR"}` (analyzer doesn't run on failure paths).
+7. **`error`** *(nullable)* — present when `state = "COMPUTE_ERROR"`. Same shape as §10.1's `error`. Carries machine-readable `code` + human-readable `message`. First-release codes: `WORKER_ALL_FAILED` (K'=0; all worker tasks failed entirely), `AGGREGATION_EXCEPTION`, `ANALYZER_EXCEPTION`, `FINALIZER_EXCEPTION`.
+8. **`diagnostics`** *(required)* — fixed object carrying observability fields surfaced in the operator-facing email + the launcher's audit log:
+   - `kApproved` *(integer)* — the K_approved value the orchestrator submitted (per §8.7 sub-decision 7 derivation).
+   - `kPrime` *(integer)* — the actual K' after partial-failure aggregation (per §8.7's primary K' definition). `kPrime == kApproved` is the all-success case; `kPrime < kApproved` indicates partial success.
+   - `droppedCount` *(integer)* — derived `kApproved - kPrime`.
+   - `wallTimeSeconds` *(float)* — total wall time from front-door `submitJob` returning to finalizer's callback POST. Used by the operator-facing email for the "took N minutes" line.
+   - `batchJobName` *(string)* — full Cloud Batch job resource name. Used by maintainer audit + by the operator's email's "log link" if surfaced.
+
+**Idempotency:** the launcher tracks (`runId`, `attemptId`) tuples in a short-lived Properties Service entry; a duplicate callback for the same tuple returns HTTP 200 + body `{"state": "DUPLICATE_IGNORED"}` and does NOT re-invoke writeback / re-render / re-email. This protects against the finalizer's retry-on-5xx behavior (§10A.7) double-firing the operator-facing surface.
+
+### 10A.7 Retry behavior + always-email-on-failure
+Per **D-0071 sub-decision 9 + 10**:
+
+**Finalizer-side retry on callback POST failures:**
+- On 2xx response: finalizer logs success + exits (Cloud Batch task completes).
+- On 5xx response: finalizer retries up to 3 times with exponential backoff (4s, 8s, 16s). Failures after the third retry are treated as terminal "launcher unreachable" — finalizer logs the failure + emails the operator with the failure-path email per §10A.7's always-email-on-failure, then exits cleanly.
+- On 401: terminal, no retry (token issue indicates config drift).
+- On 4xx (other): terminal, no retry (request shape issue → maintainer-visible logs).
+
+**Always-email-on-failure (D-0071 sub-decision 10):**
+The finalizer **always emails the operator on any failure path** — `state = "COMPUTE_ERROR"`, AND launcher-unreachable after retries, AND callback returned a 4xx other than 401. Email content:
+- **Subject**: `[RosterMonsterV2] Roster solve failed — <error.code or 'CALLBACK_UNREACHABLE'>`.
+- **Body**: short human-readable explanation + the `runId` + `attemptId` + `wallTimeSeconds` + a link to the launcher's "what to do next" page (or a maintainer contact line if the launcher itself is the failure surface).
+- **Attachment**: the full `AnalyzerOutput` JSON when `state = "OK"` succeeded but the callback POST failed (so the operator can still inspect the analysis offline). Empty when no analyzer output exists (state ∈ {UNSATISFIED, COMPUTE_ERROR}). Max attachment size capped by Gmail's 25 MB limit; AnalyzerOutput is typically ~50-200 KB so this is comfortable.
+
+**Success notification email (D-0071 sub-decision 10, success path):**
+The finalizer also emails the operator on `state = "OK"` (per the always-on framing). Subject: `[RosterMonsterV2] Roster solve complete — runId <short-id>`. Body: short summary + link to the spreadsheet (sourced from `snapshot.metadata.sourceSpreadsheetId`). No attachment on success — the analyzer output is already rendered into the spreadsheet via the callback path.
+
+**Operator email source (D-0071 sub-decision 5):** `operatorEmail` from §9.3's required input. Finalizer uses this address; does NOT introspect tokens or session state at finalizer time (finalizer task runs on a Cloud Batch VM with no Apps Script session context).
+
+### 10A.8 Versioning
+Independent from the §11 contract version. The callback envelope carries its own `schemaVersion: 1` per §10A.6. Bump rules mirror §11.1's spirit (additive optional fields don't bump; required-field changes bump). The launcher Web App MUST dispatch on `schemaVersion` to remain forward-compatible with future bumps.
+
+### 10A.9 Out-of-scope (10A)
+- Polling-based callback (the operator's bound shim does NOT poll Cloud Run for status; the email is the sole "I'm done" surface for the operator).
+- Per-operator callback URL routing (single launcher Web App URL is the global callback target; operator scoping is via the `email` claim + `operatorEmail` field, not URL routing).
+- Synchronous-replay fallback (if the launcher is unreachable, there is no "re-submit + wait sync" fallback; operator is emailed + can re-trigger from the bound shim manually).
+- Finalizer-task-crash watchdog (if the finalizer task itself crashes before reaching either the callback POST or the failure email, the operator is silently in the dark — this is the FW-0039 accepted gap per D-0071 sub-decision 17).
+
 ## 11) Schema versioning
 Proposed in this checkpoint (normative):
 
@@ -409,13 +569,14 @@ Repo-settled alignments:
 
 ## 15) Explicitly out of scope
 The following are explicitly NOT pinned by this contract:
-- The Apps Script side's bound shim menu UX (toast styling, dialog wording, progress indicator design) — implementation-slice for M4 C1 Phase 2.
+- The Apps Script side's bound shim menu UX (toast styling, dialog wording, progress indicator design) — implementation-slice for M4 C1 Phase 2 + M7 C4 (the SUBMITTED-state in-flight toast for the async LAHC path per §10.6 + D-0071 sub-decision 8).
 - The Python compute internals (parser/solver/scorer/selector contracts govern those).
 - The Cloud Run deployment's CI/CD pipeline, monitoring dashboards, alerting policies — operational concerns deferred to FW-0028 (observability) when concrete drivers surface.
-- Asynchronous compute mode (job queues, worker pools, callbacks) — deferred to FW-0027 (parallel operational search).
-- Any operational rate-limiting beyond Cloud Run's `max-instances=5` cap — first-release pilot doesn't need it.
+- ~~Asynchronous compute mode (job queues, worker pools, callbacks) — deferred to FW-0027 (parallel operational search).~~ **Updated at M7 C3 Task 1 (2026-05-11) per D-0071: async compute mode IS pinned by this contract for the LAHC strategy path per §8.7 finalizer task group + §10.6 SUBMITTED state + §10A async-callback contract.** FW-0027 absorbed into M7 C3+C4 per D-0071. The SRB strategy path remains synchronous per §9 / §10 (unchanged from M4 C1 framing).
+- Any operational rate-limiting beyond Cloud Run's `max-instances=5` cap — first-release pilot doesn't need it. Concurrent-rejection by spreadsheet ID (§8.7) is NOT a rate-limit — it's a duplicate-prevention surface.
 - The exact wire-level JSON formatting (key ordering, whitespace, Unicode normalization) — request/response semantics are pinned but byte-level layout is implementation-slice.
 - The local CLI's behavior — governed by the existing `docs/snapshot_adapter_contract.md` §11 and `docs/decision_log.md` D-0047. Local CLI continues to work unchanged; cloud-mode is purely additive to the dual-track architecture.
+- The finalizer-task-crash watchdog — the FW-0039 accepted-gap per D-0071 sub-decision 17. If the finalizer task itself crashes before reaching either the callback POST or the failure-email path, the operator's outcome is silent. Mitigations (Cloud Batch task-failure-notification dispatch, separate `finalizer-watchdog` task group, monitoring alert on finalizer-task non-completion, etc.) are explicitly out-of-scope for v1 and revisit-able when an actual silent-failure incident surfaces.
 
 ## 16) Current checkpoint status
 ### Repo-settled in prior docs
@@ -440,12 +601,28 @@ The following are explicitly NOT pinned by this contract:
 - §15 explicit out-of-scope items.
 
 ### Pinned in M7 C2 Task 1 (2026-05-10) per D-0070 + post-D-0070 sequencing conversation
-- §6.2 acknowledges **maintainer-only test routes** beyond the operator-facing `POST /compute` endpoint. M7 C2 adds the LAHC Cloud Batch test path; route is removed when §9 is amended at M7 C3 to recognize `solverStrategy="LAHC"` publicly.
-- §8.7 pins the **Cloud Batch posture for the LAHC strategy path**: bucket name `rostermonsterv2-lahc` (asia-southeast1, 90-day lifecycle); GCS object naming convention; Cloud Batch job spec invariants (`c3-highcpu-8`, on-demand, `taskCountPerNode: 1`, per-task `maxRunDuration: 180s`, per-task `maxRetryCount: 1`); orchestrator-side completion deadline 240s implemented as a polling loop + `batch.jobs.cancel` on overrun (NOT a Batch job-spec field — `Job` schema has no job-level `maxRunDuration`); IAM additions on the default Compute SA acting as both job creator + Batch task identity (`roles/batch.jobsEditor` project-wide + `roles/batch.agentReporter` project-wide + `roles/iam.serviceAccountUser` on itself + `roles/storage.objectAdmin` bucket-scoped); single-container-image dispatch via `--worker-mode`; partial-failure tolerance with `K'` defined as `sum(len(candidates_per_completed_task))` (source-of-truth, covers task-level failures + per-trajectory §12A.8 seed-construction failures within completed tasks; `dropped_count = K_approved - K'` is the derived diagnostic); GCS-only data path (Drive is NOT a pipeline data path); `candidates_full.json` reframed as OPTIONAL out-of-band maintainer-audit ADDITIVE to D-0070 sub-decision 10's in-pipeline framing — analyzer pass-through still operates on in-memory aggregation; GCS write is fire-and-forget, MUST NOT block operator response.
-- No `contractVersion` bump (additive deployment-posture pinning per §11.1's bump rule). M7 C3 is where §9 + §10 amend additively for `solverStrategy` + `lahcParams` + OK-only `analyzerOutput` (also additive — no bump).
+- §6.2 acknowledges **maintainer-only test routes** beyond the operator-facing `POST /compute` endpoint. M7 C2 adds the LAHC Cloud Batch test path. (At M7 C2 lock-time this section said "route is removed when §9 is amended at M7 C3"; **superseded at M7 C3 Task 1 per D-0071 sub-decision 14 — debug route is KEPT** since maintainer-side sync-from-curl invocation is still the simplest smoke-test surface even after operator path moves to async.)
+- §8.7 pins the **Cloud Batch posture for the LAHC strategy path**: bucket name `rostermonsterv2-lahc` (asia-southeast1, 90-day lifecycle); GCS object naming convention; Cloud Batch job spec invariants (`c3-highcpu-8`, on-demand, `taskCountPerNode: 1`, per-task `maxRunDuration: 180s` at M7 C2 lock, per-task `maxRetryCount: 1`); orchestrator-side completion deadline 240s implemented as a polling loop + `batch.jobs.cancel` on overrun; IAM additions on the default Compute SA acting as both job creator + Batch task identity (`roles/batch.jobsEditor` project-wide + `roles/batch.agentReporter` project-wide + `roles/iam.serviceAccountUser` on itself + `roles/storage.objectAdmin` bucket-scoped); single-container-image dispatch via `--worker-mode`; partial-failure tolerance with `K'` defined as `sum(len(candidates_per_completed_task))` (source-of-truth, covers task-level failures + per-trajectory §12A.8 seed-construction failures within completed tasks; `dropped_count = K_approved - K'` is the derived diagnostic); GCS-only data path (Drive is NOT a pipeline data path); `candidates_full.json` reframed as OPTIONAL out-of-band maintainer-audit ADDITIVE to D-0070 sub-decision 10's in-pipeline framing — analyzer pass-through still operates on in-memory aggregation; GCS write is fire-and-forget, MUST NOT block operator response. **The M7 C2 lock language for the 180s per-task budget + 240s orchestrator polling deadline is SUPERSEDED at M7 C3 per D-0071 — see the M7 C3 entry below.**
+- No `contractVersion` bump (additive deployment-posture pinning per §11.1's bump rule).
+
+### Pinned in M7 C3 Task 1 (2026-05-11) per D-0071 (async architecture decision)
+- §6.2 — maintainer-only `/compute-lahc-test` debug route KEPT after operator path goes live (D-0071 sub-decision 14; supersedes M7 C2 lock's "route is removed when §9 is amended" framing).
+- §8.4 — request timeout `300s` governs the **SRB strategy path only** going forward. LAHC strategy path no longer blocks on this timeout (front door returns `SUBMITTED` in 3-5s; compute runs in Cloud Batch under a separate 10-min hard cap).
+- §8.7 (worker task group) — per-task `maxRunDuration` raised from `180s` → `480s` per D-0071 sub-decision 6 (worker tasks no longer constrained by the sync request budget; the budget room is reclaimed for slow trajectories on real-production rosters).
+- §8.7 (finalizer task group) — NEW second task group `taskGroups[1]` added per D-0071 sub-decision 2 + 3. Single task, `maxRunDuration: 120s`, `maxRetryCount: 0`, depends on the worker task group via `condition: SUCCEEDED_OR_FAILED` (runs always — D-0071 sub-decision 11). Replaces the orchestrator-side polling loop. Total wall budget: 480s worker + 120s finalizer ≈ 600s = 10-min hard cap per D-0071 sub-decision 1.
+- §8.7 (concurrent rejection) — Cloud Batch job labels `{spreadsheetId: <normalized>}` attached on every submission; orchestrator MUST list in-flight jobs with matching label and reject the new request with `INPUT_ERROR` code `CONCURRENT_RUN_REJECTED` per D-0071 sub-decision 4.
+- §8.7 (orchestrator-side polling deadline) — DEPRECATED for the LAHC path per D-0071. The Cloud Run Service no longer polls Cloud Batch on the LAHC path; it returns `SUBMITTED` immediately and the finalizer handles completion + callback + email. (Pre-D-0071 M7 C2 lock's 240s polling deadline is preserved for cross-reference but does not run on the LAHC path under D-0071.)
+- §9.3 — required `operatorEmail` field added for the LAHC strategy path per D-0071 sub-decision 5 (sourced from `Session.getActiveUser().getEmail()` in the bound shim; validated against the OIDC token's `email` claim).
+- §9.3 — recognized `optionalConfig` fields extended: `solverStrategy` (enum, optional, defaults to `SEEDED_RANDOM_BLIND`; LAHC dispatches to async Cloud Batch path), `lahcParams` (object, optional, used only when `solverStrategy="LAHC"`; defaults to FW-0037 elbow tuple). Both additive per §11.1's bump rule — no `contractVersion` bump.
+- §10.6 — `SUBMITTED` state added to response envelope (additive enum value per §11.1's bump rule — no `contractVersion` bump). LAHC strategy path returns `SUBMITTED` after Cloud Batch `submitJob` returns; the actual outcome lands via the §10A async-callback path. New `submission` field on the envelope carries `{batchJobName, jobId, runId}` for diagnostics.
+- §10A — NEW async-callback contract section: pins the boundary between Cloud Batch finalizer task and the launcher Web App. Includes boundary position (Cloud Batch finalizer → launcher Web App `/exec?action=async-render-callback`), GCP ID-token auth per D-0071 sub-decision 8 (NOT shared secret, NOT HMAC), body schema (state + writebackEnvelope + analyzerOutput OK-only + error + diagnostics), retry behavior (3 retries with backoff per D-0071 sub-decision 9), idempotency (launcher tracks `(runId, attemptId)` tuples), always-email-on-failure (D-0071 sub-decision 10), and the FW-0039 finalizer-crash gap surfaced as accepted-for-v1 (D-0071 sub-decision 17). The callback envelope carries its own `schemaVersion: 1` (independent from the §11 contract version).
+- §15 — FW-0027 reference removed from out-of-scope (FW-0027 absorbed into M7 C3+C4 per D-0071). New out-of-scope entry: finalizer-task-crash watchdog (FW-0039 gap accepted-for-v1).
+- §16 — this checkpoint-status entry records the amendments.
+- No `contractVersion` bump (all changes additive — new `SUBMITTED` enum value + new optional input fields + new boundary section + retained backward-compat for the SRB strategy path).
 
 ### Still open / deferred
-- Async / queue-based compute mode → FW-0027.
+- ~~Async / queue-based compute mode → FW-0027.~~ **No longer deferred — absorbed into M7 C3+C4 per D-0071 (this contract amendment).** SRB strategy path remains synchronous; LAHC strategy path is async per §10.6 + §10A.
 - Observability / structured logging hooks → FW-0028.
 - Multi-region deployment, post-pilot scale concerns → revisit with concrete driver.
 - Auth model extension to non-Google-account operators → revisit with concrete driver.
+- Finalizer-task-crash watchdog (FW-0039) → accepted-gap-for-v1 per D-0071 sub-decision 17; revisit when a concrete silent-failure incident surfaces.
