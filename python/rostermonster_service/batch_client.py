@@ -108,7 +108,14 @@ class BatchClient:
         uniqueness."""
         from google.protobuf import json_format
 
-        job = json_format.ParseDict(job_spec, self._batch_v1.Job())
+        # `batch_v1.Job` is a proto-plus wrapper, not raw protobuf —
+        # `json_format.ParseDict` operates on the underlying message
+        # via `._pb`. Passing the wrapper directly trips
+        # `AttributeError: Unknown field for Job: DESCRIPTOR` because
+        # ParseDict sees the wrapper's class-level `DESCRIPTOR`
+        # attribute and tries to interpret it as a proto field.
+        job = self._batch_v1.Job()
+        json_format.ParseDict(job_spec, job._pb)
         parent = "projects/" + project + "/locations/" + region
         unique_suffix = (
             str(int(self._time_fn() * 1000))
