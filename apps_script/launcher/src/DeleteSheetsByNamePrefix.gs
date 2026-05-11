@@ -21,6 +21,15 @@ function deleteSheetsByNamePrefix(spreadsheetId, prefixes) {
       'deleteSheetsByNamePrefix: prefixes (2nd argument) must be a non-empty array.'
     );
   }
+  for (var v = 0; v < prefixes.length; v++) {
+    if (typeof prefixes[v] !== 'string' || prefixes[v].length === 0) {
+      // Empty/non-string prefix would match every sheet via indexOf("")===0
+      // and silently wipe the spreadsheet — reject upfront.
+      throw new Error(
+        'deleteSheetsByNamePrefix: prefixes[' + v + '] must be a non-empty string; got ' + JSON.stringify(prefixes[v]) + '.'
+      );
+    }
+  }
   var ss = SpreadsheetApp.openById(spreadsheetId);
   var sheets = ss.getSheets();
   var deleted = [];
