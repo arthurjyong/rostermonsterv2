@@ -158,7 +158,7 @@ Pinned in M7 C2 Task 1 (2026-05-10) per `docs/decision_log.md` D-0070 + the M7 C
     parallelism: 1
     taskSpec:
       maxRunDuration: "540s"
-      maxRetryCount: 1
+      maxRetryCount: 0          # NO retry — Codex P2 round 8 amendment; 540s × 2 attempts would blow the 10-min cap
       runnables: [...]          # invokes worker.py --worker-mode (existing M7 C2 mode); the worker module runs Pool(88) LAHC trajectories then enters the inline finalize step
       environment:
         variables:
