@@ -76,6 +76,18 @@ _VALID_SOLVER_STRATEGIES = frozenset({"SEEDED_RANDOM_BLIND", "LAHC"})
 _INT64_SIGNED_MIN = -(2 ** 63)
 _INT64_SIGNED_MAX = (2 ** 63) - 1
 
+# Single-VM dense-pack vCPU count per `docs/cloud_compute_contract.md`
+# §8.7 — the worker's `Pool(K)` size MUST NOT exceed this or
+# multiprocessing oversubscribes the VM + blows the 10-min cap. The
+# `build_lahc_batch_job_spec` job spec hardcodes c3-highcpu-88 (88
+# vCPUs); K_approved must match. Codex P2 round 10 finding on PR
+# #157 commit 65108e42a3 — pre-fix the LAHC_K_APPROVED env had no
+# upper bound check + a maintainer setting `LAHC_K_APPROVED=176`
+# would silently over-subscribe the VM. Future quota bump to
+# C3_CPUS≥176 unlocks `c3-highcpu-176` for K=176 via FW-0040; until
+# then this cap is the load-bearing safety net.
+_LAHC_VM_VCPU_COUNT = 88
+
 
 log = logging.getLogger("rostermonster_service")
 
@@ -840,6 +852,31 @@ def _compute_lahc_async_endpoint(
             )
     else:
         K_approved = _LAHC_DEFAULT_K_APPROVED
+
+    # Codex P2 round 10 finding on PR #157 commit 65108e42a3: pre-fix,
+    # there was no upper bound on the deploy-time `LAHC_K_APPROVED`
+    # value. A maintainer setting `LAHC_K_APPROVED=176` would forward
+    # 176 → `RM_K_APPROVED` env → `Pool(176)` on a c3-highcpu-88 VM
+    # (the job spec hardcodes c3-highcpu-88). Pool(176) on 88 vCPUs
+    # over-subscribes by 2x → process contention → likely blows the
+    # 10-min cap. The right cap is the fixed VM vCPU count, NOT the
+    # deploy-time env. Future quota bump to C3_CPUS≥176 unlocks
+    # `c3-highcpu-176` for K=176 via FW-0040; until then the cap is
+    # the load-bearing safety net.
+    if K_approved > _LAHC_VM_VCPU_COUNT:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
+            + str(K_approved) + " which exceeds the fixed VM vCPU "
+            "count (" + str(_LAHC_VM_VCPU_COUNT) + " on `c3-highcpu-88`"
+            " per §8.7). The job spec hardcodes c3-highcpu-88 +"
+            " `Pool(K)` matches K to vCPU count — K above 88 would "
+            "over-subscribe the VM + blow the 10-min cap. Future "
+            "quota bump to `C3_CPUS≥176` unlocks `c3-highcpu-176` "
+            "for K=176 via FW-0040; until then, redeploy with "
+            "--set-env-vars " + _LAHC_K_APPROVED_ENV + "=<≤"
+            + str(_LAHC_VM_VCPU_COUNT) + ">.",
+        )
 
     # Codex P2 round 8 finding on PR #157 commit d1fdbf4ac6: pre-fix,
     # `optionalConfig.maxCandidates` was documented in §9.3 +
