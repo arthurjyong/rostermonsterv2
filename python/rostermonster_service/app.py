@@ -575,7 +575,27 @@ def _compute_lahc_async_endpoint(
             + type(e).__name__ + ": " + str(e),
         )
     template = icu_hd_template_artifact()
-    parser_result = parse(snapshot_obj, template)
+    # Codex P2 round 7 finding on PR #157 commit 3f62f8130e: pre-fix,
+    # `parse()` could raise on malformed nested fields that
+    # `_snapshot_from_dict()` accepted (e.g.,
+    # `dayRecords[0].rawDateText: null` survives deserialization
+    # but trips `_validate_structural` on `.strip()`). Uncaught
+    # exception made the LAHC path return Flask 500 HTML instead of
+    # the documented always-200 structured envelope. Wrap to surface
+    # as INPUT_ERROR/INVALID_SNAPSHOT_SHAPE at admission.
+    try:
+        parser_result = parse(snapshot_obj, template)
+    except (AttributeError, TypeError, ValueError, KeyError) as e:
+        return _input_error(
+            "INVALID_SNAPSHOT_SHAPE",
+            "Snapshot has a structural defect that "
+            "`parser.parse()` couldn't handle: "
+            + type(e).__name__ + ": " + str(e)
+            + ". The snapshot deserialized OK at the boundary but "
+            "a nested field (e.g., `dayRecords[*].rawDateText`, "
+            "`doctorRecords[*].displayName`) is malformed. Fix the "
+            "snapshot generator before re-submitting.",
+        )
     if parser_result.consumability is not Consumability.CONSUMABLE:
         issue_summary = "; ".join(
             "[" + getattr(i.severity, "name", str(i.severity)) + "] "

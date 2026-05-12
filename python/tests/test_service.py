@@ -1039,6 +1039,46 @@ def test_compute_lahc_async_accepts_int64_boundary_seeds(monkeypatch) -> None:
             _t2d_env_teardown(saved)
 
 
+def test_compute_lahc_async_catches_parse_exception(monkeypatch) -> None:
+    """Codex P2 round 7 finding on PR #157 commit 3f62f8130e: pre-fix,
+    `parse()` could raise on malformed nested fields (e.g.,
+    `dayRecords[0].rawDateText: null`) that `_snapshot_from_dict()`
+    accepted. Uncaught exception made the LAHC path return Flask
+    500 HTML instead of the documented always-200 structured
+    envelope. Fix: wrap `parse()` in try/except + surface as
+    INPUT_ERROR/INVALID_SNAPSHOT_SHAPE."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        snap = _load_snapshot_dict()
+        # Corrupt a nested field: `rawDateText: null` deserializes OK
+        # but trips `_validate_structural` on `.strip()`.
+        if snap.get("dayRecords"):
+            snap["dayRecords"][0]["rawDateText"] = None
+        else:
+            # Defensive fallback if fixture shape changes.
+            snap["dayRecords"] = [{"rawDateText": None}]
+        resp = client.post("/compute", json={
+            "snapshot": snap,
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200, (
+            "expected HTTP 200 always per §10; got "
+            + str(resp.status_code)
+        )
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR", (
+            "parse() raise on malformed nested field MUST surface as "
+            "INPUT_ERROR, not Flask 500. Got " + repr(data.get("state"))
+        )
+        assert data["error"]["code"] == "INVALID_SNAPSHOT_SHAPE"
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
 def test_compute_srb_path_stays_synchronous() -> None:
     """Back-compat: omitting `solverStrategy` (or passing
     "SEEDED_RANDOM_BLIND") keeps the existing sync /compute path —
