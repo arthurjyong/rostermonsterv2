@@ -33,7 +33,6 @@ from this module.
 from __future__ import annotations
 
 import dataclasses
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -249,9 +248,15 @@ def build_post_aggregation_envelope(
             ),
             diagnostics=diagnostics,
         )
-        # FULL required by analyzer admission (analysis_contract §9.1);
-        # sidecar files discarded with the VM, not read downstream.
-        sidecar_dir = Path(tempfile.mkdtemp(prefix="rm-lahc-"))
+        # FULL required by analyzer admission (analysis_contract §9.1).
+        # Path keyed on run_id (not tempfile.mkdtemp) so the path string
+        # baked into writebackEnvelope is deterministic for the same
+        # input + seed — preserves the §13 byte-identity contract. Use
+        # /tmp explicitly (not tempfile.gettempdir(), which returns
+        # /var/folders/... on macOS) so the audit's local-vs-cloud
+        # comparison agrees.
+        sidecar_dir = Path("/tmp") / "rm-lahc-sidecars" / run_id
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
         envelope = select(
             scored,
             retentionMode=RetentionMode.FULL,
