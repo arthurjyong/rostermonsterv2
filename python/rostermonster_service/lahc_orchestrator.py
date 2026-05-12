@@ -331,6 +331,7 @@ def _aggregate_single_task_result(
     *,
     bucket: str,
     run_id: str,
+    expected_attempt_id: str,
     gcs_read_json: ReadJsonFn,
 ) -> dict[str, Any]:
     """Read the single result.json from GCS and surface its contents in
@@ -342,6 +343,17 @@ def _aggregate_single_task_result(
     0 candidates per §8.7's primary K' definition; `resultPresent=False`
     signals the orchestrator should treat as UNSATISFIED + flag the
     incomplete task in the response summary.
+
+    **attemptId validation** (Codex P2 round 2 finding 4 fix): two
+    concurrent /compute-lahc-test replays of the same `(snapshotId,
+    masterSeed)` produce the same deterministic runId and would
+    otherwise overwrite each other's result.json. The orchestrator
+    stamps a per-attempt `attempt_id` into the worker's env; the worker
+    echoes it back into result.json's `attemptId`; this aggregator
+    treats a result.json with mismatched (or missing when
+    expected_attempt_id is non-empty) attemptId the same as missing.
+    Empty `expected_attempt_id` skips the check (caller didn't need
+    collision protection for that surface).
     """
     candidates: list[dict] = []
     failed_trajectories: list[dict] = []
@@ -368,6 +380,26 @@ def _aggregate_single_task_result(
             "resultPresent": False,
             "perTaskResults": per_task_results,
         }
+
+    # Attempt-id validation per Codex P2 round 2 finding 4 fix.
+    if expected_attempt_id:
+        result_attempt_id = result.get("attemptId")
+        if result_attempt_id != expected_attempt_id:
+            log.warning(
+                "result.json has attemptId=%r; expected %r — treating "
+                "as missing (concurrent replay collided on the deterministic "
+                "runId, OR a prior attempt's result.json wasn't cleared)",
+                result_attempt_id, expected_attempt_id,
+            )
+            return {
+                "candidates": candidates,
+                "failedTrajectories": failed_trajectories,
+                "trajectoryExceptions": trajectory_exceptions,
+                "aggregateAttempts": aggregate_attempts,
+                "aggregateRejectionsByReason": aggregate_rejections,
+                "resultPresent": False,
+                "perTaskResults": per_task_results,
+            }
 
     result_present = True
     per_task_results = [result]
@@ -929,6 +961,7 @@ def orchestrate_lahc_run(
         container_image_uri=container_image_uri,
         master_seed=master_seed,
         source_spreadsheet_id=source_spreadsheet_id,
+        attempt_id=attempt_id,
         submit_timestamp_ms=submit_ts_ms,
         K_approved=K_approved,
         bucket=bucket,
@@ -953,6 +986,7 @@ def orchestrate_lahc_run(
     agg = _aggregate_single_task_result(
         bucket=bucket,
         run_id=run_id,
+        expected_attempt_id=attempt_id,
         gcs_read_json=gcs_read_json,
     )
 

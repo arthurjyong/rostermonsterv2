@@ -39,7 +39,7 @@ from rostermonster.templates import icu_hd_template_artifact
 # M7 C2 Task 2F maintainer-only LAHC test route — see `_compute_lahc_test`
 # below + `cloud_compute_contract.md` §6.2.
 _LAHC_K_APPROVED_ENV = "LAHC_K_APPROVED"
-_LAHC_DEFAULT_K_APPROVED = 104  # M7 C1 closure-K
+_LAHC_DEFAULT_K_APPROVED = 88  # M7 C4 T2A.1 single-VM Pool(K) on c3-highcpu-88 (was 104 under the M7 C1 13-VM dense-pack design — Codex P1.7 single-VM amendment in PR #147 dropped K to 88 to fit the c3-highcpu-88 vCPU count); future quota bump to C3_CPUS≥176 unlocks K=176 via FW-0040.
 _CONTAINER_IMAGE_URI_ENV = "CONTAINER_IMAGE_URI"
 _GCP_PROJECT_ENV = "GCP_PROJECT"
 

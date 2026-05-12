@@ -128,6 +128,15 @@ _DEFAULT_BUCKET = "rostermonsterv2-lahc"
 # per-task seeds.json file under single-task.
 _MASTER_SEED_ENV = "RM_MASTER_SEED"
 _K_APPROVED_ENV = "RM_K_APPROVED"
+# Per-attempt id stamped by the orchestrator into the Batch job env;
+# echoed by the worker into result.json so the orchestrator can validate
+# on read that result.json belongs to THIS attempt (Codex P2 round 2
+# finding 4 fix — re-introduced after T2A.1's initial drop, since two
+# concurrent /compute-lahc-test replays of the same (snapshotId,
+# masterSeed) produce the same deterministic runId and would otherwise
+# collide on result.json overwrites). Stays empty for callers that
+# don't need replay-collision protection.
+_ATTEMPT_ID_ENV = "RM_ATTEMPT_ID"
 
 # §8.7 single-VM dense-pack default K (Codex P1.7 amendment). M7
 # production = K=88 (c3-highcpu-88 within current C3_CPUS=108 quota);
@@ -256,6 +265,7 @@ def worker_main(
     write_json: WriteJsonFn,
     pool_executor: PoolExecutorFn | None = None,
     bucket: str = _DEFAULT_BUCKET,
+    attempt_id: str = "",
 ) -> dict:
     """Worker entry point — orchestrates the read → compute → write cycle
     for the single Cloud Batch task. Returns the result.json dict (also
@@ -300,6 +310,7 @@ def worker_main(
             run_id=run_id,
             master_seed=master_seed,
             K_approved=K_approved,
+            attempt_id=attempt_id,
             parser_issues=parser_result.issues,
         )
         write_json(result_uri, result)
@@ -361,6 +372,12 @@ def worker_main(
         "runId": run_id,
         "masterSeed": master_seed,
         "kApproved": K_approved,
+        # attemptId echoed back so the orchestrator can validate on read
+        # that result.json belongs to THIS attempt — closes the
+        # concurrent-replay overwrite race per Codex P2 round 2 finding
+        # 4. Empty string when caller didn't supply an attemptId (no
+        # collision protection needed for that surface).
+        "attemptId": attempt_id,
         "candidates": candidates,
         "failedTrajectories": failed,
         "aggregateAttempts": aggregate_attempts,
@@ -377,7 +394,8 @@ def worker_main(
 
 
 def _build_parser_failure_result(
-    *, run_id: str, master_seed: int, K_approved: int, parser_issues,
+    *, run_id: str, master_seed: int, K_approved: int,
+    attempt_id: str, parser_issues,
 ) -> dict:
     """Result-shaped envelope when the parser rejects the snapshot. The
     orchestrator's §8.7 aggregation treats this the same as a missing
@@ -388,6 +406,7 @@ def _build_parser_failure_result(
         "runId": run_id,
         "masterSeed": master_seed,
         "kApproved": K_approved,
+        "attemptId": attempt_id,
         "candidates": [],
         "failedTrajectories": [],
         "aggregateAttempts": 0,
@@ -448,9 +467,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     bucket = os.environ.get(_BUCKET_ENV, _DEFAULT_BUCKET)
+    attempt_id = os.environ.get(_ATTEMPT_ID_ENV, "")
     log.info(
-        "Worker starting: run_id=%s master_seed=%d K_approved=%d bucket=%s",
-        args.run_id, args.master_seed, args.k_approved, bucket,
+        "Worker starting: run_id=%s master_seed=%d K_approved=%d bucket=%s attempt_id=%s",
+        args.run_id, args.master_seed, args.k_approved, bucket, attempt_id or "<none>",
     )
 
     read_json, write_json = make_gcs_adapter(bucket)
@@ -462,6 +482,7 @@ def main(argv: list[str] | None = None) -> int:
             read_json=read_json,
             write_json=write_json,
             bucket=bucket,
+            attempt_id=attempt_id,
         )
     except Exception as e:
         log.exception("Worker raised; attempting best-effort error-result write")
@@ -477,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
                 "runId": args.run_id,
                 "masterSeed": args.master_seed,
                 "kApproved": args.k_approved,
+                "attemptId": attempt_id,
                 "candidates": [],
                 "failedTrajectories": [],
                 "aggregateAttempts": 0,

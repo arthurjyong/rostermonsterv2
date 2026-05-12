@@ -131,6 +131,7 @@ def build_lahc_batch_job_spec(
     container_image_uri: str,
     master_seed: int,
     source_spreadsheet_id: str,
+    attempt_id: str = "",
     operator_email: str = "",
     submit_timestamp_ms: int = 0,
     launcher_callback_url: str = "",
@@ -222,6 +223,12 @@ def build_lahc_batch_job_spec(
             + type(launcher_callback_url).__name__ + "="
             + repr(launcher_callback_url)
         )
+    if not isinstance(attempt_id, str):
+        raise ValueError(
+            "attempt_id must be a string (may be empty when caller "
+            "doesn't need replay-collision protection); got "
+            + type(attempt_id).__name__ + "=" + repr(attempt_id)
+        )
     if (isinstance(K_approved, bool)
             or not isinstance(K_approved, int)
             or K_approved <= 0):
@@ -304,6 +311,7 @@ def build_lahc_batch_job_spec(
                         "variables": {
                             "RM_MASTER_SEED": str(master_seed),
                             "RM_K_APPROVED": str(K_approved),
+                            "RM_ATTEMPT_ID": attempt_id,
                             "RM_OPERATOR_EMAIL": operator_email,
                             "RM_LAUNCHER_CALLBACK_URL": launcher_callback_url,
                             "RM_SUBMIT_TIMESTAMP_MS": str(submit_timestamp_ms),

@@ -187,6 +187,20 @@ def test_spec_env_carries_submit_timestamp_ms() -> None:
     assert env["RM_SUBMIT_TIMESTAMP_MS"] == "1234567890"
 
 
+def test_spec_env_carries_attempt_id_when_set() -> None:
+    """Per Codex P2 round 2 finding 4: attempt_id closes the
+    concurrent-replay overwrite race on the deterministic runId."""
+    spec = build_lahc_batch_job_spec(**_BASE_KWARGS, attempt_id="abc123def456")
+    env = spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
+    assert env["RM_ATTEMPT_ID"] == "abc123def456"
+
+
+def test_spec_env_carries_empty_attempt_id_when_not_provided() -> None:
+    spec = build_lahc_batch_job_spec(**_BASE_KWARGS)
+    env = spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
+    assert env["RM_ATTEMPT_ID"] == ""
+
+
 def test_spec_env_carries_bucket() -> None:
     spec = build_lahc_batch_job_spec(**_BASE_KWARGS, bucket="custom-bucket")
     env = spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
@@ -268,6 +282,11 @@ def test_submit_timestamp_ms_zero_allowed_for_compute_lahc_test() -> None:
 def test_launcher_callback_url_must_be_string() -> None:
     with pytest.raises(ValueError, match="launcher_callback_url must be"):
         build_lahc_batch_job_spec(**_BASE_KWARGS, launcher_callback_url=None)  # type: ignore[arg-type]
+
+
+def test_attempt_id_must_be_string() -> None:
+    with pytest.raises(ValueError, match="attempt_id must be"):
+        build_lahc_batch_job_spec(**_BASE_KWARGS, attempt_id=None)  # type: ignore[arg-type]
 
 
 def test_K_approved_must_be_positive() -> None:
