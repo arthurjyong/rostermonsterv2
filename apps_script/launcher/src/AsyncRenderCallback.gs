@@ -318,6 +318,15 @@ function _dispatchOk_(body) {
   // §10A.6 OK path: applyWriteback + renderAnalysis + check BOTH
   // return values before sending success email. Either FAILED →
   // failure email.
+  //
+  // **State strings** (Codex P1 fix on PR #154 commit b5b3c970be):
+  // `RMLib.applyWriteback` returns `state: 'SUCCESS'` when it writes
+  // a success tab (this OK path), `state: 'FAILED'` when it writes a
+  // failure-branch tab (the UNSATISFIED path — handled in
+  // `_dispatchUnsatisfied_`), `state: 'RUNTIME_ERROR'` when an
+  // exception bubbles up. `RMLib.renderAnalysis` returns
+  // `state: 'OK'` on success, `state: 'FAILED'` on any failure
+  // (validation rejection or render-time exception).
   var writebackResult, analysisResult;
   try {
     // RMLib.applyWriteback takes a JSON STRING per §10A.1 + the
@@ -336,9 +345,13 @@ function _dispatchOk_(body) {
       runId: body.runId,
     });
   }
-  if (!_isSuccessResult_(writebackResult)) {
+  if (!_writebackWroteSuccessTab_(writebackResult)) {
     // Codex P2 round 13: failure-from-writeback MUST surface as
-    // failure email (NOT success) with the structured error.
+    // failure email (NOT success) with the structured error. Any
+    // non-`SUCCESS` state on the OK path is a writeback defect —
+    // `FAILED` here would mean the library somehow chose the failure-
+    // branch tab on a success envelope (shouldn't happen); `RUNTIME_ERROR`
+    // means the library couldn't write any tab.
     _sendFailureEmail_(body, _resultToError_(writebackResult, 'writeback'));
     return _buildJsonResponse_(200, {
       state: 'OK_WRITEBACK_FAILED',
@@ -361,7 +374,7 @@ function _dispatchOk_(body) {
       runId: body.runId,
     });
   }
-  if (!_isSuccessResult_(analysisResult)) {
+  if (!_analysisRendered_(analysisResult)) {
     _sendFailureEmail_(body, _resultToError_(analysisResult, 'analysis'));
     return _buildJsonResponse_(200, {
       state: 'OK_ANALYSIS_FAILED',
@@ -381,10 +394,18 @@ function _dispatchOk_(body) {
 function _dispatchUnsatisfied_(body) {
   // §10A.6 UNSATISFIED path: applyWriteback only (failure-branch
   // envelope per §10.3 — bound shim's applyWriteback handles the
-  // UnsatisfiedResultEnvelope shape). SKIP renderAnalysis per §10A.6
-  // finding 8 + §12A.8 (analyzerOutput is null on the failure
-  // branch). Codex P2 round 15: writeback return value MUST be
-  // checked before sending the unsatisfied email.
+  // UnsatisfiedResultEnvelope shape + writes a FAILURE-BRANCH tab).
+  // SKIP renderAnalysis per §10A.6 finding 8 + §12A.8 (analyzerOutput
+  // is null on the failure branch).
+  //
+  // **Success criterion** (Codex P1 fix on PR #154 commit b5b3c970be):
+  // for an UNSATISFIED envelope, `applyWriteback` returns
+  // `state: 'FAILED'` on the SUCCESS path (= it successfully wrote
+  // the failure-branch tab). `state: 'RUNTIME_ERROR'` is the
+  // actually-failed-to-write surface; `state: 'SUCCESS'` would mean
+  // the library wrote a success tab on a failure envelope (defect).
+  // Codex P2 round 15: writeback return value MUST be checked before
+  // sending the unsatisfied email.
   var writebackResult;
   try {
     writebackResult = RMLib.applyWriteback(
@@ -400,7 +421,7 @@ function _dispatchUnsatisfied_(body) {
       runId: body.runId,
     });
   }
-  if (!_isSuccessResult_(writebackResult)) {
+  if (!_writebackWroteFailureTab_(writebackResult)) {
     _sendFailureEmail_(body, _resultToError_(writebackResult, 'writeback'));
     return _buildJsonResponse_(200, {
       state: 'UNSATISFIED_WRITEBACK_FAILED',
@@ -429,14 +450,37 @@ function _dispatchComputeError_(body) {
 }
 
 
-function _isSuccessResult_(result) {
-  // Both `RMLib.applyWriteback` (per writeback_contract §17) and
-  // `RMLib.renderAnalysis` (per analysis_renderer_contract §10)
-  // return objects with a `state` field where SUCCESS = the
-  // operation completed cleanly. Treat any non-SUCCESS or undefined
-  // result as failure.
+function _writebackWroteSuccessTab_(result) {
+  // `RMLib.applyWriteback` returns `state: 'SUCCESS'` when it wrote a
+  // success tab (per `apps_script/central_library/src/Writeback.gs`
+  // §17). Use ONLY on the OK callback path — on the UNSATISFIED
+  // path, `state: 'FAILED'` is the success outcome (failure-branch
+  // tab was written). Codex P1 fix on PR #154 commit b5b3c970be.
   if (!result || typeof result !== 'object') return false;
   return result.state === 'SUCCESS';
+}
+
+
+function _writebackWroteFailureTab_(result) {
+  // `RMLib.applyWriteback` returns `state: 'FAILED'` when it wrote a
+  // failure-branch tab (= success outcome on the UNSATISFIED
+  // callback path). The library's diagnostic surface treats failure-
+  // tab-written + failure-tab-not-written-due-to-RUNTIME_ERROR as
+  // distinct states; only the former is a successful UNSATISFIED
+  // dispatch. Codex P1 fix on PR #154 commit b5b3c970be.
+  if (!result || typeof result !== 'object') return false;
+  return result.state === 'FAILED';
+}
+
+
+function _analysisRendered_(result) {
+  // `RMLib.renderAnalysis` returns `state: 'OK'` on success per
+  // `apps_script/central_library/src/AnalysisRenderer.gs` §10
+  // (NOT `state: 'SUCCESS'`; surface diverges from writeback's
+  // success tag for historical reasons — the contracts evolved
+  // separately). Any other state is a render failure.
+  if (!result || typeof result !== 'object') return false;
+  return result.state === 'OK';
 }
 
 

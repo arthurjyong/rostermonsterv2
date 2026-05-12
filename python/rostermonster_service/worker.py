@@ -176,6 +176,21 @@ _CALLBACK_POST_BACKOFF_SECONDS = (2.0, 4.0, 8.0)
 # version (governs §9 + §10 boundary) per the §10A.8 versioning note.
 _CALLBACK_SCHEMA_VERSION = 1
 
+# Terminal launcher-rejection response states per §10A.5 / §10A.6 +
+# `apps_script/launcher/src/AsyncRenderCallback.gs`. Apps Script Web
+# App handlers can only emit HTTP 200 (or 500 via throw), so the
+# launcher surfaces auth + validation rejections via the response
+# body's `state` field rather than via a 4xx status code. The retry
+# loop in `_post_callback_with_retry` inspects this set on 200
+# responses + treats matches as terminal (log as failure, no retry).
+# Codex P2 finding on PR #154 commit b5b3c970be.
+_CALLBACK_TERMINAL_REJECTION_STATES = frozenset({
+    "AUTH_REJECTED",
+    "INVALID_CALLBACK",
+    "INVALID_DEPLOYMENT",
+    "INVALID_ROUTE",
+})
+
 # `docs/analysis_contract.md` topK default — `pipeline.run_pipeline` uses
 # this; the inline finalize mirrors it for byte-identity on the
 # operator-facing AnalyzerOutput surface. Override via env for maintainer
@@ -304,11 +319,23 @@ def _default_pool_executor_factory(pool_size: int) -> PoolExecutorFn:
 # I/O ports for the inline finalize step (M7 C4 T2A.2 PR-A). Injectable
 # so tests can exercise the callback POST path without making real HTTPS
 # calls or hitting the metadata server.
-HttpPostFn = Callable[[str, dict[str, Any], float], int]
-"""HTTP POST adapter — `(url, body_dict, timeout_seconds) -> status_code`.
-Implementations MUST raise on transport / connection errors so the retry
-loop in `_post_callback_with_retry` can backoff; returning a 5xx is
-treated as retryable (same backoff), returning a 4xx is terminal."""
+HttpPostFn = Callable[
+    [str, dict[str, Any], float],
+    "tuple[int, dict[str, Any] | None]",
+]
+"""HTTP POST adapter — `(url, body_dict, timeout_seconds) -> (status_code,
+response_body_dict_or_None)`. Implementations MUST raise on transport /
+connection errors so the retry loop in `_post_callback_with_retry` can
+backoff; returning a 5xx is treated as retryable (same backoff),
+returning a 4xx is terminal.
+
+The response-body return is needed because Apps Script Web App handlers
+can only emit HTTP 200 (or 500 via throw); the launcher signals terminal
+rejection states (AUTH_REJECTED / INVALID_CALLBACK / INVALID_DEPLOYMENT)
+via the response body's `state` field rather than via a 4xx status code.
+`_post_callback_with_retry` inspects the body on 200 responses + treats
+known rejection states as terminal (no retry, log as failure) per
+§10A.7 + Codex P2 finding on PR #154 commit b5b3c970be."""
 IdTokenFn = Callable[[str], str]
 """ID token minter — `(audience_url) -> id_token_string`. Production
 hits the Cloud Batch VM's metadata server at `instance/service-accounts/
@@ -1016,7 +1043,7 @@ def _post_callback_with_retry(
 
         body["idToken"] = id_token
         try:
-            status = http_post_fn(full_url, body, 30.0)
+            status, response_body = http_post_fn(full_url, body, 30.0)
         except Exception as e:  # noqa: BLE001
             log.exception(
                 "Callback POST attempt %d raised; treating as 5xx-retryable",
@@ -1032,9 +1059,31 @@ def _post_callback_with_retry(
             return
 
         if 200 <= status < 300:
+            # Apps Script Web App handlers can only emit 200 (or 500
+            # via throw) — so terminal rejections (AUTH_REJECTED,
+            # INVALID_CALLBACK, INVALID_DEPLOYMENT) surface as 200
+            # with the structured rejection state in the response
+            # body. Inspect to distinguish actual success from a
+            # silent rejection per Codex P2 finding on PR #154 commit
+            # b5b3c970be.
+            response_state = None
+            if isinstance(response_body, dict):
+                response_state = response_body.get("state")
+            if response_state in _CALLBACK_TERMINAL_REJECTION_STATES:
+                log.error(
+                    "Callback POST 200 but launcher rejected "
+                    "(state=%s, code=%s, run_id=%s, request_state=%s) — "
+                    "terminal per §10A.7 (operator may not get email; "
+                    "FW-0039 silent-outcome gap)",
+                    response_state,
+                    response_body.get("code") if isinstance(response_body, dict) else None,
+                    run_id, body.get("state"),
+                )
+                return
             log.info(
-                "Callback POST succeeded (status=%d, run_id=%s, state=%s)",
-                status, run_id, body.get("state"),
+                "Callback POST succeeded (status=%d, run_id=%s, "
+                "request_state=%s, response_state=%s)",
+                status, run_id, body.get("state"), response_state,
             )
             return
 
@@ -1091,11 +1140,19 @@ def _default_id_token_fn(audience_url: str) -> str:
     return response.text
 
 
-def _default_http_post_fn(url: str, body: dict, timeout: float) -> int:
-    """Production HTTPS POST — wraps `requests.post`. Returns the HTTP
-    status code; raises on connection / DNS / timeout errors (the
-    retry loop in `_post_callback_with_retry` treats raises as 5xx-
-    retryable per §10A.7)."""
+def _default_http_post_fn(
+    url: str, body: dict, timeout: float,
+) -> "tuple[int, dict | None]":
+    """Production HTTPS POST — wraps `requests.post`. Returns
+    `(status_code, parsed_json_body_or_None)`. Raises on connection /
+    DNS / timeout errors (the retry loop in `_post_callback_with_retry`
+    treats raises as 5xx-retryable per §10A.7).
+
+    Response body parsing is best-effort: returns `None` when the body
+    isn't valid JSON. The retry loop tolerates `None` and falls back
+    to HTTP-status-only decision logic for non-JSON responses. Codex
+    P2 fix on PR #154 commit b5b3c970be added the body-return for the
+    Apps-Script-Web-App 200-only rejection signaling pattern."""
     import requests  # type: ignore[import-not-found]
 
     response = requests.post(
@@ -1104,7 +1161,13 @@ def _default_http_post_fn(url: str, body: dict, timeout: float) -> int:
         headers={"Content-Type": "application/json"},
         timeout=timeout,
     )
-    return response.status_code
+    try:
+        parsed_body = response.json()
+        if not isinstance(parsed_body, dict):
+            parsed_body = None
+    except Exception:  # noqa: BLE001
+        parsed_body = None
+    return response.status_code, parsed_body
 
 
 def _build_parser_failure_result(
