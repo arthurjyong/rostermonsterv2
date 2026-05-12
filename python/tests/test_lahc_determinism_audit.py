@@ -33,23 +33,6 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import pytest  # noqa: E402
-
-# M7 C4 T2A.1 module-level skip. Determinism audit verifies byte-identity
-# between local-CLI K-trajectory loop and Cloud-Batch path; the Cloud-Batch
-# path was refactored to single-VM single-task with local seed derivation,
-# breaking the worker_main(...) signature these tests rely on. Rewrite at
-# T2A.2 (where the inline finalize step lands and full byte-identity at
-# K=88 needs verification).
-pytestmark = pytest.mark.skip(
-    reason=(
-        "M7 C4 T2A.1 worker.py + lahc_orchestrator.py refactor — "
-        "byte-identity audit needs re-implementation against the "
-        "single-VM single-task Pool(K_approved) shape at K=88. "
-        "Rewrite tracked at M7 C4 T2A.2."
-    )
-)
-
 from rostermonster.pipeline import _snapshot_from_dict, _to_jsonable, run_pipeline  # noqa: E402
 from rostermonster.selector import RetentionMode  # noqa: E402
 from rostermonster.solver import LahcParams, STRATEGY_LAHC  # noqa: E402
@@ -130,8 +113,10 @@ def _fixed_attempt_id_fn() -> str:
 
 class _WorkerSimulatingBatchClient(InMemoryBatchClient):
     """On submit_job, runs `worker_main` inline against the in-memory
-    GCS for each task — same pattern as `test_lahc_orchestrator.py`'s
-    integration test. The orchestrator's subsequent get_job_state call
+    GCS for the single Cloud Batch task (M7 C4 T2A.1 single-VM amendment
+    per Codex P1.7). Pulls master_seed + K_approved + attempt_id off the
+    Batch task env (mirroring how Cloud Batch sets them on the real
+    worker process). The orchestrator's subsequent get_job_state call
     returns SUCCEEDED."""
 
     def __init__(self, *, read_json, write_json, **kw):
@@ -140,13 +125,20 @@ class _WorkerSimulatingBatchClient(InMemoryBatchClient):
         self._write_json = write_json
 
     def submit_job(self, *, project, region, run_id, job_spec):
-        task_count = job_spec["taskGroups"][0]["taskCount"]
-        for task_index in range(task_count):
-            worker_mod.worker_main(
-                run_id, task_index,
-                read_json=self._read_json, write_json=self._write_json,
-                pool_executor=_serial_executor, bucket=_BUCKET,
-            )
+        env = job_spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
+        master_seed = int(env["RM_MASTER_SEED"])
+        K_approved = int(env["RM_K_APPROVED"])
+        attempt_id = env.get("RM_ATTEMPT_ID", "")
+        worker_mod.worker_main(
+            run_id,
+            master_seed=master_seed,
+            K_approved=K_approved,
+            read_json=self._read_json,
+            write_json=self._write_json,
+            pool_executor=_serial_executor,
+            bucket=_BUCKET,
+            attempt_id=attempt_id,
+        )
         return super().submit_job(
             project=project, region=region,
             run_id=run_id, job_spec=job_spec,
@@ -174,6 +166,10 @@ def _run_cloud_batch_path(*, snapshot_dict: dict, master_seed: int) -> dict:
         project=_PROJECT, bucket=_BUCKET, region=_REGION,
         sleep_fn=_no_sleep,
         time_fn=_virtual_clock(),
+        # Fixed wall_time_fn so submit_timestamp_ms doesn't perturb the
+        # byte-identity comparison via env-var noise. The audit doesn't
+        # exercise the 510s elapsed self-check; T2A.2 will.
+        wall_time_fn=lambda: 1_700_000_000.0,
         attempt_id_fn=_fixed_attempt_id_fn,
     )
 
