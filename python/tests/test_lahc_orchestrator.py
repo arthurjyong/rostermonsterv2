@@ -53,6 +53,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import pytest  # noqa: E402
+
 from rostermonster_service import lahc_orchestrator as lo  # noqa: E402
 from rostermonster_service.batch_client import (  # noqa: E402
     JOB_STATE_SUCCEEDED,
@@ -970,6 +972,7 @@ def test_orchestrator_passes_wall_clock_submit_timestamp_to_batch_env() -> None:
 # --- Worker integration (orchestrator + real worker_main) --------------
 
 
+@pytest.mark.slow
 def test_orchestrator_worker_integration_round_trip() -> None:
     """Full integration: a fake BatchClient that invokes worker_main
     inline on submit (against the same in-memory GCS) produces a real
@@ -979,7 +982,12 @@ def test_orchestrator_worker_integration_round_trip() -> None:
 
     Single-task pattern: one worker_main call per submit, K seeds
     derived locally from RM_MASTER_SEED env (read off the Batch task
-    spec by the integration shim)."""
+    spec by the integration shim).
+
+    Marked `slow` per Codex P2 finding on PR #150 commit c48d9deef2 —
+    runs real LAHC at production params (idleThreshold=3500), ~100s
+    per K=2 invocation. Default pytest addopts deselect; opt-in via
+    `pytest -m slow`."""
     from rostermonster_service import worker as worker_mod
 
     snapshot_dict = json.loads(_FIXTURE_PATH.read_text())

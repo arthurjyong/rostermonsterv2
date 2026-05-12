@@ -33,6 +33,18 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import pytest  # noqa: E402
+
+# All 5 audit tests in this module run the real LAHC solver at the
+# FW-0037 elbow tuple (idleThreshold=3500) across BOTH the local-CLI
+# path AND the Cloud-Batch path; total runtime ~15-25 min on the
+# icu_hd_may_2026 fixture. Marked `slow` per Codex P2 finding on PR
+# #150 commit c48d9deef2 so default `pytest` deselects them; full
+# audit runs via `pytest -m slow`. The byte-identity property the
+# audit verifies is K-independent — opt-in scheduling preserves the
+# audit value without bloating PR validation.
+pytestmark = pytest.mark.slow
+
 from rostermonster.pipeline import _snapshot_from_dict, _to_jsonable, run_pipeline  # noqa: E402
 from rostermonster.selector import RetentionMode  # noqa: E402
 from rostermonster.solver import LahcParams, STRATEGY_LAHC  # noqa: E402

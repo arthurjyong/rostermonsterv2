@@ -31,3 +31,19 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["rostermonster*"]
 exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+# `slow` marker tags tests that run the real LAHC solver at production
+# parameters (FW-0037 elbow tuple: idleThreshold=3500, maxIters=100k)
+# through the M7 worker / orchestrator integration path. Each such
+# trajectory takes 30-90s on the icu_hd_may_2026 fixture; the
+# determinism audit alone is ~15-25 min. PR validation (CI default
+# `pytest`) deselects them via the addopts below; full coverage runs
+# include them via `pytest -m "slow or not slow"` (or override addopts).
+# Codex P2 finding on PR #150 commit c48d9deef2 — keeps default PR
+# validation under a few minutes while preserving the byte-identity
+# audit + worker-orchestrator round-trip as opt-in CI sweeps.
+markers = [
+    "slow: marks tests that run real LAHC solver at FW-0037 elbow tuple — multi-minute, deselect by default",
+]
+addopts = "-m 'not slow'"
