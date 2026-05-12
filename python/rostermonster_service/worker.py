@@ -569,12 +569,19 @@ def _inline_finalize(
                 "skipping aggregation + POSTing timeout-failure callback",
                 elapsed_ms, _FINALIZE_SELF_CHECK_THRESHOLD_MS,
             )
+            # K' reflects the ACTUAL Pool aggregation when the self-
+            # check trips POST-Pool — the Pool already finished, agg
+            # already carries `candidates`; hardcoding 0 would
+            # misreport "every trajectory dropped" in the operator
+            # email when in fact some trajectories produced candidates.
+            # Codex P2 finding on PR #151 commit af92c9426b.
+            timeout_k_prime = len(agg_result.get("candidates", []))
             timeout_body = _build_compute_error_callback_body(
                 run_id=run_id,
                 attempt_id=attempt_id,
                 operator_email=operator_email,
                 K_approved=K_approved,
-                k_prime=0,
+                k_prime=timeout_k_prime,
                 wall_time_seconds=elapsed_ms / 1000.0,
                 batch_job_name=batch_job_name,
                 error_code="FINALIZE_TIMEOUT",
@@ -1182,6 +1189,14 @@ def main(argv: list[str] | None = None) -> int:
     callback_url = os.environ.get(_LAUNCHER_CALLBACK_URL_ENV, "")
     operator_email = os.environ.get(_OPERATOR_EMAIL_ENV, "")
     submit_timestamp_ms_str = os.environ.get(_SUBMIT_TIMESTAMP_MS_ENV, "")
+    # `BATCH_JOB_NAME` is auto-injected by Cloud Batch on every task in
+    # the form `projects/<id>/locations/<region>/jobs/<job-id>` per
+    # https://cloud.google.com/batch/docs/use-environment-variables —
+    # plumb through to the finalize step so callback `diagnostics.
+    # batchJobName` carries the audit/log-link surface §10A.6 requires.
+    # Codex P2 finding on PR #151 commit af92c9426b — pre-fix the
+    # default empty string would slip through to every real callback.
+    batch_job_name = os.environ.get("BATCH_JOB_NAME", "")
     analyzer_top_k_env = os.environ.get(_ANALYZER_TOP_K_ENV)
     try:
         analyzer_top_k = (
@@ -1197,11 +1212,12 @@ def main(argv: list[str] | None = None) -> int:
 
     log.info(
         "Worker starting: run_id=%s master_seed=%d K_approved=%d bucket=%s "
-        "attempt_id=%s callback_url=%s operator_email=%s",
+        "attempt_id=%s callback_url=%s operator_email=%s batch_job_name=%s",
         args.run_id, args.master_seed, args.k_approved, bucket,
         attempt_id or "<none>",
         callback_url or "<none>",
         operator_email or "<none>",
+        batch_job_name or "<none>",
     )
 
     read_json, write_json = make_gcs_adapter(bucket)
@@ -1217,6 +1233,7 @@ def main(argv: list[str] | None = None) -> int:
             callback_url=callback_url,
             operator_email=operator_email,
             submit_timestamp_ms_str=submit_timestamp_ms_str,
+            batch_job_name=batch_job_name,
             analyzer_top_k=analyzer_top_k,
         )
     except Exception as e:

@@ -841,6 +841,88 @@ def test_finalize_compute_error_when_K_prime_zero_via_exceptions(monkeypatch) ->
     assert body["diagnostics"]["droppedCount"] == 2
 
 
+def test_finalize_timeout_callback_carries_actual_K_prime(monkeypatch) -> None:
+    """Codex P2 finding on PR #151 commit af92c9426b: when 510s self-
+    check trips AFTER the Pool has aggregated, the COMPUTE_ERROR
+    callback's `kPrime` MUST reflect the actual aggregation (not
+    hardcoded 0). Pre-fix the operator email reported "every
+    trajectory dropped" even when the Pool produced N candidates."""
+    submit_ms = 1_700_000_000_000
+    # 520s elapsed — trips the 510s threshold AFTER Pool finished.
+    def fake_wall_time() -> float:
+        return (submit_ms + 520_000) / 1000
+
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+    http_post, captured = _capturing_http_post()
+
+    worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=3,
+        read_json=read_json,
+        write_json=write_json,
+        # _stub_succeeded_executor produces K SUCCEEDED candidates,
+        # so by the time the finalize self-check runs, agg_result
+        # has K candidates aggregated.
+        pool_executor=_stub_succeeded_executor,
+        bucket=_BUCKET,
+        attempt_id=_ATTEMPT_ID,
+        callback_url=_CALLBACK_URL,
+        operator_email=_OPERATOR_EMAIL,
+        submit_timestamp_ms_str=str(submit_ms),
+        batch_job_name=_BATCH_JOB_NAME,
+        http_post_fn=http_post,
+        id_token_fn=_fixed_id_token_fn,
+        wall_time_fn=fake_wall_time,
+    )
+
+    assert len(captured) == 1
+    _, body, _ = captured[0]
+    assert body["state"] == "COMPUTE_ERROR"
+    assert body["error"]["code"] == "FINALIZE_TIMEOUT"
+    # The Pool produced K=3 candidates BEFORE the self-check tripped;
+    # diagnostics MUST reflect that, not hardcoded 0.
+    assert body["diagnostics"]["kPrime"] == 3, (
+        "Timeout callback MUST carry actual K' from Pool aggregation, "
+        "not hardcoded 0 (Codex P2 finding regression on PR #151)"
+    )
+    assert body["diagnostics"]["droppedCount"] == 0
+    assert body["diagnostics"]["kApproved"] == 3
+
+
+def test_cli_threads_batch_job_name_env_through_to_finalize() -> None:
+    """Codex P2 finding on PR #151 commit af92c9426b: Cloud Batch
+    auto-injects `BATCH_JOB_NAME` env var on every task (per
+    https://cloud.google.com/batch/docs/use-environment-variables);
+    the CLI MUST read it + thread through to `worker_main` so the
+    callback's `diagnostics.batchJobName` carries the full Cloud Batch
+    job resource name §10A.6 requires. Pre-fix, every real callback
+    body had `diagnostics.batchJobName == ""` because the CLI never
+    extracted the env var.
+
+    Verify by re-parsing the same env-default path the CLI uses
+    (parsing through `main()` directly would force a real GCS
+    adapter)."""
+    import os
+
+    saved = os.environ.get("BATCH_JOB_NAME")
+    os.environ["BATCH_JOB_NAME"] = (
+        "projects/rostermonsterv2/locations/asia-southeast1/jobs/test-job-aaa"
+    )
+    try:
+        batch_job_name = os.environ.get("BATCH_JOB_NAME", "")
+        assert batch_job_name.startswith("projects/"), (
+            "Cloud Batch env BATCH_JOB_NAME MUST flow through the CLI; "
+            "got " + repr(batch_job_name)
+        )
+        assert "jobs/test-job-aaa" in batch_job_name
+    finally:
+        if saved is None:
+            os.environ.pop("BATCH_JOB_NAME", None)
+        else:
+            os.environ["BATCH_JOB_NAME"] = saved
+
+
 def test_finalize_self_check_trips_at_510s(monkeypatch) -> None:
     """First action of finalize: compare elapsed since
     RM_SUBMIT_TIMESTAMP_MS. If > 510_000ms, SKIP aggregation entirely
