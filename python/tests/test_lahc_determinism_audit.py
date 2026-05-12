@@ -209,11 +209,20 @@ def _run_local_cli_path(*, snapshot_dict: dict, master_seed: int,
     `K=_AUDIT_K_PROD`."""
     snapshot = _snapshot_from_dict(snapshot_dict)
     template = icu_hd_template_artifact()
+    # Same deterministic sidecar path as the cloud-side
+    # (post_aggregation.build_post_aggregation_envelope) so the §13
+    # byte-identity comparison agrees on AllocationResult.candidates*
+    # path strings without ad-hoc normalization. run_id == snapshotId
+    # per pipeline.py L464.
+    snapshot_id = snapshot_dict["metadata"]["snapshotId"]
+    sidecar_dir = Path("/tmp") / "rm-lahc-sidecars" / snapshot_id
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
     return run_pipeline(
         snapshot, template,
         seed=master_seed,
         max_candidates=K,
-        retention_mode=RetentionMode.BEST_ONLY,
+        retention_mode=RetentionMode.FULL,
+        sidecar_dir=sidecar_dir,
         strategy_id=STRATEGY_LAHC,
         lahc_params=_FW_0037_LAHC_PARAMS,
     )
@@ -288,11 +297,6 @@ def test_local_cli_and_cloud_batch_writeback_envelope_byte_identical() -> None:
         return  # degenerate; property requires both succeeding
     local_wrapper = _wrapper_envelope_from_local(local_result, snapshot_dict)
     cloud_wrapper = _wrapper_envelope_from_cloud(cloud_response)
-    # Strip volatile fields if any (e.g., generationTimestamp on
-    # synthetic SearchDiagnostics could differ depending on whether
-    # tests cap clocks). The §13 invariant covers the structural
-    # writeback content; non-deterministic timestamps would need a
-    # separate fixture lock.
     local_final = local_wrapper["finalResultEnvelope"]
     cloud_final = cloud_wrapper["finalResultEnvelope"]
     # Codex P2 finding on PR #144 commit 0153fc6: the audit MUST
