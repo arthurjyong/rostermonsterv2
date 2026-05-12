@@ -1,49 +1,52 @@
 """Cloud Batch worker for the M7 LAHC parallel-solver path per
-`docs/cloud_compute_contract.md` §8.7 + `docs/delivery_plan.md` §9 M7 C2
-Task 2D.
+`docs/cloud_compute_contract.md` §8.7.
+
+**Amended at M7 C4 T2A.1 (2026-05-12) per the Codex P1.7 single-VM
+amendment locked in PR #147 + the M7 C4 Task 1 plan in PR #148:**
+collapsed from per-task worker on `c3-highcpu-8` (Pool of 8 trajectories,
+seeds slice read from per-task `seeds.json`) to single-VM worker on
+`c3-highcpu-88` (Pool of K_approved=88 trajectories, all seeds derived
+locally from `RM_MASTER_SEED` env). Cloud Batch v1's `Job.taskGroups[]`
+is limited to one task group (Codex P1.7 finding) — workers + finalizer
+must run on one VM in one Python process. The inline finalize step
+lands at M7 C4 T2A.2; this PR (T2A.1) keeps the result.json output
+schema so `/compute-lahc-test` continues to work end-to-end via the
+existing M7 C2 orchestrator polling path.
 
 Single-image dispatch: the same container that Cloud Run runs as a Flask
 service (`gunicorn rostermonster_service.app:app`) is invoked by Cloud
 Batch with the command override `python -m rostermonster_service.worker
---run-id <runId>` so each Batch task starts in worker mode. The
+--run-id <runId>` so the Batch task starts in worker mode. The
 `taskSpec.runnables[0].container.commands[]` array on the Batch job spec
-(set by the M7 C2 Task 2E orchestrator) carries the override; the
-single-image discipline preserves the D-0050 dual-track guarantee that
-both surfaces run the same Python compute core.
+(set by `batch_job_spec.py`) carries the override; the single-image
+discipline preserves the D-0050 dual-track guarantee that both surfaces
+run the same Python compute core.
 
-Input contract (read from GCS at the §8.7 keys):
-  gs://rostermonsterv2-lahc/{runId}/snapshot.json     # input snapshot (orchestrator-written)
-  gs://rostermonsterv2-lahc/{runId}/task-{n}/seeds.json  # per-task seed slice (orchestrator-written)
+Input contract:
+  gs://rostermonsterv2-lahc/{runId}/snapshot.json   # input snapshot (orchestrator-written)
+  RM_MASTER_SEED env var                            # §9 input #3 master seed
+  RM_K_APPROVED env var                             # K trajectories (default 88)
 
-Output contract (written to GCS at the §8.7 key):
-  gs://rostermonsterv2-lahc/{runId}/task-{n}/result.json  # this worker's output
+  NOTE: per-task `seeds.json` is RETIRED under single-task — the worker
+  derives K seeds locally via `derive_K_seeds(masterSeed, K)` per
+  §12A.10 (single source of truth shared with the local-CLI K-trajectory
+  loop). The orchestrator no longer pre-derives or partitions seeds.
 
-Per-task `seeds.json` schema (orchestrator-written, consumed here):
+Output contract:
+  gs://rostermonsterv2-lahc/{runId}/result.json   # this worker's output (single-task)
+
+Per-task `result.json` schema (this worker writes, T2A.1 orchestrator
+aggregates; T2A.2 will move aggregation into this worker inline):
 ```
 {
   "schemaVersion": 1,
   "runId": "<runId>",
-  "taskIndex": <n>,
   "masterSeed": <int>,
-  "seeds": [<int>, ...]   // up to TRAJECTORIES_PER_TASK seeds; per-task slice
-                          // of the K_approved seeds the orchestrator pre-derived
-                          // via derive_K_seeds(masterSeed, K_approved).
-}
-```
-
-Per-task `result.json` schema (this worker writes, M7 C2 Task 2F orchestrator
-aggregates per `docs/cloud_compute_contract.md` §8.7's K' definition):
-```
-{
-  "schemaVersion": 1,
-  "runId": "<runId>",
-  "taskIndex": <n>,
-  "masterSeed": <int>,
-  "candidates": [               // SUCCEEDED trajectories only — len(candidates)
-                                // is the per-task contribution to K' per §8.7
+  "kApproved": <int>,
+  "candidates": [
     {
       "candidateSeed": <int>,
-      "assignments": [...],     // _to_jsonable(TrialCandidate.assignments)
+      "assignments": [...],
       "iters": <int>,
       "acceptedMoves": <int>,
       "bestScore": <float | null>,
@@ -51,28 +54,35 @@ aggregates per `docs/cloud_compute_contract.md` §8.7's K' definition):
     },
     ...
   ],
-  "failedTrajectories": [       // SEED_FAILED trajectories per §12A.8
+  "failedTrajectories": [
     {
       "candidateSeed": <int>,
-      "unfilledDemand": [...]   // _to_jsonable(UnsatisfiedResult.unfilledDemand)
+      "unfilledDemand": [...]
     },
     ...
   ],
-  "aggregateAttempts": <int>,                    // sum across all 8 trajectories
-  "aggregateRejectionsByReason": {<code>: <int>} // sum across all 8 trajectories
+  "aggregateAttempts": <int>,
+  "aggregateRejectionsByReason": {<code>: <int>}
 }
 ```
 
-The orchestrator (Task 2F) computes `K' = sum(len(result.json["candidates"]))`
-across completed tasks, treating cancelled/missing/failed-after-retry tasks as
-contributing 0 candidates per §8.7's primary K' definition.
+K' = `len(result.json["candidates"])` directly (no cross-task summation
+under single-task pattern).
 
 Determinism (§12A.4 + §12A.10): each pool child calls `solve(K=1,
-_candidate_seeds=[its_one_seed], strategyId=LAHC, ...)` per the Task 2C
-escape hatch; the orchestrator pre-derives all K_approved seeds via
-`derive_K_seeds(masterSeed, K_approved)` and partitions them per-task so
-the per-task seed list reaching this worker is byte-identical to the
-local CLI's K-trajectory loop.
+_candidate_seeds=[its_one_seed], strategyId=LAHC, ...)` per the M7 C2
+Task 2C escape hatch; the worker derives all K seeds via
+`derive_K_seeds(masterSeed, K)` so the per-trajectory seed list is
+byte-identical to the local CLI's K-trajectory loop.
+
+Env vars plumbed at T2A.1 but unused until T2A.2's inline finalize step:
+- `RM_OPERATOR_EMAIL`: operator's email address (T2A.2 finalize uses
+  this to populate the callback POST body).
+- `RM_LAUNCHER_CALLBACK_URL`: launcher's USER_DEPLOYING callback URL
+  (T2A.2 finalize POSTs to this; empty for `/compute-lahc-test` skips
+  the POST).
+- `RM_SUBMIT_TIMESTAMP_MS`: epoch ms at submitJob time (T2A.2 finalize
+  reads this for the 510s elapsed self-check).
 """
 
 from __future__ import annotations
@@ -94,6 +104,7 @@ from rostermonster.solver import (
     LahcParams,
     TerminationBounds,
     UnsatisfiedResult,
+    derive_K_seeds,
     solve,
 )
 from rostermonster.templates import icu_hd_template_artifact
@@ -111,22 +122,22 @@ log = logging.getLogger("rostermonster_service.worker")
 _BUCKET_ENV = "LAHC_BUCKET"
 _DEFAULT_BUCKET = "rostermonsterv2-lahc"
 
-# Cloud Batch sets `BATCH_TASK_INDEX` on each task per its v1 worker
-# contract; we accept it as the default for `--task-index` so the
-# orchestrator doesn't have to encode the index in the command override.
-_BATCH_TASK_INDEX_ENV = "BATCH_TASK_INDEX"
+# §8.7 single-VM dense-pack inputs (Codex P1.7 amendment). Master seed
+# + K are env-plumbed by the orchestrator so the worker derives all K
+# trajectory seeds locally via derive_K_seeds() per §12A.10 — no
+# per-task seeds.json file under single-task.
+_MASTER_SEED_ENV = "RM_MASTER_SEED"
+_K_APPROVED_ENV = "RM_K_APPROVED"
 
-# §8.7 dense-pack invariant: 8 trajectories per `c3-highcpu-8` task,
-# matching the 8 vCPU + multiprocessing.Pool(8) pattern. The per-task
-# seed slice from the orchestrator MUST be `<= TRAJECTORIES_PER_TASK`;
-# the final task in a non-multiple-of-8 K_approved partition may carry
-# fewer (current production K=104 → all tasks fully packed at 8).
-TRAJECTORIES_PER_TASK = 8
+# §8.7 single-VM dense-pack default K (Codex P1.7 amendment). M7
+# production = K=88 (c3-highcpu-88 within current C3_CPUS=108 quota);
+# future quota bump → K=176 via FW-0040.
+_DEFAULT_K_APPROVED = 88
 
 # FW-0037 elbow tuple — M7 production LAHC parameters per
-# `docs/delivery_plan.md` §9 M7 C2 Task 2D + the M7 architecture lock at
-# D-0070. Hardcoded here because the worker is the M7-specific surface;
-# tunable LAHC defaults for other surfaces remain in `LahcParams()`.
+# `docs/delivery_plan.md` §9 + the M7 architecture lock at D-0070.
+# Hardcoded here because the worker is the M7-specific surface; tunable
+# LAHC defaults for other surfaces remain in `LahcParams()`.
 _LAHC_HISTORY_LIST_LENGTH = 50
 _LAHC_IDLE_THRESHOLD = 3500
 _LAHC_SWAP_PROBABILITY = 0.5
@@ -134,8 +145,6 @@ _LAHC_SWAP_PROBABILITY = 0.5
 # Result.json schema version per the §8.7 amendment. Bump if the result
 # shape changes in a way that breaks the orchestrator's aggregation.
 _RESULT_SCHEMA_VERSION = 1
-# Seeds.json schema version per the §8.7 amendment.
-_SEEDS_SCHEMA_VERSION = 1
 
 
 # I/O ports — `ReadJsonFn` + `WriteJsonFn` come from `gcs.py` (shared
@@ -152,18 +161,19 @@ def _gcs_uri(bucket: str, run_id: str, *parts: str) -> str:
 
 def _run_one_trajectory(args: tuple) -> dict:
     """Pool worker — runs one LAHC trajectory under the FW-0037 elbow tuple
-    via `solve(K=1, _candidate_seeds=[seed])` per the Task 2C escape hatch.
+    via `solve(K=1, _candidate_seeds=[seed])` per the M7 C2 Task 2C escape
+    hatch.
 
     Lives at module top-level so `multiprocessing.Pool.map` can pickle it.
     Returns a dict (also picklable) carrying either the SUCCEEDED candidate
     or the SEED_FAILED unfilled demand, plus aggregate attempt + rejection
-    counters for the parent's per-task aggregation.
+    counters for the per-task aggregation.
 
     Per-trajectory exceptions are caught + surfaced as a third state
     (`status="EXCEPTION"`) so a single child raising doesn't lose the
-    other 7 trajectories' results. Per §12A.8's drop-and-continue
-    discipline: each trajectory is independent; one failure (or exception)
-    doesn't fail the whole task.
+    other trajectories' results. Per §12A.8's drop-and-continue
+    discipline: each trajectory is independent; one failure doesn't fail
+    the whole task.
     """
     model, scoring_config, lahc_params, master_seed, candidate_seed = args
     try:
@@ -215,8 +225,7 @@ def _run_one_trajectory(args: tuple) -> dict:
     assert isinstance(result, UnsatisfiedResult)
     # SEED_FAILED — single-trajectory LAHC returned UnsatisfiedResult means
     # the only trajectory dropped on per-trajectory seed-construction
-    # failure per §12A.8. Treat as a failed trajectory (per-task K'
-    # contribution: 0).
+    # failure per §12A.8.
     return {
         "status": "SEED_FAILED",
         "candidateSeed": candidate_seed,
@@ -226,74 +235,59 @@ def _run_one_trajectory(args: tuple) -> dict:
     }
 
 
-def _default_pool_executor(
-    fn: Callable[..., Any], args_iter: list[Any],
-) -> list[Any]:
-    """Production pool executor — `multiprocessing.Pool(TRAJECTORIES_PER_TASK)`
-    matching the §8.7 dense-pack invariant (8 trajectories per
-    `c3-highcpu-8` VM, 1 trajectory per vCPU). Tests inject a serial
-    executor to keep test time bounded and sidestep multiprocessing
-    spawn semantics in CI."""
-    with multiprocessing.Pool(TRAJECTORIES_PER_TASK) as pool:
-        return pool.map(fn, args_iter)
+def _default_pool_executor_factory(pool_size: int) -> PoolExecutorFn:
+    """Production pool executor factory — builds an executor at the requested
+    Pool size matching the §8.7 single-VM dense-pack invariant (1 trajectory
+    per vCPU on `c3-highcpu-88` = K=88). Tests inject a serial executor to
+    keep test time bounded and sidestep multiprocessing spawn semantics in
+    CI."""
+    def _exec(fn: Callable[..., Any], args_iter: list[Any]) -> list[Any]:
+        with multiprocessing.Pool(pool_size) as pool:
+            return pool.map(fn, args_iter)
+    return _exec
 
 
 def worker_main(
     run_id: str,
-    task_index: int,
     *,
+    master_seed: int,
+    K_approved: int,
     read_json: ReadJsonFn,
     write_json: WriteJsonFn,
-    pool_executor: PoolExecutorFn = _default_pool_executor,
+    pool_executor: PoolExecutorFn | None = None,
     bucket: str = _DEFAULT_BUCKET,
 ) -> dict:
     """Worker entry point — orchestrates the read → compute → write cycle
-    for one Cloud Batch task. Returns the result.json dict (also written
-    to GCS at the §8.7 result key for orchestrator pickup).
+    for the single Cloud Batch task. Returns the result.json dict (also
+    written to GCS at the §8.7 result key).
 
     All I/O ports are injected so tests exercise the full pipeline against
     an in-memory storage fixture without touching real GCS.
 
-    Snapshot deserialization or parser-rejection surfaces in the top-level
-    result.json's `state` field (NOT raised) — the orchestrator's
-    aggregation per §8.7 partial-failure tolerance treats a worker
-    error-state result.json the same as a missing one (0 candidates
-    contributed). Letting the worker propagate the exception would mask
-    the failure mode in Cloud Batch logs without giving the orchestrator
-    a structured diagnostic.
+    Snapshot deserialization or parser-rejection surfaces in the
+    result.json's `parserRejection` field (NOT raised) — the orchestrator's
+    aggregation per §8.7 partial-failure tolerance treats this the same
+    as a worker error-state (0 candidates contributed).
+
+    **Amended at M7 C4 T2A.1**: seeds are derived locally from `master_seed`
+    + `K_approved` via `derive_K_seeds()`; the per-task `seeds.json` GCS
+    read is RETIRED (single-task pattern). Pool size defaults to K_approved
+    (production: 88).
     """
     snapshot_uri = _gcs_uri(bucket, run_id, "snapshot.json")
-    seeds_uri = _gcs_uri(bucket, run_id, "task-" + str(task_index), "seeds.json")
-    result_uri = _gcs_uri(bucket, run_id, "task-" + str(task_index), "result.json")
+    result_uri = _gcs_uri(bucket, run_id, "result.json")
 
-    # --- Load inputs ---------------------------------------------------
+    if pool_executor is None:
+        pool_executor = _default_pool_executor_factory(K_approved)
+
+    # --- Derive trajectory seeds locally (§12A.10) ---------------------
+    # Single source of truth shared with the local-CLI K-trajectory loop.
+    # Negative seeds are handled by derive_K_seeds via _UINT64_MASK per
+    # §12A.10; byte-identity holds for positive AND negative master seeds.
+    candidate_seeds = derive_K_seeds(master_seed, K_approved)
+
+    # --- Load input snapshot ------------------------------------------
     snapshot_dict = read_json(snapshot_uri)
-    seeds_dict = read_json(seeds_uri)
-
-    candidate_seeds = seeds_dict["seeds"]
-    master_seed = int(seeds_dict["masterSeed"])
-    # `attemptId` per the M7 C2 Task 2G concurrent-replay race fix
-    # (`docs/cloud_compute_contract.md` §8.7): orchestrator stamps an
-    # attemptId into seeds.json; worker echoes it back into result.json
-    # so the orchestrator can validate on read that result.json belongs
-    # to THIS attempt (not a stale prior attempt at the same runId
-    # prefix). Pre-T2G seeds.json files lacked this field; treat
-    # missing as a non-fatal None so the orchestrator's validation
-    # logic surfaces the mismatch rather than the worker raising on
-    # historical replays.
-    attempt_id = seeds_dict.get("attemptId")
-
-    if not isinstance(candidate_seeds, list) or not candidate_seeds:
-        raise ValueError(
-            "seeds.json[\"seeds\"] must be a non-empty list of ints; got "
-            + repr(candidate_seeds)
-        )
-    if len(candidate_seeds) > TRAJECTORIES_PER_TASK:
-        raise ValueError(
-            "seeds.json[\"seeds\"] has " + str(len(candidate_seeds))
-            + " entries; per-task cap is " + str(TRAJECTORIES_PER_TASK)
-            + " per docs/cloud_compute_contract.md §8.7 dense-pack invariant"
-        )
 
     # --- Parse snapshot -----------------------------------------------
     snapshot = _snapshot_from_dict(snapshot_dict)
@@ -303,8 +297,10 @@ def worker_main(
         # Parser rejected the snapshot. Worker can't run; emit a result
         # the orchestrator can aggregate (0 candidates contributed).
         result = _build_parser_failure_result(
-            run_id=run_id, task_index=task_index, master_seed=master_seed,
-            attempt_id=attempt_id, parser_issues=parser_result.issues,
+            run_id=run_id,
+            master_seed=master_seed,
+            K_approved=K_approved,
+            parser_issues=parser_result.issues,
         )
         write_json(result_uri, result)
         return result
@@ -325,7 +321,7 @@ def worker_main(
     ]
     per_trajectory = pool_executor(_run_one_trajectory, args_list)
 
-    # --- Aggregate per-task result -------------------------------------
+    # --- Aggregate result ----------------------------------------------
     candidates: list[dict] = []
     failed: list[dict] = []
     exceptions: list[dict] = []
@@ -363,21 +359,15 @@ def worker_main(
     result: dict[str, Any] = {
         "schemaVersion": _RESULT_SCHEMA_VERSION,
         "runId": run_id,
-        "taskIndex": task_index,
         "masterSeed": master_seed,
-        # Echo attemptId from seeds.json so orchestrator can validate
-        # this result.json belongs to its attempt (T2G concurrent-replay
-        # race fix per §8.7). Pre-T2G seeds.json without attemptId
-        # results in `None` here; orchestrator's validation surfaces the
-        # mismatch as "missing" per the standard partial-failure path.
-        "attemptId": attempt_id,
+        "kApproved": K_approved,
         "candidates": candidates,
         "failedTrajectories": failed,
         "aggregateAttempts": aggregate_attempts,
         "aggregateRejectionsByReason": aggregate_rejections,
     }
     # Only surface the exceptions block when non-empty so the common case
-    # (all 8 trajectories cleanly SUCCEEDED or SEED_FAILED) keeps the
+    # (all trajectories cleanly SUCCEEDED or SEED_FAILED) keeps the
     # result.json surface area minimal for orchestrator consumption.
     if exceptions:
         result["trajectoryExceptions"] = exceptions
@@ -387,8 +377,7 @@ def worker_main(
 
 
 def _build_parser_failure_result(
-    *, run_id: str, task_index: int, master_seed: int,
-    attempt_id, parser_issues,
+    *, run_id: str, master_seed: int, K_approved: int, parser_issues,
 ) -> dict:
     """Result-shaped envelope when the parser rejects the snapshot. The
     orchestrator's §8.7 aggregation treats this the same as a missing
@@ -397,9 +386,8 @@ def _build_parser_failure_result(
     return {
         "schemaVersion": _RESULT_SCHEMA_VERSION,
         "runId": run_id,
-        "taskIndex": task_index,
         "masterSeed": master_seed,
-        "attemptId": attempt_id,
+        "kApproved": K_approved,
         "candidates": [],
         "failedTrajectories": [],
         "aggregateAttempts": 0,
@@ -420,44 +408,57 @@ def _build_parser_failure_result(
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry: `python -m rostermonster_service.worker --run-id <runId>`.
-    `--task-index` defaults to the `BATCH_TASK_INDEX` env var Cloud Batch
-    sets per-task; explicit override is accepted for local maintainer
-    invocation. Returns POSIX-shell exit codes (0 on success; 2 on
-    worker-level failure)."""
+
+    Reads `RM_MASTER_SEED` + `RM_K_APPROVED` env vars (set by the
+    orchestrator via the Batch job spec's task environment). Local
+    maintainer invocation can override via CLI flags.
+
+    Returns POSIX-shell exit codes (0 on success; 2 on worker-level failure).
+    """
     parser = argparse.ArgumentParser(
-        description="Cloud Batch LAHC worker (M7 C2 Task 2D)"
+        description="Cloud Batch LAHC worker (M7 C4 T2A.1 single-VM)"
     )
     parser.add_argument(
         "--run-id", required=True,
         help="runEnvelope.runId per docs/selector_contract.md v2 §9; "
-             "MUST match the orchestrator-written snapshot/seeds key paths.",
+             "MUST match the orchestrator-written snapshot key path.",
     )
-    default_task_index = os.environ.get(_BATCH_TASK_INDEX_ENV)
+    default_master_seed = os.environ.get(_MASTER_SEED_ENV)
     parser.add_argument(
-        "--task-index", type=int,
-        default=int(default_task_index) if default_task_index is not None else None,
-        help="Per-task index in [0, taskCount). Defaults to "
-             + _BATCH_TASK_INDEX_ENV + " env var (Cloud Batch sets this).",
+        "--master-seed", type=int,
+        default=int(default_master_seed) if default_master_seed is not None else None,
+        help="§9 input #3 master seed. Defaults to "
+             + _MASTER_SEED_ENV + " env var (Batch task env).",
+    )
+    default_k = os.environ.get(_K_APPROVED_ENV)
+    parser.add_argument(
+        "--k-approved", type=int,
+        default=int(default_k) if default_k is not None else _DEFAULT_K_APPROVED,
+        help="K trajectories to run in Pool(K). Defaults to "
+             + _K_APPROVED_ENV + " env var; falls back to "
+             + str(_DEFAULT_K_APPROVED) + ".",
     )
     args = parser.parse_args(argv)
 
-    if args.task_index is None:
+    if args.master_seed is None:
         print(
-            "ERROR: --task-index required (or set " + _BATCH_TASK_INDEX_ENV + ")",
+            "ERROR: --master-seed required (or set " + _MASTER_SEED_ENV + ")",
             file=sys.stderr,
         )
         return 2
 
     bucket = os.environ.get(_BUCKET_ENV, _DEFAULT_BUCKET)
     log.info(
-        "Worker starting: run_id=%s task_index=%d bucket=%s",
-        args.run_id, args.task_index, bucket,
+        "Worker starting: run_id=%s master_seed=%d K_approved=%d bucket=%s",
+        args.run_id, args.master_seed, args.k_approved, bucket,
     )
 
     read_json, write_json = make_gcs_adapter(bucket)
     try:
         worker_main(
-            args.run_id, args.task_index,
+            args.run_id,
+            master_seed=args.master_seed,
+            K_approved=args.k_approved,
             read_json=read_json,
             write_json=write_json,
             bucket=bucket,
@@ -469,19 +470,13 @@ def main(argv: list[str] | None = None) -> int:
         # missing. If THIS write also fails (e.g., GCS unreachable), fall
         # through to non-zero exit and rely on Cloud Batch's per-task
         # state machinery.
-        error_uri = _gcs_uri(
-            bucket, args.run_id, "task-" + str(args.task_index), "result.json",
-        )
+        error_uri = _gcs_uri(bucket, args.run_id, "result.json")
         try:
             write_json(error_uri, {
                 "schemaVersion": _RESULT_SCHEMA_VERSION,
                 "runId": args.run_id,
-                "taskIndex": args.task_index,
-                # attemptId unknown at this layer (worker_main raised
-                # before reading seeds.json or after); orchestrator's
-                # validation treats null attemptId as a stale-result
-                # mismatch unless its expected attemptId is also null.
-                "attemptId": None,
+                "masterSeed": args.master_seed,
+                "kApproved": args.k_approved,
                 "candidates": [],
                 "failedTrajectories": [],
                 "aggregateAttempts": 0,
@@ -495,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
             log.exception("Failed to write worker-error result.json")
         return 2
 
-    log.info("Worker finished cleanly: run_id=%s task_index=%d", args.run_id, args.task_index)
+    log.info("Worker finished cleanly: run_id=%s", args.run_id)
     return 0
 
 
