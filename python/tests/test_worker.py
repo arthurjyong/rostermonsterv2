@@ -643,6 +643,515 @@ def test_default_pool_executor_factory_returns_callable() -> None:
     assert callable(factory)
 
 
+# --- Inline finalize step (M7 C4 T2A.2 PR-A) ----------------------------
+
+
+_OPERATOR_EMAIL = "operator@example.com"
+_CALLBACK_URL = "https://script.google.com/macros/s/AKfycbXFAKE/exec"
+_BATCH_JOB_NAME = "projects/p/locations/r/jobs/test-job-aaaa"
+
+
+def _capturing_http_post():
+    """Returns `(http_post_fn, captured)` — `captured` is a list of
+    `(url, body, timeout)` tuples, one per call. Returns HTTP 200 on
+    every call so the retry loop terminates immediately."""
+    captured: list[tuple[str, dict, float]] = []
+
+    def http_post(url: str, body: dict, timeout: float) -> int:
+        captured.append((url, body, timeout))
+        return 200
+
+    return http_post, captured
+
+
+def _fixed_id_token_fn(audience: str) -> str:
+    return "fake-id-token-for-" + audience
+
+
+def test_finalize_state_dispatch_OK_when_K_prime_positive(monkeypatch) -> None:
+    """K' > 0 → finalize POSTs a callback with state="OK", non-null
+    writebackEnvelope + non-null analyzerOutput per §10A.6."""
+    # Inject a stub `analyze` so the test doesn't pay analyzer's full cost
+    # but we still validate the OK callback shape end-to-end.
+    monkeypatch.setattr(
+        worker_mod, "analyze",
+        lambda *args, **kw: type("FakeOutput", (), {
+            "__dict__": {"fake": True},
+        })(),
+    )
+    monkeypatch.setattr(
+        worker_mod, "render_analyzer_output_json",
+        lambda output: '{"schemaVersion": 1, "topK": 5, "candidates": []}',
+    )
+
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+    http_post, captured = _capturing_http_post()
+
+    worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=2,
+        read_json=read_json,
+        write_json=write_json,
+        pool_executor=_stub_succeeded_executor,
+        bucket=_BUCKET,
+        attempt_id=_ATTEMPT_ID,
+        callback_url=_CALLBACK_URL,
+        operator_email=_OPERATOR_EMAIL,
+        submit_timestamp_ms_str="",  # vacuous self-check
+        batch_job_name=_BATCH_JOB_NAME,
+        http_post_fn=http_post,
+        id_token_fn=_fixed_id_token_fn,
+    )
+
+    assert len(captured) == 1, "exactly one callback POST on OK"
+    url, body, timeout = captured[0]
+    assert _CALLBACK_URL in url
+    assert "action=async-render-callback" in url
+    assert "runId=" + _RUN_ID in url
+    assert "attemptId=" + _ATTEMPT_ID in url
+    assert timeout == 30.0
+    # §10A.6 body shape
+    assert body["schemaVersion"] == 1
+    assert body["state"] == "OK"
+    assert body["operatorEmail"] == _OPERATOR_EMAIL
+    assert body["runId"] == _RUN_ID
+    assert body["attemptId"] == _ATTEMPT_ID
+    assert body["writebackEnvelope"] is not None
+    assert body["analyzerOutput"] is not None
+    assert body["error"] is None
+    assert body["diagnostics"]["kApproved"] == 2
+    assert body["diagnostics"]["kPrime"] == 2
+    assert body["diagnostics"]["droppedCount"] == 0
+    assert body["diagnostics"]["batchJobName"] == _BATCH_JOB_NAME
+    # idToken populated via id_token_fn
+    assert body["idToken"] == _fixed_id_token_fn(_CALLBACK_URL)
+
+
+def test_finalize_state_dispatch_UNSATISFIED_when_K_prime_zero(monkeypatch) -> None:
+    """K' == 0 routes via UNSATISFIED (NOT COMPUTE_ERROR) per §12A.8 +
+    §10A.6 finding 9 — analyzerOutput null, writebackEnvelope still
+    non-null (failure-branch envelope per §10.3)."""
+    # Force the pool to return all SEED_FAILED
+    def all_failed_executor(fn, args_iter):
+        return [
+            {
+                "status": "SEED_FAILED",
+                "candidateSeed": int(a[-1]),
+                "unfilledDemand": [
+                    {"dateKey": "2026-05-01", "slotType": "ICU", "unitIndex": 0},
+                ],
+                "placementAttempts": 1,
+                "rejectionsByReason": {},
+            }
+            for a in args_iter
+        ]
+
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+    http_post, captured = _capturing_http_post()
+
+    worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=2,
+        read_json=read_json,
+        write_json=write_json,
+        pool_executor=all_failed_executor,
+        bucket=_BUCKET,
+        attempt_id=_ATTEMPT_ID,
+        callback_url=_CALLBACK_URL,
+        operator_email=_OPERATOR_EMAIL,
+        submit_timestamp_ms_str="",
+        batch_job_name=_BATCH_JOB_NAME,
+        http_post_fn=http_post,
+        id_token_fn=_fixed_id_token_fn,
+    )
+
+    assert len(captured) == 1
+    _, body, _ = captured[0]
+    assert body["state"] == "UNSATISFIED", (
+        "K'==0 MUST route via UNSATISFIED, NOT COMPUTE_ERROR (§12A.8 + "
+        "Codex P2 round 5 finding 12)"
+    )
+    # writebackEnvelope still non-null (failure-branch per §10.3)
+    assert body["writebackEnvelope"] is not None
+    # analyzerOutput null on failure branch per §10A.6 finding 8
+    assert body["analyzerOutput"] is None
+    assert body["error"] is None
+    assert body["diagnostics"]["kApproved"] == 2
+    assert body["diagnostics"]["kPrime"] == 0
+    assert body["diagnostics"]["droppedCount"] == 2
+
+
+def test_finalize_self_check_trips_at_510s(monkeypatch) -> None:
+    """First action of finalize: compare elapsed since
+    RM_SUBMIT_TIMESTAMP_MS. If > 510_000ms, SKIP aggregation entirely
+    + POST a FINALIZE_TIMEOUT COMPUTE_ERROR per §8.7 sub-decision 7 +
+    Codex P2 round 12 fix. Wall budget: 510s self-check + 90s finalize
+    = 600s operator-facing cap; without this fix Pool finishing at
+    590s would blow total wall to ~650-680s."""
+    submit_ms = 1_700_000_000_000  # arbitrary epoch ms
+    # wall_time_fn returns 511s after submit (= 1ms over threshold)
+    elapsed_after_pool_seconds = (submit_ms + 511_000) / 1000
+
+    def fake_wall_time() -> float:
+        return elapsed_after_pool_seconds
+
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+    http_post, captured = _capturing_http_post()
+
+    worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=2,
+        read_json=read_json,
+        write_json=write_json,
+        pool_executor=_stub_succeeded_executor,
+        bucket=_BUCKET,
+        attempt_id=_ATTEMPT_ID,
+        callback_url=_CALLBACK_URL,
+        operator_email=_OPERATOR_EMAIL,
+        submit_timestamp_ms_str=str(submit_ms),
+        batch_job_name=_BATCH_JOB_NAME,
+        http_post_fn=http_post,
+        id_token_fn=_fixed_id_token_fn,
+        wall_time_fn=fake_wall_time,
+    )
+
+    assert len(captured) == 1
+    _, body, _ = captured[0]
+    assert body["state"] == "COMPUTE_ERROR"
+    assert body["error"]["code"] == "FINALIZE_TIMEOUT"
+    assert "510s" in body["error"]["message"] or "511" in body["error"]["message"]
+    # writebackEnvelope + analyzerOutput null on COMPUTE_ERROR per §10A.6
+    assert body["writebackEnvelope"] is None
+    assert body["analyzerOutput"] is None
+
+
+def test_finalize_self_check_passes_under_510s(monkeypatch) -> None:
+    """Elapsed < 510s → finalize runs normally, POSTs OK / UNSATISFIED.
+    Boundary case at 509s elapsed."""
+    monkeypatch.setattr(
+        worker_mod, "analyze",
+        lambda *args, **kw: type("FakeOutput", (), {})(),
+    )
+    monkeypatch.setattr(
+        worker_mod, "render_analyzer_output_json",
+        lambda output: '{"schemaVersion": 1}',
+    )
+
+    submit_ms = 1_700_000_000_000
+    # 509s elapsed — under the 510s threshold by 1s
+    def fake_wall_time() -> float:
+        return (submit_ms + 509_000) / 1000
+
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+    http_post, captured = _capturing_http_post()
+
+    worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=1,
+        read_json=read_json,
+        write_json=write_json,
+        pool_executor=_stub_succeeded_executor,
+        bucket=_BUCKET,
+        attempt_id=_ATTEMPT_ID,
+        callback_url=_CALLBACK_URL,
+        operator_email=_OPERATOR_EMAIL,
+        submit_timestamp_ms_str=str(submit_ms),
+        batch_job_name=_BATCH_JOB_NAME,
+        http_post_fn=http_post,
+        id_token_fn=_fixed_id_token_fn,
+        wall_time_fn=fake_wall_time,
+    )
+
+    assert len(captured) == 1
+    _, body, _ = captured[0]
+    assert body["state"] == "OK", (
+        "509s < 510s threshold should let finalize run normally"
+    )
+
+
+def test_finalize_skipped_when_callback_url_empty() -> None:
+    """Empty `callback_url` short-circuits the entire finalize POST —
+    test-path + maintainer `/compute-lahc-test` back-compat per D-0071
+    sub-decision 14."""
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+    http_post, captured = _capturing_http_post()
+
+    worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=1,
+        read_json=read_json,
+        write_json=write_json,
+        pool_executor=_stub_succeeded_executor,
+        bucket=_BUCKET,
+        callback_url="",  # SKIP finalize
+        http_post_fn=http_post,
+        id_token_fn=_fixed_id_token_fn,
+    )
+
+    assert captured == [], (
+        "empty callback_url MUST short-circuit the POST (test-path + "
+        "maintainer-test back-compat)"
+    )
+
+
+def test_finalize_skipped_on_parser_rejection(monkeypatch) -> None:
+    """Parser-rejected snapshots short-circuit worker_main with a
+    parser-rejection result.json BEFORE the finalize step. The finalize
+    step requires `snapshot_dict` to be parseable (the post-aggregation
+    helper re-parses) — running it on a rejected snapshot would raise."""
+    from rostermonster.parser import IssueSeverity, ParserResult, ValidationIssue
+
+    fake_issue = ValidationIssue(
+        severity=IssueSeverity.ERROR,
+        code="TEST_REJECT",
+        message="injected parser rejection",
+    )
+    monkeypatch.setattr(
+        worker_mod, "parse",
+        lambda *args, **kw: ParserResult.non_consumable(issues=(fake_issue,)),
+    )
+
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+    http_post, captured = _capturing_http_post()
+
+    result = worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=1,
+        read_json=read_json,
+        write_json=write_json,
+        pool_executor=_stub_succeeded_executor,
+        bucket=_BUCKET,
+        callback_url=_CALLBACK_URL,
+        operator_email=_OPERATOR_EMAIL,
+        submit_timestamp_ms_str="",
+        http_post_fn=http_post,
+        id_token_fn=_fixed_id_token_fn,
+    )
+
+    # Parser-rejected result.json still written
+    assert "parserRejection" in result
+    # But finalize step did NOT run (no callback POST)
+    assert captured == [], (
+        "parser-rejected snapshot MUST short-circuit BEFORE finalize POST"
+    )
+
+
+def test_callback_post_retries_on_5xx(monkeypatch) -> None:
+    """§10A.7: 5xx response → retry up to 3 times with 2/4/8s backoff.
+    `time.sleep` patched so retries don't actually wait."""
+    monkeypatch.setattr(
+        worker_mod, "analyze",
+        lambda *args, **kw: type("FakeOutput", (), {})(),
+    )
+    monkeypatch.setattr(
+        worker_mod, "render_analyzer_output_json",
+        lambda output: '{"schemaVersion": 1}',
+    )
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
+
+    call_count = {"n": 0}
+
+    def flaky_http_post(url: str, body: dict, timeout: float) -> int:
+        call_count["n"] += 1
+        # First 2 calls 503, 3rd succeeds
+        if call_count["n"] <= 2:
+            return 503
+        return 200
+
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+
+    worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=1,
+        read_json=read_json,
+        write_json=write_json,
+        pool_executor=_stub_succeeded_executor,
+        bucket=_BUCKET,
+        callback_url=_CALLBACK_URL,
+        operator_email=_OPERATOR_EMAIL,
+        submit_timestamp_ms_str="",
+        http_post_fn=flaky_http_post,
+        id_token_fn=_fixed_id_token_fn,
+    )
+
+    assert call_count["n"] == 3, (
+        "5xx → retry: expected 2 failures + 1 success; got "
+        + str(call_count["n"]) + " total calls"
+    )
+
+
+def test_callback_post_terminal_on_4xx(monkeypatch) -> None:
+    """§10A.7: 4xx response → terminal, no retry. The finalize step
+    surfaces the error in Cloud Logging + exits cleanly without
+    raising — operator falls into FW-0039 silent-outcome gap."""
+    monkeypatch.setattr(
+        worker_mod, "analyze",
+        lambda *args, **kw: type("FakeOutput", (), {})(),
+    )
+    monkeypatch.setattr(
+        worker_mod, "render_analyzer_output_json",
+        lambda output: '{"schemaVersion": 1}',
+    )
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
+
+    call_count = {"n": 0}
+
+    def http_post_401(url: str, body: dict, timeout: float) -> int:
+        call_count["n"] += 1
+        return 401
+
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+
+    # Doesn't raise — finalize MUST NOT raise
+    worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=1,
+        read_json=read_json,
+        write_json=write_json,
+        pool_executor=_stub_succeeded_executor,
+        bucket=_BUCKET,
+        callback_url=_CALLBACK_URL,
+        operator_email=_OPERATOR_EMAIL,
+        submit_timestamp_ms_str="",
+        http_post_fn=http_post_401,
+        id_token_fn=_fixed_id_token_fn,
+    )
+
+    assert call_count["n"] == 1, (
+        "4xx → terminal, no retry per §10A.7"
+    )
+
+
+def test_callback_post_retries_exhausted_on_persistent_5xx(monkeypatch) -> None:
+    """§10A.7: 5xx after retry exhaustion (3 retries = 4 attempts
+    total) → terminal, logged, no raise."""
+    monkeypatch.setattr(
+        worker_mod, "analyze",
+        lambda *args, **kw: type("FakeOutput", (), {})(),
+    )
+    monkeypatch.setattr(
+        worker_mod, "render_analyzer_output_json",
+        lambda output: '{"schemaVersion": 1}',
+    )
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
+
+    call_count = {"n": 0}
+
+    def always_503(url: str, body: dict, timeout: float) -> int:
+        call_count["n"] += 1
+        return 503
+
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+
+    worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=1,
+        read_json=read_json,
+        write_json=write_json,
+        pool_executor=_stub_succeeded_executor,
+        bucket=_BUCKET,
+        callback_url=_CALLBACK_URL,
+        operator_email=_OPERATOR_EMAIL,
+        submit_timestamp_ms_str="",
+        http_post_fn=always_503,
+        id_token_fn=_fixed_id_token_fn,
+    )
+
+    assert call_count["n"] == 4, (
+        "initial + 3 retries = 4 total attempts; got " + str(call_count["n"])
+    )
+
+
+def test_callback_post_treats_transport_exception_as_retryable(monkeypatch) -> None:
+    """§10A.7: transport / connection errors (e.g., DNS, TCP RST, TLS
+    handshake) raise from `http_post_fn`; treated the same as 5xx —
+    retried with exponential backoff."""
+    monkeypatch.setattr(
+        worker_mod, "analyze",
+        lambda *args, **kw: type("FakeOutput", (), {})(),
+    )
+    monkeypatch.setattr(
+        worker_mod, "render_analyzer_output_json",
+        lambda output: '{"schemaVersion": 1}',
+    )
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
+
+    call_count = {"n": 0}
+
+    def flaky_transport(url: str, body: dict, timeout: float) -> int:
+        call_count["n"] += 1
+        if call_count["n"] <= 2:
+            raise ConnectionError("simulated TCP RST")
+        return 200
+
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+
+    worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=1,
+        read_json=read_json,
+        write_json=write_json,
+        pool_executor=_stub_succeeded_executor,
+        bucket=_BUCKET,
+        callback_url=_CALLBACK_URL,
+        operator_email=_OPERATOR_EMAIL,
+        submit_timestamp_ms_str="",
+        http_post_fn=flaky_transport,
+        id_token_fn=_fixed_id_token_fn,
+    )
+
+    assert call_count["n"] == 3, (
+        "transport exception MUST be treated as 5xx-retryable"
+    )
+
+
+def test_finalize_compute_error_on_analyzer_exception(monkeypatch) -> None:
+    """§10A.6 finding 9: an exception raised inside the analyzer step
+    MUST surface as COMPUTE_ERROR / ANALYZER_EXCEPTION callback — not
+    propagate as a Python exception out of the finalize step (which
+    would silently drop the operator into FW-0039)."""
+    def raising_analyze(*args, **kw):
+        raise RuntimeError("simulated analyzer failure")
+
+    monkeypatch.setattr(worker_mod, "analyze", raising_analyze)
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
+
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+    http_post, captured = _capturing_http_post()
+
+    # MUST NOT raise — finalize discipline is best-effort
+    worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=1,
+        read_json=read_json,
+        write_json=write_json,
+        pool_executor=_stub_succeeded_executor,
+        bucket=_BUCKET,
+        callback_url=_CALLBACK_URL,
+        operator_email=_OPERATOR_EMAIL,
+        submit_timestamp_ms_str="",
+        http_post_fn=http_post,
+        id_token_fn=_fixed_id_token_fn,
+    )
+
+    assert len(captured) == 1
+    _, body, _ = captured[0]
+    assert body["state"] == "COMPUTE_ERROR"
+    assert body["error"]["code"] == "ANALYZER_EXCEPTION"
+    assert "simulated analyzer failure" in body["error"]["message"]
+
+
 # --- CLI dispatch --------------------------------------------------------
 
 
