@@ -33,6 +33,7 @@ from this module.
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 from typing import Any
 
 from rostermonster.domain import AssignmentUnit, IssueSeverity, ValidationIssue
@@ -247,10 +248,23 @@ def build_post_aggregation_envelope(
             ),
             diagnostics=diagnostics,
         )
+        # FULL required by analyzer admission (analysis_contract §9.1).
+        # Path keyed on run_envelope.runId (== md.snapshotId, matching
+        # the local-CLI pipeline._build_run_envelope) so the path
+        # string baked into writebackEnvelope is byte-identical with
+        # the local path's. Codex P2 round 2 on PR #163: the
+        # orchestrator's run_id kwarg uses derive_run_id(snapshot_id,
+        # master_seed) which differs from md.snapshotId, so keying on
+        # run_id would re-break byte-identity. Use /tmp explicitly
+        # (not tempfile.gettempdir, which is /var/folders/... on
+        # macOS) so the audit's local-vs-cloud comparison agrees.
+        sidecar_dir = Path("/tmp") / "rm-lahc-sidecars" / run_envelope.runId
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
         envelope = select(
             scored,
-            retentionMode=RetentionMode.BEST_ONLY,
+            retentionMode=RetentionMode.FULL,
             runEnvelope=run_envelope,
+            sidecarTargetDir=sidecar_dir,
         )
     else:
         # FAILURE branch (K' == 0) — synthesize an UnsatisfiedResult
@@ -260,6 +274,12 @@ def build_post_aggregation_envelope(
         unsatisfied = build_unsatisfied_from_aggregation(
             agg=agg, diagnostics=diagnostics, master_seed=master_seed,
         )
+        # Failure branch: match local-CLI's BEST_ONLY (pipeline.
+        # run_pipeline forces BEST_ONLY for UnsatisfiedResult before
+        # calling select). The analyzer doesn't run here, so the
+        # success-path FULL requirement doesn't apply. Codex P2 round
+        # 3 on PR #163: leaving FULL here broke §13 byte-identity on
+        # the K'==0 branch.
         envelope = select(
             unsatisfied,
             retentionMode=RetentionMode.BEST_ONLY,
