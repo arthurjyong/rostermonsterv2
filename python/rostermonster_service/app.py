@@ -107,7 +107,10 @@ _LAHC_DEFAULT_MACHINE_TYPE = "c3-highcpu-88"
 # we deploy today per `docs/cloud_compute_contract.md` §8.7). cpuMilli
 # claims all vCPUs; memoryMib leaves OS/agent headroom (~10%) so Cloud
 # Batch doesn't reject the job spec at submit time. M7 baseline lock
-# for c3-highcpu-88 = 160000 MiB (180 GiB total, 16 GiB headroom).
+# for c3-highcpu-88 = 160000 MiB (180 GiB total, 16 GiB headroom). Per
+# Google's c3-highcpu spec the family tops out at -176; -192 only
+# exists as `c3-highcpu-192-metal` (bare metal) — listing it here
+# would let admission pass + Cloud Batch reject at submit time.
 # {machine_type: (vcpu_count, cpu_milli, memory_mib)}
 _C3_HIGHCPU_TOPOLOGIES: dict[str, tuple[int, int, int]] = {
     "c3-highcpu-4":   (4,   4_000,   7_000),
@@ -116,7 +119,6 @@ _C3_HIGHCPU_TOPOLOGIES: dict[str, tuple[int, int, int]] = {
     "c3-highcpu-44":  (44,  44_000,  80_000),
     "c3-highcpu-88":  (88,  88_000, 160_000),  # M7 baseline lock
     "c3-highcpu-176": (176, 176_000, 320_000),
-    "c3-highcpu-192": (192, 192_000, 352_000),
 }
 
 
