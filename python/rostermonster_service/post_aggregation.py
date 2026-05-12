@@ -249,13 +249,16 @@ def build_post_aggregation_envelope(
             diagnostics=diagnostics,
         )
         # FULL required by analyzer admission (analysis_contract §9.1).
-        # Path keyed on run_id (not tempfile.mkdtemp) so the path string
-        # baked into writebackEnvelope is deterministic for the same
-        # input + seed — preserves the §13 byte-identity contract. Use
-        # /tmp explicitly (not tempfile.gettempdir(), which returns
-        # /var/folders/... on macOS) so the audit's local-vs-cloud
-        # comparison agrees.
-        sidecar_dir = Path("/tmp") / "rm-lahc-sidecars" / run_id
+        # Path keyed on run_envelope.runId (== md.snapshotId, matching
+        # the local-CLI pipeline._build_run_envelope) so the path
+        # string baked into writebackEnvelope is byte-identical with
+        # the local path's. Codex P2 round 2 on PR #163: the
+        # orchestrator's run_id kwarg uses derive_run_id(snapshot_id,
+        # master_seed) which differs from md.snapshotId, so keying on
+        # run_id would re-break byte-identity. Use /tmp explicitly
+        # (not tempfile.gettempdir, which is /var/folders/... on
+        # macOS) so the audit's local-vs-cloud comparison agrees.
+        sidecar_dir = Path("/tmp") / "rm-lahc-sidecars" / run_envelope.runId
         sidecar_dir.mkdir(parents=True, exist_ok=True)
         envelope = select(
             scored,
