@@ -312,25 +312,43 @@ def _compute_endpoint() -> Response:
     optional_block = raw.get("optionalConfig")
     if isinstance(optional_block, dict) and "solverStrategy" in optional_block:
         solver_strategy_raw = optional_block["solverStrategy"]
-        if solver_strategy_raw is None or solver_strategy_raw == "":
-            solver_strategy = ""
-        elif not isinstance(solver_strategy_raw, str):
+        # Explicit null / empty-string is a client defect — the contract
+        # convention is "omit the field to default", not "send null".
+        # Codex P2 round 2 finding on PR #157 commit f0c2d2ac82 — pre-
+        # fix treated explicit null/"" as omitted + silently routed
+        # SRB, which would mask a misconfigured bound-shim payload.
+        if solver_strategy_raw is None:
+            return _input_error(
+                "INVALID_SOLVER_STRATEGY",
+                "`optionalConfig.solverStrategy` is explicitly null. Omit "
+                "the field to default to SEEDED_RANDOM_BLIND, or pass a "
+                "valid enum value (" + ", ".join(sorted(_VALID_SOLVER_STRATEGIES))
+                + ").",
+            )
+        if not isinstance(solver_strategy_raw, str):
             return _input_error(
                 "INVALID_SOLVER_STRATEGY",
                 "`optionalConfig.solverStrategy` must be a string when "
                 "present per `docs/cloud_compute_contract.md` §9.3; got "
                 + type(solver_strategy_raw).__name__,
             )
-        else:
-            solver_strategy = solver_strategy_raw.strip().upper()
-            if solver_strategy not in _VALID_SOLVER_STRATEGIES:
-                return _input_error(
-                    "INVALID_SOLVER_STRATEGY",
-                    "`optionalConfig.solverStrategy=" + repr(solver_strategy_raw)
-                    + "` is not a known strategy. Valid values per "
-                    "`docs/solver_contract.md` §11.2: "
-                    + ", ".join(sorted(_VALID_SOLVER_STRATEGIES)) + ".",
-                )
+        solver_strategy = solver_strategy_raw.strip().upper()
+        if solver_strategy == "":
+            return _input_error(
+                "INVALID_SOLVER_STRATEGY",
+                "`optionalConfig.solverStrategy` is empty. Omit the "
+                "field to default to SEEDED_RANDOM_BLIND, or pass a "
+                "valid enum value (" + ", ".join(sorted(_VALID_SOLVER_STRATEGIES))
+                + ").",
+            )
+        if solver_strategy not in _VALID_SOLVER_STRATEGIES:
+            return _input_error(
+                "INVALID_SOLVER_STRATEGY",
+                "`optionalConfig.solverStrategy=" + repr(solver_strategy_raw)
+                + "` is not a known strategy. Valid values per "
+                "`docs/solver_contract.md` §11.2: "
+                + ", ".join(sorted(_VALID_SOLVER_STRATEGIES)) + ".",
+            )
     else:
         solver_strategy = ""
     if solver_strategy == "LAHC":
@@ -585,6 +603,34 @@ def _compute_lahc_async_endpoint(
         return _input_error(
             "INVALID_OPTIONAL_CONFIG",
             "`optionalConfig` must be a JSON object when present.",
+        )
+    # `optionalConfig.lahcParams` is documented in §9.3 as a maintainer
+    # override of the FW-0037 elbow tuple defaults, but the worker
+    # currently hardcodes the production tuple + doesn't read an
+    # override env var. Reject explicit non-empty overrides with a
+    # clear "deferred" message rather than silently ignoring the field
+    # — silent-ignore would let a maintainer think they're running a
+    # parameter sweep when the worker is actually using FW-0037 the
+    # whole time. Codex P2 round 2 finding on PR #157 commit
+    # f0c2d2ac82. Honor-the-override is queued as a focused follow-up
+    # (need new env vars on the Batch task + corresponding worker.py
+    # reads). Production operator path always uses defaults so no
+    # operator-facing regression from this restriction.
+    lahc_params_raw = optional_block.get("lahcParams")
+    if (lahc_params_raw is not None
+            and lahc_params_raw != {}
+            and lahc_params_raw != ""):
+        return _input_error(
+            "LAHC_PARAMS_OVERRIDE_NOT_SUPPORTED",
+            "`optionalConfig.lahcParams` maintainer override is "
+            "documented in `docs/cloud_compute_contract.md` §9.3 but "
+            "is NOT plumbed through to the M7 C4 worker yet — the "
+            "worker hardcodes the FW-0037 elbow tuple (L=50, "
+            "idleThreshold=3500, swapProbability=0.5) per §8.7. "
+            "Honor-the-override is queued as a focused follow-up; "
+            "until then, omit this field (the documented production "
+            "defaults are the M7 elbow tuple). Got "
+            + repr(lahc_params_raw) + ".",
         )
     try:
         master_seed = _coerce_optional_int(

@@ -650,6 +650,116 @@ def test_compute_lahc_async_rejects_non_positive_K_approved_env(monkeypatch) -> 
             _t2d_env_teardown(saved)
 
 
+def test_compute_lahc_async_rejects_explicit_null_solver_strategy(monkeypatch) -> None:
+    """Codex P2 round 2 finding on PR #157 commit f0c2d2ac82: pre-fix,
+    `solverStrategy: null` (explicit null) was treated as omitted +
+    silently routed to SRB. Tightening: explicit null surfaces as
+    INPUT_ERROR/INVALID_SOLVER_STRATEGY so a misconfigured bound-shim
+    payload doesn't mask the intent."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": None},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "INVALID_SOLVER_STRATEGY"
+        assert "explicitly null" in data["error"]["message"].lower() or (
+            "null" in data["error"]["message"].lower()
+        )
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_empty_solver_strategy(monkeypatch) -> None:
+    """Explicit empty-string `solverStrategy` is a client defect —
+    treat the same as explicit null per Codex P2 round 2 finding on
+    PR #157 commit f0c2d2ac82."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "   "},  # whitespace-only
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "INVALID_SOLVER_STRATEGY"
+        assert "empty" in data["error"]["message"].lower()
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_lahc_params_override(monkeypatch) -> None:
+    """Codex P2 round 2 finding on PR #157 commit f0c2d2ac82:
+    `optionalConfig.lahcParams` is documented in §9.3 as a maintainer
+    override but the worker currently hardcodes the FW-0037 tuple +
+    doesn't read an override env var. Silent-ignore would let a
+    maintainer think they're running a parameter sweep when the
+    worker is using FW-0037 the whole time — reject explicitly with
+    INPUT_ERROR/LAHC_PARAMS_OVERRIDE_NOT_SUPPORTED instead.
+
+    Operator-facing path always omits lahcParams (defaults are the
+    production tuple), so this restriction has no operator regression."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {
+                "solverStrategy": "LAHC",
+                "lahcParams": {
+                    "historyListLength": 100,
+                    "idleThreshold": 1000,
+                    "swapProbability": 0.3,
+                },
+            },
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "LAHC_PARAMS_OVERRIDE_NOT_SUPPORTED"
+        assert "FW-0037" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_accepts_omitted_lahc_params(monkeypatch) -> None:
+    """Omitting lahcParams entirely keeps the LAHC happy path working
+    — the worker uses the hardcoded FW-0037 defaults per §8.7. Counter-
+    test to `..._rejects_lahc_params_override` to lock the boundary."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED", (
+            "omitting lahcParams MUST still let the LAHC path go through"
+        )
+        assert len(inmem_client.submitted_jobs) == 1
+    finally:
+        _t2d_env_teardown(saved)
+
+
 def test_compute_srb_path_stays_synchronous() -> None:
     """Back-compat: omitting `solverStrategy` (or passing
     "SEEDED_RANDOM_BLIND") keeps the existing sync /compute path —
