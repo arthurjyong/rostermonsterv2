@@ -33,6 +33,8 @@ from this module.
 from __future__ import annotations
 
 import dataclasses
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from rostermonster.domain import AssignmentUnit, IssueSeverity, ValidationIssue
@@ -247,10 +249,14 @@ def build_post_aggregation_envelope(
             ),
             diagnostics=diagnostics,
         )
+        # FULL required by analyzer admission (analysis_contract §9.1);
+        # sidecar files discarded with the VM, not read downstream.
+        sidecar_dir = Path(tempfile.mkdtemp(prefix="rm-lahc-"))
         envelope = select(
             scored,
-            retentionMode=RetentionMode.BEST_ONLY,
+            retentionMode=RetentionMode.FULL,
             runEnvelope=run_envelope,
+            sidecarTargetDir=sidecar_dir,
         )
     else:
         # FAILURE branch (K' == 0) — synthesize an UnsatisfiedResult
@@ -260,9 +266,11 @@ def build_post_aggregation_envelope(
         unsatisfied = build_unsatisfied_from_aggregation(
             agg=agg, diagnostics=diagnostics, master_seed=master_seed,
         )
+        # Failure branch skips sidecar emission regardless of retention
+        # mode (selector_contract §15).
         envelope = select(
             unsatisfied,
-            retentionMode=RetentionMode.BEST_ONLY,
+            retentionMode=RetentionMode.FULL,
             runEnvelope=run_envelope,
         )
 

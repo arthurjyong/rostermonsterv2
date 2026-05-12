@@ -213,7 +213,7 @@ def _run_local_cli_path(*, snapshot_dict: dict, master_seed: int,
         snapshot, template,
         seed=master_seed,
         max_candidates=K,
-        retention_mode=RetentionMode.BEST_ONLY,
+        retention_mode=RetentionMode.FULL,  # match cloud-side
         strategy_id=STRATEGY_LAHC,
         lahc_params=_FW_0037_LAHC_PARAMS,
     )
