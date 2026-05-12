@@ -653,13 +653,16 @@ _BATCH_JOB_NAME = "projects/p/locations/r/jobs/test-job-aaaa"
 
 def _capturing_http_post():
     """Returns `(http_post_fn, captured)` — `captured` is a list of
-    `(url, body, timeout)` tuples, one per call. Returns HTTP 200 on
-    every call so the retry loop terminates immediately."""
+    `(url, body, timeout)` tuples, one per call. Returns
+    `(200, {"state": "OK"})` on every call so the retry loop
+    terminates immediately + the body-state inspection treats the
+    response as a successful dispatch (NOT a terminal rejection per
+    `_CALLBACK_TERMINAL_REJECTION_STATES`)."""
     captured: list[tuple[str, dict, float]] = []
 
-    def http_post(url: str, body: dict, timeout: float) -> int:
+    def http_post(url: str, body: dict, timeout: float):
         captured.append((url, body, timeout))
-        return 200
+        return (200, {"state": "OK"})
 
     return http_post, captured
 
@@ -1097,12 +1100,12 @@ def test_callback_post_retries_on_5xx(monkeypatch) -> None:
 
     call_count = {"n": 0}
 
-    def flaky_http_post(url: str, body: dict, timeout: float) -> int:
+    def flaky_http_post(url: str, body: dict, timeout: float):
         call_count["n"] += 1
         # First 2 calls 503, 3rd succeeds
         if call_count["n"] <= 2:
-            return 503
-        return 200
+            return (503, None)
+        return (200, {"state": "OK"})
 
     read_json, write_json, _ = _make_inmem_gcs(_build_storage())
 
@@ -1143,9 +1146,9 @@ def test_callback_post_terminal_on_4xx(monkeypatch) -> None:
 
     call_count = {"n": 0}
 
-    def http_post_401(url: str, body: dict, timeout: float) -> int:
+    def http_post_401(url: str, body: dict, timeout: float):
         call_count["n"] += 1
-        return 401
+        return (401, None)
 
     read_json, write_json, _ = _make_inmem_gcs(_build_storage())
 
@@ -1185,9 +1188,9 @@ def test_callback_post_retries_exhausted_on_persistent_5xx(monkeypatch) -> None:
 
     call_count = {"n": 0}
 
-    def always_503(url: str, body: dict, timeout: float) -> int:
+    def always_503(url: str, body: dict, timeout: float):
         call_count["n"] += 1
-        return 503
+        return (503, None)
 
     read_json, write_json, _ = _make_inmem_gcs(_build_storage())
 
@@ -1227,11 +1230,11 @@ def test_callback_post_treats_transport_exception_as_retryable(monkeypatch) -> N
 
     call_count = {"n": 0}
 
-    def flaky_transport(url: str, body: dict, timeout: float) -> int:
+    def flaky_transport(url: str, body: dict, timeout: float):
         call_count["n"] += 1
         if call_count["n"] <= 2:
             raise ConnectionError("simulated TCP RST")
-        return 200
+        return (200, {"state": "OK"})
 
     read_json, write_json, _ = _make_inmem_gcs(_build_storage())
 
@@ -1252,6 +1255,105 @@ def test_callback_post_treats_transport_exception_as_retryable(monkeypatch) -> N
 
     assert call_count["n"] == 3, (
         "transport exception MUST be treated as 5xx-retryable"
+    )
+
+
+def test_callback_post_200_with_terminal_rejection_body_no_retry(monkeypatch) -> None:
+    """Codex P2 finding on PR #154 commit b5b3c970be: Apps Script Web
+    App handlers can only emit HTTP 200 (or 500 via throw), so the
+    launcher signals AUTH_REJECTED / INVALID_CALLBACK /
+    INVALID_DEPLOYMENT via the 200 response body's `state` field. The
+    finalize step's retry loop MUST inspect the body + treat known
+    rejection states as terminal — pre-fix the retry loop saw 200 and
+    logged the rejection as a successful POST, hiding the failure in
+    Cloud Logging."""
+    monkeypatch.setattr(
+        worker_mod, "analyze",
+        lambda *args, **kw: type("FakeOutput", (), {})(),
+    )
+    monkeypatch.setattr(
+        worker_mod, "render_analyzer_output_json",
+        lambda output: '{"schemaVersion": 1}',
+    )
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
+
+    call_count = {"n": 0}
+
+    def http_post_200_auth_rejected(url: str, body: dict, timeout: float):
+        call_count["n"] += 1
+        return (200, {"state": "AUTH_REJECTED", "code": "AUD_MISMATCH"})
+
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+
+    # Doesn't raise — finalize MUST NOT raise
+    worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=1,
+        read_json=read_json,
+        write_json=write_json,
+        pool_executor=_stub_succeeded_executor,
+        bucket=_BUCKET,
+        callback_url=_CALLBACK_URL,
+        operator_email=_OPERATOR_EMAIL,
+        submit_timestamp_ms_str="",
+        http_post_fn=http_post_200_auth_rejected,
+        id_token_fn=_fixed_id_token_fn,
+    )
+
+    assert call_count["n"] == 1, (
+        "200 + AUTH_REJECTED body MUST be terminal (no retry) — pre-"
+        "fix the retry loop saw 200 and skipped retry without "
+        "surfacing the rejection"
+    )
+
+
+def test_callback_post_200_with_unknown_body_state_treated_as_success(monkeypatch) -> None:
+    """When the response body's `state` is unknown (not in
+    `_CALLBACK_TERMINAL_REJECTION_STATES`), the retry loop MUST fall
+    through to "success" — preserves the conservative discipline of
+    treating launcher-internal states (OK / OK_WRITEBACK_FAILED /
+    etc.) as completed dispatches, even if the launcher reported an
+    intermediate failure. The launcher's failure email goes out
+    inside the handler; the finalizer doesn't need to retry."""
+    monkeypatch.setattr(
+        worker_mod, "analyze",
+        lambda *args, **kw: type("FakeOutput", (), {})(),
+    )
+    monkeypatch.setattr(
+        worker_mod, "render_analyzer_output_json",
+        lambda output: '{"schemaVersion": 1}',
+    )
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
+
+    call_count = {"n": 0}
+
+    def http_post_200_writeback_failed(url: str, body: dict, timeout: float):
+        # Launcher dispatched but writeback returned non-SUCCESS;
+        # failure email already went out from the handler.
+        call_count["n"] += 1
+        return (200, {"state": "OK_WRITEBACK_FAILED",
+                       "runId": "test-runid"})
+
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+
+    worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=1,
+        read_json=read_json,
+        write_json=write_json,
+        pool_executor=_stub_succeeded_executor,
+        bucket=_BUCKET,
+        callback_url=_CALLBACK_URL,
+        operator_email=_OPERATOR_EMAIL,
+        submit_timestamp_ms_str="",
+        http_post_fn=http_post_200_writeback_failed,
+        id_token_fn=_fixed_id_token_fn,
+    )
+
+    assert call_count["n"] == 1, (
+        "200 + non-terminal-rejection state → success, no retry"
     )
 
 
