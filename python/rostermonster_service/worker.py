@@ -688,10 +688,65 @@ def _inline_finalize(
             )
             return
     else:
-        # K' == 0 routes via UNSATISFIED per §12A.8 (NOT COMPUTE_ERROR)
-        # — the snapshot's request set is unfeasible under the rule
-        # engine, NOT a compute defect. The wrapper carries the
-        # failure-branch envelope built by
+        # K' == 0 with EXCEPTIONS surfaces as COMPUTE_ERROR — those
+        # are implementation defects (Pool child raised, caught by
+        # `_run_one_trajectory`'s try/except), NOT a feasibility
+        # outcome. UNSATISFIED reserved for K'==0 reached cleanly via
+        # SEED_FAILED per `docs/solver_contract.md` §12A.8 (snapshot's
+        # request set unfeasible under the rule engine). Codex P2
+        # finding on PR #151 commit 6fb3e60d0b — pre-fix all-EXCEPTION
+        # runs sent a misleading "no allocation possible" email with
+        # no exception details to the operator.
+        trajectory_exceptions = agg_result.get("trajectoryExceptions", [])
+        if trajectory_exceptions:
+            log.warning(
+                "K'==0 with %d trajectoryException(s); routing via "
+                "COMPUTE_ERROR (NOT UNSATISFIED — implementation defect, "
+                "not feasibility outcome)",
+                len(trajectory_exceptions),
+            )
+            wall_time_seconds = (
+                (int(wall_time_fn() * 1000) - submit_ms) / 1000.0
+                if submit_ms > 0
+                else wall_time_fn() - finalize_started_at
+            )
+            # Include first exception's type + message in the error
+            # message so the operator's failure email carries
+            # actionable context per §10A.7's COMPUTE_ERROR body.
+            first_exc = trajectory_exceptions[0]
+            exc_type = first_exc.get("exceptionType", "<unknown>")
+            exc_msg = first_exc.get("exceptionMessage", "")
+            error_message = (
+                "All " + str(len(trajectory_exceptions))
+                + " trajectories raised exceptions; no candidates "
+                "produced. First exception: "
+                + exc_type + ": " + exc_msg
+            )
+            body = _build_compute_error_callback_body(
+                run_id=run_id,
+                attempt_id=attempt_id,
+                operator_email=operator_email,
+                K_approved=K_approved,
+                k_prime=0,
+                wall_time_seconds=wall_time_seconds,
+                batch_job_name=batch_job_name,
+                error_code="TRAJECTORY_EXCEPTIONS_ALL",
+                error_message=error_message,
+            )
+            _post_callback_with_retry(
+                callback_url=callback_url,
+                body=body,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                id_token_fn=id_token,
+                http_post_fn=http_post,
+            )
+            return
+
+        # K'==0 reached cleanly (all SEED_FAILED, no exceptions) →
+        # UNSATISFIED per §12A.8 — the snapshot's request set is
+        # unfeasible under the rule engine, NOT a compute defect. The
+        # wrapper carries the failure-branch envelope built by
         # `build_unsatisfied_from_aggregation` inside
         # `build_post_aggregation_envelope`.
         state = "UNSATISFIED"

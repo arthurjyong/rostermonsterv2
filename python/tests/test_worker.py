@@ -783,6 +783,64 @@ def test_finalize_state_dispatch_UNSATISFIED_when_K_prime_zero(monkeypatch) -> N
     assert body["diagnostics"]["droppedCount"] == 2
 
 
+def test_finalize_compute_error_when_K_prime_zero_via_exceptions(monkeypatch) -> None:
+    """Codex P2 finding on PR #151 commit 6fb3e60d0b: K'==0 reached via
+    trajectoryExceptions (ALL Pool children raised) MUST route via
+    COMPUTE_ERROR, NOT UNSATISFIED. Implementation defect vs.
+    feasibility outcome per `docs/solver_contract.md` §12A.8 +
+    §10A.6 finding 9 — pre-fix the operator got a misleading "no
+    allocation possible" email with no exception details."""
+    def all_exception_executor(fn, args_iter):
+        return [
+            {
+                "status": "EXCEPTION",
+                "candidateSeed": int(a[-1]),
+                "exceptionType": "RuntimeError",
+                "exceptionMessage": "simulated child crash",
+                "placementAttempts": 0,
+                "rejectionsByReason": {},
+            }
+            for a in args_iter
+        ]
+
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
+
+    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
+    http_post, captured = _capturing_http_post()
+
+    worker_mod.worker_main(
+        _RUN_ID,
+        master_seed=12345,
+        K_approved=2,
+        read_json=read_json,
+        write_json=write_json,
+        pool_executor=all_exception_executor,
+        bucket=_BUCKET,
+        attempt_id=_ATTEMPT_ID,
+        callback_url=_CALLBACK_URL,
+        operator_email=_OPERATOR_EMAIL,
+        submit_timestamp_ms_str="",
+        batch_job_name=_BATCH_JOB_NAME,
+        http_post_fn=http_post,
+        id_token_fn=_fixed_id_token_fn,
+    )
+
+    assert len(captured) == 1
+    _, body, _ = captured[0]
+    assert body["state"] == "COMPUTE_ERROR", (
+        "K'==0 with trajectoryExceptions MUST route via COMPUTE_ERROR, "
+        "NOT UNSATISFIED (Codex P2 finding regression on PR #151)"
+    )
+    assert body["error"]["code"] == "TRAJECTORY_EXCEPTIONS_ALL"
+    assert "RuntimeError" in body["error"]["message"]
+    assert "simulated child crash" in body["error"]["message"]
+    # writebackEnvelope + analyzerOutput null on COMPUTE_ERROR per §10A.6
+    assert body["writebackEnvelope"] is None
+    assert body["analyzerOutput"] is None
+    assert body["diagnostics"]["kPrime"] == 0
+    assert body["diagnostics"]["droppedCount"] == 2
+
+
 def test_finalize_self_check_trips_at_510s(monkeypatch) -> None:
     """First action of finalize: compare elapsed since
     RM_SUBMIT_TIMESTAMP_MS. If > 510_000ms, SKIP aggregation entirely
