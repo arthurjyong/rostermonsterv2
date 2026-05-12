@@ -102,10 +102,7 @@ from rostermonster_service.batch_client import (
     JOB_STATE_SUCCEEDED,
     TERMINAL_JOB_STATES,
 )
-from rostermonster_service.batch_job_spec import (
-    build_lahc_batch_job_spec,
-    task_count_for_K,
-)
+from rostermonster_service.batch_job_spec import build_lahc_batch_job_spec
 from rostermonster_service.gcs import (
     DeletePrefixFn,
     ReadJsonFn,
@@ -330,6 +327,106 @@ def _aggregate_results(
     }
 
 
+def _aggregate_single_task_result(
+    *,
+    bucket: str,
+    run_id: str,
+    expected_attempt_id: str,
+    gcs_read_json: ReadJsonFn,
+) -> dict[str, Any]:
+    """Read the single result.json from GCS and surface its contents in
+    the shape `_build_post_aggregation_envelope` expects.
+
+    Under M7 C4 T2A.1 single-task pattern (Codex P1.7 amendment), the
+    worker writes one result.json at `gs://bucket/{runId}/result.json`
+    (no per-task subdirectory). Missing / unreadable results contribute
+    0 candidates per §8.7's primary K' definition; `resultPresent=False`
+    signals the orchestrator should treat as UNSATISFIED + flag the
+    incomplete task in the response summary.
+
+    **attemptId validation** (Codex P2 round 2 finding 4 fix): two
+    concurrent /compute-lahc-test replays of the same `(snapshotId,
+    masterSeed)` produce the same deterministic runId and would
+    otherwise overwrite each other's result.json. The orchestrator
+    stamps a per-attempt `attempt_id` into the worker's env; the worker
+    echoes it back into result.json's `attemptId`; this aggregator
+    treats a result.json with mismatched (or missing when
+    expected_attempt_id is non-empty) attemptId the same as missing.
+    Empty `expected_attempt_id` skips the check (caller didn't need
+    collision protection for that surface).
+    """
+    candidates: list[dict] = []
+    failed_trajectories: list[dict] = []
+    trajectory_exceptions: list[dict] = []
+    aggregate_attempts = 0
+    aggregate_rejections: dict[str, int] = {}
+    result_present = False
+    per_task_results: list[dict | None] = [None]
+
+    result_uri = _gcs_uri(bucket, run_id, "result.json")
+    try:
+        result = gcs_read_json(result_uri)
+    except Exception as e:
+        log.warning(
+            "Failed to read result.json (%s): %s — treating as missing",
+            result_uri, e,
+        )
+        return {
+            "candidates": candidates,
+            "failedTrajectories": failed_trajectories,
+            "trajectoryExceptions": trajectory_exceptions,
+            "aggregateAttempts": aggregate_attempts,
+            "aggregateRejectionsByReason": aggregate_rejections,
+            "resultPresent": False,
+            "perTaskResults": per_task_results,
+        }
+
+    # Attempt-id validation per Codex P2 round 2 finding 4 fix.
+    if expected_attempt_id:
+        result_attempt_id = result.get("attemptId")
+        if result_attempt_id != expected_attempt_id:
+            log.warning(
+                "result.json has attemptId=%r; expected %r — treating "
+                "as missing (concurrent replay collided on the deterministic "
+                "runId, OR a prior attempt's result.json wasn't cleared)",
+                result_attempt_id, expected_attempt_id,
+            )
+            return {
+                "candidates": candidates,
+                "failedTrajectories": failed_trajectories,
+                "trajectoryExceptions": trajectory_exceptions,
+                "aggregateAttempts": aggregate_attempts,
+                "aggregateRejectionsByReason": aggregate_rejections,
+                "resultPresent": False,
+                "perTaskResults": per_task_results,
+            }
+
+    result_present = True
+    per_task_results = [result]
+    for cand in result.get("candidates", []):
+        # Preserve the "taskIndex": 0 shape `_build_post_aggregation_envelope`
+        # expects under the multi-task aggregation contract; under
+        # single-task there's exactly one task at index 0.
+        candidates.append({"taskIndex": 0, **cand})
+    for failed in result.get("failedTrajectories", []):
+        failed_trajectories.append({"taskIndex": 0, **failed})
+    for exc in result.get("trajectoryExceptions", []):
+        trajectory_exceptions.append({"taskIndex": 0, **exc})
+    aggregate_attempts = int(result.get("aggregateAttempts", 0))
+    for code, count in result.get("aggregateRejectionsByReason", {}).items():
+        aggregate_rejections[code] = aggregate_rejections.get(code, 0) + int(count)
+
+    return {
+        "candidates": candidates,
+        "failedTrajectories": failed_trajectories,
+        "trajectoryExceptions": trajectory_exceptions,
+        "aggregateAttempts": aggregate_attempts,
+        "aggregateRejectionsByReason": aggregate_rejections,
+        "resultPresent": result_present,
+        "perTaskResults": per_task_results,
+    }
+
+
 def _assignment_unit_from_dict(d: dict) -> AssignmentUnit:
     """Inverse of `_to_jsonable(AssignmentUnit)` — rebuilds an
     `AssignmentUnit` from the worker's serialized dict form so the
@@ -433,40 +530,41 @@ def _build_post_aggregation_envelope(
     # per-trajectory entries; this is a Cloud-Batch-specific gap with
     # no local-CLI analog. Operators see those tasks counted in
     # `lahcSummary.incompleteTaskIndices` instead.
-    candidate_lookup = {
-        (c["taskIndex"], c["candidateSeed"]): c
-        for c in candidates_raw
-    }
-    failed_lookup = {
-        (f["taskIndex"], f["candidateSeed"]): f
-        for f in agg["failedTrajectories"]
-    }
+    # Look up by candidateSeed only (Codex P2 round 1 finding 1 fix for
+    # M7 C4 T2A.1): `derive_K_seeds()` produces K UNIQUE seeds, so seed
+    # alone disambiguates a candidate. Pre-amendment used
+    # `(taskIndex, candidateSeed)` keys which assumed multi-task
+    # partitioning — under single-task, every candidate carries
+    # `taskIndex=0`, so the partition-based lookup would only match
+    # seeds 0..7 (first pseudo-task) and lose per-trajectory diagnostics
+    # for seeds 8..K-1. Walking `derive_K_seeds()` once + keying by seed
+    # is the simpler shape that works for both single-task and the
+    # historical multi-task path.
+    candidate_lookup = {c["candidateSeed"]: c for c in candidates_raw}
+    failed_lookup = {f["candidateSeed"]: f for f in agg["failedTrajectories"]}
     all_seeds = derive_K_seeds(master_seed, K_approved)
-    # Local re-import to avoid circular: _partition_seeds is module-level.
-    per_task_seeds = _partition_seeds(all_seeds)
     per_traj_status_list: list[str] = []
     per_traj_iters_list: list[int] = []
     per_traj_accepted_list: list[int] = []
     per_traj_best_list: list[float | None] = []
     per_traj_terminal_list: list[float | None] = []
-    for t_idx, t_seeds in enumerate(per_task_seeds):
-        for seed in t_seeds:
-            key = (t_idx, seed)
-            if key in candidate_lookup:
-                c = candidate_lookup[key]
-                per_traj_status_list.append("SUCCEEDED")
-                per_traj_iters_list.append(int(c["iters"]))
-                per_traj_accepted_list.append(int(c["acceptedMoves"]))
-                per_traj_best_list.append(c["bestScore"])
-                per_traj_terminal_list.append(c["terminalScore"])
-            elif key in failed_lookup:
-                per_traj_status_list.append("SEED_FAILED")
-                per_traj_iters_list.append(0)
-                per_traj_accepted_list.append(0)
-                per_traj_best_list.append(None)
-                per_traj_terminal_list.append(None)
-            # else: missing task — no per-trajectory entry recorded;
-            # surfaces via `lahcSummary.incompleteTaskIndices`.
+    for seed in all_seeds:
+        if seed in candidate_lookup:
+            c = candidate_lookup[seed]
+            per_traj_status_list.append("SUCCEEDED")
+            per_traj_iters_list.append(int(c["iters"]))
+            per_traj_accepted_list.append(int(c["acceptedMoves"]))
+            per_traj_best_list.append(c["bestScore"])
+            per_traj_terminal_list.append(c["terminalScore"])
+        elif seed in failed_lookup:
+            per_traj_status_list.append("SEED_FAILED")
+            per_traj_iters_list.append(0)
+            per_traj_accepted_list.append(0)
+            per_traj_best_list.append(None)
+            per_traj_terminal_list.append(None)
+        # else: missing — no per-trajectory entry recorded; surfaces via
+        # `lahcSummary.incompleteTaskIndices` (single-task: always [] or
+        # [0] depending on resultPresent).
     per_traj_status = tuple(per_traj_status_list)
     per_traj_iters = tuple(per_traj_iters_list)
     per_traj_accepted = tuple(per_traj_accepted_list)
@@ -676,6 +774,7 @@ def orchestrate_lahc_run(
     poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
     sleep_fn: Callable[[float], None] = time.sleep,
     time_fn: Callable[[], float] = time.monotonic,
+    wall_time_fn: Callable[[], float] = time.time,
     attempt_id_fn: Callable[[], str] = lambda: uuid.uuid4().hex,
 ) -> dict[str, Any]:
     """Orchestrate one M7 LAHC Cloud Batch run end-to-end. Returns a
@@ -810,37 +909,23 @@ def orchestrate_lahc_run(
             ),
         )
 
-    # Per-attempt unique ID for the §8.7 concurrent-replay race fix
-    # (T2G). Stamped into every per-task seeds.json; worker echoes
-    # back into result.json; aggregation validates on read so a
-    # concurrent attempt at the same runId can't pollute this
-    # attempt's K' aggregation.
+    # Per-attempt unique ID — kept for cross-call disambiguation in the
+    # response summary (useful for the maintainer to correlate Cloud
+    # Logging entries against a specific orchestrator call). The §8.7
+    # concurrent-replay race fix from T2G is no longer load-bearing
+    # under single-task (Codex P1.7 amendment, M7 C4 T2A.1) — there's
+    # one task per runId, so per-task attemptId echoing isn't needed.
+    # Concurrent-rejection at the front door (T2D) closes the cross-
+    # request race via Cloud Batch labels per D-0071 sub-decision 8.
     attempt_id = attempt_id_fn()
-
-    # --- Seed pre-derivation + partition -----------------------------
-    all_seeds = derive_K_seeds(master_seed, K_approved)
-    per_task_seeds = _partition_seeds(all_seeds)
-    task_count = len(per_task_seeds)
-    # Sanity: should match T2E's task_count_for_K.
-    assert task_count == task_count_for_K(K_approved), (
-        "partition produced " + str(task_count)
-        + " tasks; task_count_for_K(K) = " + str(task_count_for_K(K_approved))
-    )
 
     # --- Invalidate stale artifacts from a prior replay attempt -------
     # The runId is intentionally deterministic per (snapshotId, masterSeed)
     # so forensic replay is idempotent at the artifact-prefix level —
     # but Batch job_id is per-call unique (a replay submits a fresh
     # Batch job, not the same one). Without this clear step, a partial-
-    # failure on a replay would silently inherit stale per-task
-    # result.json files from the prior attempt at the same runId
-    # prefix, inflating K' with rosters that didn't come from this
-    # attempt. Codex P1 finding on PR #143.
-    #
-    # `gcs_delete_prefix` is REQUIRED (no default) so production callers
-    # cannot silently skip the clear. Tests that exercise aggregation
-    # in isolation (pre-seeding result.jsons before calling this
-    # function) opt into a no-op delete fn explicitly with a comment.
+    # failure on a replay would silently inherit a stale result.json
+    # from the prior attempt at the same runId prefix.
     prefix_uri = _gcs_uri(bucket, run_id) + "/"
     deleted_count = gcs_delete_prefix(prefix_uri)
     if deleted_count:
@@ -849,34 +934,43 @@ def orchestrate_lahc_run(
             deleted_count, prefix_uri,
         )
 
-    # --- Write snapshot + per-task seeds to GCS ----------------------
+    # --- Write snapshot to GCS ----------------------------------------
+    # Under M7 C4 T2A.1 single-task pattern, per-task seeds.json is
+    # RETIRED — the worker derives all K seeds locally from
+    # RM_MASTER_SEED env via derive_K_seeds() per §12A.10. Only the
+    # snapshot needs to land in GCS.
     snapshot_uri = _gcs_uri(bucket, run_id, "snapshot.json")
     gcs_write_json(snapshot_uri, snapshot_dict)
-    for task_index, seeds in enumerate(per_task_seeds):
-        seeds_uri = _gcs_uri(
-            bucket, run_id, "task-" + str(task_index), "seeds.json",
-        )
-        gcs_write_json(seeds_uri, {
-            "schemaVersion": 1,
-            "runId": run_id,
-            "taskIndex": task_index,
-            "masterSeed": master_seed,
-            "attemptId": attempt_id,
-            "seeds": seeds,
-        })
 
     # --- Build + submit Batch job ------------------------------------
+    # M7 C4 T2A.1 single-task spec: master_seed + K_approved flow via
+    # env vars set on the task spec (read by worker.py). For
+    # /compute-lahc-test, operator_email + launcher_callback_url are
+    # not supplied — they default to empty (worker.py T2A.1 doesn't
+    # use them; T2A.2's inline finalize step will read them when
+    # those land).
+    source_spreadsheet_id = metadata.get("sourceSpreadsheetId") or snapshot_id
+    # Wall-clock epoch ms — NOT time_fn() (which defaults to time.monotonic
+    # and is process-local; the worker reads RM_SUBMIT_TIMESTAMP_MS in a
+    # different process for T2A.2's elapsed self-check, so the timestamp
+    # must be in the comparable epoch-time scale). Codex P2 round 2
+    # finding 2 fix.
+    submit_ts_ms = int(wall_time_fn() * 1000)
     job_spec = build_lahc_batch_job_spec(
         run_id=run_id,
-        K_approved=K_approved,
         container_image_uri=container_image_uri,
+        master_seed=master_seed,
+        source_spreadsheet_id=source_spreadsheet_id,
+        attempt_id=attempt_id,
+        submit_timestamp_ms=submit_ts_ms,
+        K_approved=K_approved,
         bucket=bucket,
         region=region,
     )
     job_name = batch_client.submit_job(
         project=project, region=region, run_id=run_id, job_spec=job_spec,
     )
-    log.info("Batch job submitted: %s (taskCount=%d)", job_name, task_count)
+    log.info("Batch job submitted: %s (single-task, K=%d)", job_name, K_approved)
 
     # --- Poll for terminal state or deadline -------------------------
     final_state, elapsed = _poll_until_terminal_or_deadline(
@@ -888,9 +982,8 @@ def orchestrate_lahc_run(
         time_fn=time_fn,
     )
 
-    # --- Aggregate per-task result.json ------------------------------
-    agg = _aggregate_results(
-        task_count=task_count,
+    # --- Aggregate single result.json --------------------------------
+    agg = _aggregate_single_task_result(
         bucket=bucket,
         run_id=run_id,
         expected_attempt_id=attempt_id,
@@ -908,10 +1001,9 @@ def orchestrate_lahc_run(
         "kApproved": K_approved,
         "kPrime": k_prime,
         "droppedCount": K_approved - k_prime,
-        "taskCount": task_count,
-        "completedTaskCount": len(agg["completedTaskIndices"]),
-        "incompleteTaskIndices": agg["incompleteTaskIndices"],
-        "mismatchedAttemptTaskIndices": agg["mismatchedAttemptTaskIndices"],
+        "taskCount": 1,
+        "completedTaskCount": 1 if agg["resultPresent"] else 0,
+        "incompleteTaskIndices": [] if agg["resultPresent"] else [0],
         "totalAttempts": agg["aggregateAttempts"],
         "rejectionsByReason": agg["aggregateRejectionsByReason"],
         "batchJobName": job_name,
