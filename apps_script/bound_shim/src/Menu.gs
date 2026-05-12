@@ -108,10 +108,32 @@ function _solveRoster_() {
   // auth failures per `docs/cloud_compute_contract.md` §7.5; 200 for
   // application-level state per §10) rather than have UrlFetchApp throw
   // on every non-2xx response.
+  //
+  // M7 C4 T2D: bound shim is LAHC-only on the operator path per D-0071
+  // sub-decision 13 (SRB stays in code for benchmarks but no operator-
+  // facing menu item). `solverStrategy: 'LAHC'` activates the Cloud Run
+  // thin front door at app.py: validate + concurrent-rejection + submit
+  // Batch + return SUBMITTED in ~3-5s. `operatorEmail` is REQUIRED on
+  // the LAHC path per §9.3 (the Cloud Batch finalizer needs it for the
+  // always-email-on-every-outcome path); sourced from
+  // `Session.getActiveUser().getEmail()` per D-0071 sub-decision 6.
   var endpoint = cloudUrl.replace(/\/+$/, '') + '/compute';
+  var operatorEmail = Session.getActiveUser().getEmail();
+  if (!operatorEmail) {
+    throw new Error(
+      'OPERATOR_EMAIL_UNAVAILABLE: Session.getActiveUser().getEmail() ' +
+      'returned empty. Verify the bound shim manifest declares the ' +
+      'userinfo.email OAuth scope per `docs/decision_log.md` D-0051 ' +
+      'sub-decision 3a (the LAHC async path requires operatorEmail ' +
+      'to receive the completion email per §10A.7).'
+    );
+  }
   var requestBody = JSON.stringify({
     snapshot: snapshot,
-    optionalConfig: {}, // Server picks defaults: random seed + 32 candidates.
+    operatorEmail: operatorEmail,
+    optionalConfig: {
+      solverStrategy: 'LAHC',
+    },
   });
 
   var response;

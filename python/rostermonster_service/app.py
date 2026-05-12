@@ -27,8 +27,11 @@ import logging
 import os
 from typing import Any
 
-from flask import Flask, Response, jsonify, request
+import time
 
+from flask import Flask, Response, g, jsonify, request
+
+from rostermonster.parser import Consumability, parse
 from rostermonster.pipeline import (
     _assemble_writeback_wrapper,
     _snapshot_from_dict,
@@ -42,6 +45,48 @@ _LAHC_K_APPROVED_ENV = "LAHC_K_APPROVED"
 _LAHC_DEFAULT_K_APPROVED = 88  # M7 C4 T2A.1 single-VM Pool(K) on c3-highcpu-88 (was 104 under the M7 C1 13-VM dense-pack design — Codex P1.7 single-VM amendment in PR #147 dropped K to 88 to fit the c3-highcpu-88 vCPU count); future quota bump to C3_CPUS≥176 unlocks K=176 via FW-0040.
 _CONTAINER_IMAGE_URI_ENV = "CONTAINER_IMAGE_URI"
 _GCP_PROJECT_ENV = "GCP_PROJECT"
+# M7 C4 T2D deploy-time env: URL of the launcher's SECOND Web App
+# deployment (USER_DEPLOYING, version-pinned per §10A.5) where the
+# Cloud Batch worker's inline finalize step POSTs the callback per
+# §10A. Set at Cloud Run deploy time via
+# `--set-env-vars RM_LAUNCHER_CALLBACK_URL=<url>`.
+_LAUNCHER_CALLBACK_URL_ENV = "RM_LAUNCHER_CALLBACK_URL"
+# §8.7 single-task Batch job region.
+_LAHC_BATCH_REGION_ENV = "LAHC_BATCH_REGION"
+_LAHC_DEFAULT_BATCH_REGION = "asia-southeast1"
+# §8.7 GCS bucket holding all M7 LAHC run artifacts.
+_LAHC_BUCKET_ENV = "LAHC_BUCKET"
+_LAHC_DEFAULT_BUCKET = "rostermonsterv2-lahc"
+
+# Solver-strategy enum per `docs/solver_contract.md` §11.2. Front door
+# routes LAHC to the new async path (M7 C4 T2D); SRB stays on the
+# existing sync run_pipeline path. Anything else surfaces as
+# INVALID_SOLVER_STRATEGY per Codex P2 finding on PR #157 commit
+# bb50582899.
+_VALID_SOLVER_STRATEGIES = frozenset({"SEEDED_RANDOM_BLIND", "LAHC"})
+
+# Signed 64-bit integer bounds for `optionalConfig.seed` per
+# `docs/solver_contract.md` §9. The Cloud Batch worker's
+# `derive_K_seeds(masterSeed, K)` enforces this bound on the
+# compute side; pre-validating it at the front door surfaces bad
+# seed values at admission as INPUT_ERROR (without this guard, an
+# out-of-range seed slips through SUBMITTED + the worker errors
+# out without emailing the operator per FW-0039). Codex P2 round
+# 6 finding on PR #157 commit a504e377ea.
+_INT64_SIGNED_MIN = -(2 ** 63)
+_INT64_SIGNED_MAX = (2 ** 63) - 1
+
+# Single-VM dense-pack vCPU count per `docs/cloud_compute_contract.md`
+# §8.7 — the worker's `Pool(K)` size MUST NOT exceed this or
+# multiprocessing oversubscribes the VM + blows the 10-min cap. The
+# `build_lahc_batch_job_spec` job spec hardcodes c3-highcpu-88 (88
+# vCPUs); K_approved must match. Codex P2 round 10 finding on PR
+# #157 commit 65108e42a3 — pre-fix the LAHC_K_APPROVED env had no
+# upper bound check + a maintainer setting `LAHC_K_APPROVED=176`
+# would silently over-subscribe the VM. Future quota bump to
+# C3_CPUS≥176 unlocks `c3-highcpu-176` for K=176 via FW-0040; until
+# then this cap is the load-bearing safety net.
+_LAHC_VM_VCPU_COUNT = 88
 
 
 log = logging.getLogger("rostermonster_service")
@@ -120,6 +165,11 @@ def _check_operator_allowlist() -> Response | None:
     `docs/decision_log.md` D-0054. Returns a 200 INPUT_ERROR-shaped
     response on auth failure; returns None on success."""
     if _is_truthy_env(_DISABLE_AUTH_ENV):
+        # Tests + local dev — no token to extract email from. Set to
+        # empty string so LAHC dispatcher's operatorEmail match has a
+        # sentinel to compare against (tests inject the empty match
+        # explicitly via the request body's `operatorEmail: ""`).
+        g.operator_email = ""
         return None
 
     allowed = os.environ.get(_ALLOWED_EMAILS_ENV, "").strip()
@@ -218,6 +268,13 @@ def _check_operator_allowlist() -> Response | None:
         )
 
     log.info("Authorized request from %s", email)
+    # M7 C4 T2D: stash the validated operator email on Flask's
+    # request-local `g` so the LAHC async dispatcher can match it
+    # against the request body's `operatorEmail` field per §9.3
+    # (LAHC requires operatorEmail to match the OIDC `email` claim
+    # to prevent a maintainer spoofing the operator address on a
+    # behalf-of-someone-else solve).
+    g.operator_email = email
     return None
 
 
@@ -233,8 +290,11 @@ def _auth_error(code: str, message: str) -> Response:
 
 
 def _compute_endpoint() -> Response:
-    """POST /compute handler. Always returns HTTP 200 with a 4-state
-    structured response per `docs/cloud_compute_contract.md` §10.1."""
+    """POST /compute handler. Always returns HTTP 200 with a 5-state
+    structured response per `docs/cloud_compute_contract.md` §10.1 —
+    `SUBMITTED` was added at M7 C3 + wired in T2D for the LAHC async
+    path; the existing 4-state surface (OK / UNSATISFIED /
+    INPUT_ERROR / COMPUTE_ERROR) continues on the SRB sync path."""
     # --- Stage 1: parse request body --------------------------------------
     try:
         raw = request.get_json(silent=False)
@@ -263,6 +323,59 @@ def _compute_endpoint() -> Response:
             "INVALID_SNAPSHOT_SHAPE",
             "`snapshot` must be a JSON object.",
         )
+
+    # --- Solver-strategy dispatch (M7 C4 T2D) -----------------------------
+    # Read solverStrategy from optionalConfig per §9.3. LAHC routes
+    # through the async front-door (validate + submit Batch + return
+    # SUBMITTED ~3-5s); SRB stays on the existing sync compute path.
+    # Unknown / non-string values → INPUT_ERROR (Codex P2 finding on
+    # PR #157 commit bb50582899 — pre-fix a typo like `"LACH"` would
+    # silently fall through to SRB and write back a synchronous SRB
+    # result instead of surfacing the contract violation).
+    optional_block = raw.get("optionalConfig")
+    if isinstance(optional_block, dict) and "solverStrategy" in optional_block:
+        solver_strategy_raw = optional_block["solverStrategy"]
+        # Explicit null / empty-string is a client defect — the contract
+        # convention is "omit the field to default", not "send null".
+        # Codex P2 round 2 finding on PR #157 commit f0c2d2ac82 — pre-
+        # fix treated explicit null/"" as omitted + silently routed
+        # SRB, which would mask a misconfigured bound-shim payload.
+        if solver_strategy_raw is None:
+            return _input_error(
+                "INVALID_SOLVER_STRATEGY",
+                "`optionalConfig.solverStrategy` is explicitly null. Omit "
+                "the field to default to SEEDED_RANDOM_BLIND, or pass a "
+                "valid enum value (" + ", ".join(sorted(_VALID_SOLVER_STRATEGIES))
+                + ").",
+            )
+        if not isinstance(solver_strategy_raw, str):
+            return _input_error(
+                "INVALID_SOLVER_STRATEGY",
+                "`optionalConfig.solverStrategy` must be a string when "
+                "present per `docs/cloud_compute_contract.md` §9.3; got "
+                + type(solver_strategy_raw).__name__,
+            )
+        solver_strategy = solver_strategy_raw.strip().upper()
+        if solver_strategy == "":
+            return _input_error(
+                "INVALID_SOLVER_STRATEGY",
+                "`optionalConfig.solverStrategy` is empty. Omit the "
+                "field to default to SEEDED_RANDOM_BLIND, or pass a "
+                "valid enum value (" + ", ".join(sorted(_VALID_SOLVER_STRATEGIES))
+                + ").",
+            )
+        if solver_strategy not in _VALID_SOLVER_STRATEGIES:
+            return _input_error(
+                "INVALID_SOLVER_STRATEGY",
+                "`optionalConfig.solverStrategy=" + repr(solver_strategy_raw)
+                + "` is not a known strategy. Valid values per "
+                "`docs/solver_contract.md` §11.2: "
+                + ", ".join(sorted(_VALID_SOLVER_STRATEGIES)) + ".",
+            )
+    else:
+        solver_strategy = ""
+    if solver_strategy == "LAHC":
+        return _compute_lahc_async_endpoint(raw=raw, snapshot_raw=snapshot_raw)
 
     # --- Stage 2: deserialize snapshot ------------------------------------
     try:
@@ -409,6 +522,551 @@ def _coerce_optional_int(value: Any, field_name: str, *,
             f"`{field_name}` must be >= {min_val}; got {value!r}."
         )
     return value
+
+
+def _compute_lahc_async_endpoint(
+    *, raw: dict, snapshot_raw: dict,
+) -> Response:
+    """M7 C4 T2D async LAHC front door. Validate input + concurrent-
+    rejection + submit Cloud Batch job + return SUBMITTED in ~3-5s.
+    The actual compute runs in the Cloud Batch task's inline finalize
+    step (per `worker.py` `_inline_finalize` at T2A.2 PR-A); the
+    launcher Web App callback per §10A delivers the writeback +
+    analyzer tabs + operator email asynchronously.
+
+    Per `docs/cloud_compute_contract.md` §9.3:
+    - `operatorEmail` REQUIRED top-level field (vs optional for SRB).
+    - Must match OIDC `email` claim (`g.operator_email` set by
+      `_check_operator_allowlist`) — prevents a maintainer-token spoof
+      of an operator's address on a behalf-of-someone-else solve.
+
+    Per §8.7 sub-decision 8 + D-0071 sub-decision 8: concurrent-
+    rejection via `batch.jobs.list --filter='labels.spreadsheet_id=<x>
+    AND (status.state=QUEUED OR status.state=SCHEDULED OR
+    status.state=RUNNING)'` BEFORE submitting; reject with
+    INPUT_ERROR/CONCURRENT_RUN_REJECTED if any matching in-flight
+    job exists.
+    """
+    # --- operatorEmail validation -----------------------------------------
+    operator_email_raw = raw.get("operatorEmail")
+    if (not isinstance(operator_email_raw, str)
+            or not operator_email_raw.strip()):
+        return _input_error(
+            "OPERATOR_EMAIL_REQUIRED",
+            "`operatorEmail` is required on the LAHC strategy path per "
+            "`docs/cloud_compute_contract.md` §9.3 (the Cloud Batch "
+            "finalizer needs it for the always-email-on-every-outcome "
+            "per §10A.7). Missing on this request.",
+        )
+    operator_email = operator_email_raw.strip().lower()
+    # Match against the OIDC token's `email` claim — empty string when
+    # DISABLE_AUTH_FOR_LOCAL_TESTING is set (tests inject the empty
+    # match explicitly via the request body's `operatorEmail: ""`).
+    token_email = getattr(g, "operator_email", "")
+    if token_email and operator_email != token_email:
+        return _input_error(
+            "OPERATOR_EMAIL_MISMATCH",
+            "`operatorEmail` field ('" + operator_email + "') does not "
+            "match the OIDC token's `email` claim ('" + token_email
+            + "'). The LAHC async path requires these to match per "
+            "§9.3 (prevents a maintainer-token spoof of an operator's "
+            "email address).",
+        )
+
+    # --- Snapshot deserializability + parser consumability ---------------
+    # Pre-Batch validation — saves the Cloud Batch round-trip cost on
+    # a snapshot that can't produce a valid envelope per the orchestrator
+    # discipline locked at M7 C2 T2F Codex P2 findings 80e0ceb + bad297f
+    # (now duplicated here for the new front door).
+    try:
+        snapshot_obj = _snapshot_from_dict(snapshot_raw)
+    except (KeyError, TypeError, ValueError) as e:
+        return _input_error(
+            "INVALID_SNAPSHOT_SHAPE",
+            "Snapshot deserialization failed: "
+            + type(e).__name__ + ": " + str(e),
+        )
+    template = icu_hd_template_artifact()
+    # Codex P2 round 7 finding on PR #157 commit 3f62f8130e: pre-fix,
+    # `parse()` could raise on malformed nested fields that
+    # `_snapshot_from_dict()` accepted (e.g.,
+    # `dayRecords[0].rawDateText: null` survives deserialization
+    # but trips `_validate_structural` on `.strip()`). Uncaught
+    # exception made the LAHC path return Flask 500 HTML instead of
+    # the documented always-200 structured envelope. Wrap to surface
+    # as INPUT_ERROR/INVALID_SNAPSHOT_SHAPE at admission.
+    try:
+        parser_result = parse(snapshot_obj, template)
+    except (AttributeError, TypeError, ValueError, KeyError) as e:
+        return _input_error(
+            "INVALID_SNAPSHOT_SHAPE",
+            "Snapshot has a structural defect that "
+            "`parser.parse()` couldn't handle: "
+            + type(e).__name__ + ": " + str(e)
+            + ". The snapshot deserialized OK at the boundary but "
+            "a nested field (e.g., `dayRecords[*].rawDateText`, "
+            "`doctorRecords[*].displayName`) is malformed. Fix the "
+            "snapshot generator before re-submitting.",
+        )
+    if parser_result.consumability is not Consumability.CONSUMABLE:
+        issue_summary = "; ".join(
+            "[" + getattr(i.severity, "name", str(i.severity)) + "] "
+            + i.code + ": " + i.message
+            for i in parser_result.issues[:5]
+        )
+        if len(parser_result.issues) > 5:
+            issue_summary += (
+                " (+" + str(len(parser_result.issues) - 5) + " more "
+                "issues — truncated for response brevity)"
+            )
+        return _input_error(
+            "PARSER_REJECTED",
+            "Parser rejected the snapshot at admission with "
+            + str(len(parser_result.issues)) + " issue(s): "
+            + issue_summary,
+        )
+
+    # --- Snapshot metadata for runId derivation + labels -----------------
+    metadata = snapshot_raw.get("metadata") if isinstance(snapshot_raw, dict) else None
+    if not isinstance(metadata, dict) or not metadata.get("snapshotId"):
+        return _input_error(
+            "INVALID_SNAPSHOT_SHAPE",
+            "`snapshot.metadata.snapshotId` is required for the LAHC "
+            "async path (used to derive the deterministic runId per "
+            "§8.7). Got snapshot.metadata=" + repr(metadata),
+        )
+    # Codex P2 round 3 finding on PR #157 commit ae14294339: pre-fix
+    # `metadata.snapshotId` was checked truthy-only — a numeric or
+    # boolean-ish value would slip through + `derive_run_id()` would
+    # raise an uncaught ValueError (Flask 500). Tighten to require
+    # non-empty STRING for both snapshotId + sourceSpreadsheetId
+    # before they feed runId derivation + Batch label normalization.
+    raw_snapshot_id = metadata["snapshotId"]
+    if not isinstance(raw_snapshot_id, str) or not raw_snapshot_id.strip():
+        return _input_error(
+            "INVALID_SNAPSHOT_SHAPE",
+            "`snapshot.metadata.snapshotId` must be a non-empty string "
+            "for the LAHC async path (used to derive runId via "
+            "`derive_run_id()` + the Cloud Batch `labels.spreadsheet_id` "
+            "label per §8.7 sub-decision 8). Got "
+            + type(raw_snapshot_id).__name__ + "=" + repr(raw_snapshot_id),
+        )
+    snapshot_id = raw_snapshot_id.strip()
+    # Codex P2 round 5 finding on PR #157 commit 918e6a3685: pre-fix,
+    # explicit `sourceSpreadsheetId: null` was treated as absent +
+    # silently fell back to snapshotId. That let the front door
+    # SUBMIT a Batch job for a malformed snapshot whose finalizer
+    # would later target an unusable spreadsheet ID — operator-
+    # facing failure landed downstream rather than failing fast at
+    # admission. Tighten: explicit `null` / non-string / empty-string
+    # are all client defects. Field-absent never reaches this code
+    # because `_snapshot_from_dict()` raises `KeyError` upstream on
+    # missing `sourceSpreadsheetId` (snapshot contract requires it),
+    # so we don't need a fall-back branch here.
+    raw_source_spreadsheet_id = metadata.get("sourceSpreadsheetId")
+    if raw_source_spreadsheet_id is None:
+        return _input_error(
+            "INVALID_SNAPSHOT_SHAPE",
+            "`snapshot.metadata.sourceSpreadsheetId` is explicitly null "
+            "or absent. The field is required per "
+            "`docs/snapshot_contract.md` + used for the Cloud Batch "
+            "`labels.spreadsheet_id` label per §8.7 sub-decision 8 + "
+            "the concurrent-rejection query.",
+        )
+    if (not isinstance(raw_source_spreadsheet_id, str)
+            or not raw_source_spreadsheet_id.strip()):
+        return _input_error(
+            "INVALID_SNAPSHOT_SHAPE",
+            "`snapshot.metadata.sourceSpreadsheetId` must be a non-empty "
+            "string (used for the Cloud Batch `labels.spreadsheet_id` "
+            "label per §8.7 sub-decision 8 + concurrent-rejection "
+            "query). Got " + type(raw_source_spreadsheet_id).__name__
+            + "=" + repr(raw_source_spreadsheet_id),
+        )
+    source_spreadsheet_id = raw_source_spreadsheet_id.strip()
+
+    # --- optionalConfig.seed (master seed) -------------------------------
+    optional_block = raw.get("optionalConfig") or {}
+    if not isinstance(optional_block, dict):
+        return _input_error(
+            "INVALID_OPTIONAL_CONFIG",
+            "`optionalConfig` must be a JSON object when present.",
+        )
+    # `optionalConfig.lahcParams` is documented in §9.3 as a maintainer
+    # override of the FW-0037 elbow tuple defaults, but the worker
+    # currently hardcodes the production tuple + doesn't read an
+    # override env var. Reject explicit non-empty overrides with a
+    # clear "deferred" message rather than silently ignoring the field
+    # — silent-ignore would let a maintainer think they're running a
+    # parameter sweep when the worker is actually using FW-0037 the
+    # whole time. Codex P2 round 2 finding on PR #157 commit
+    # f0c2d2ac82. Honor-the-override is queued as a focused follow-up
+    # (need new env vars on the Batch task + corresponding worker.py
+    # reads). Production operator path always uses defaults so no
+    # operator-facing regression from this restriction.
+    lahc_params_raw = optional_block.get("lahcParams")
+    if (lahc_params_raw is not None
+            and lahc_params_raw != {}
+            and lahc_params_raw != ""):
+        return _input_error(
+            "LAHC_PARAMS_OVERRIDE_NOT_SUPPORTED",
+            "`optionalConfig.lahcParams` maintainer override is "
+            "documented in `docs/cloud_compute_contract.md` §9.3 but "
+            "is NOT plumbed through to the M7 C4 worker yet — the "
+            "worker hardcodes the FW-0037 elbow tuple (L=50, "
+            "idleThreshold=3500, swapProbability=0.5) per §8.7. "
+            "Honor-the-override is queued as a focused follow-up; "
+            "until then, omit this field (the documented production "
+            "defaults are the M7 elbow tuple). Got "
+            + repr(lahc_params_raw) + ".",
+        )
+    try:
+        master_seed = _coerce_optional_int(
+            optional_block.get("seed"), "seed",
+        )
+    except _ConfigValidationError as e:
+        return _input_error("INVALID_OPTIONAL_CONFIG", str(e))
+    # Codex P2 round 6 finding on PR #157 commit a504e377ea: pre-fix,
+    # an explicit `optionalConfig.seed` outside the signed 64-bit
+    # range passed the front door (`_coerce_optional_int` only
+    # rejected bool/float/non-int) but failed inside `derive_K_seeds`
+    # on the Cloud Batch worker → task error-result write → operator
+    # gets NO email (silent-outcome gap per FW-0039). Validate the
+    # int64 bound here per `docs/solver_contract.md` §9 so a bad
+    # seed value surfaces at admission with the structured
+    # INPUT_ERROR envelope.
+    if master_seed is not None and not (
+            _INT64_SIGNED_MIN <= master_seed <= _INT64_SIGNED_MAX):
+        return _input_error(
+            "INVALID_OPTIONAL_CONFIG",
+            "`optionalConfig.seed=" + repr(master_seed) + "` is outside "
+            "the 64-bit signed integer range required by "
+            "`docs/solver_contract.md` §9 (master seed bound). Valid "
+            "range: [" + str(_INT64_SIGNED_MIN) + ", "
+            + str(_INT64_SIGNED_MAX) + "]. Out-of-range seeds would "
+            "fail inside `derive_K_seeds` on the Cloud Batch worker "
+            "AFTER the front door returned SUBMITTED, leaving the "
+            "operator without a completion email (FW-0039 silent-"
+            "outcome gap).",
+        )
+    if master_seed is None:
+        # Per D-0053 — pick a fresh random seed when omitted so each
+        # operator click explores a fresh point in the search space.
+        import random
+        master_seed = random.randint(0, 2**31 - 1)
+
+    # --- Deploy-time env vars + dependency wiring ------------------------
+    container_image_uri = os.environ.get(_CONTAINER_IMAGE_URI_ENV, "").strip()
+    if not container_image_uri:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has no " + _CONTAINER_IMAGE_URI_ENV
+            + " env var set. Maintainer must redeploy with "
+            "--set-env-vars " + _CONTAINER_IMAGE_URI_ENV + "=<image-uri>.",
+        )
+    project = os.environ.get(_GCP_PROJECT_ENV, "").strip()
+    if not project:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has no " + _GCP_PROJECT_ENV
+            + " env var set. Maintainer must redeploy with "
+            "--set-env-vars " + _GCP_PROJECT_ENV + "=<project-id>.",
+        )
+    launcher_callback_url = os.environ.get(
+        _LAUNCHER_CALLBACK_URL_ENV, "",
+    ).strip()
+    if not launcher_callback_url:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has no " + _LAUNCHER_CALLBACK_URL_ENV
+            + " env var set. Maintainer must redeploy with "
+            "--set-env-vars " + _LAUNCHER_CALLBACK_URL_ENV
+            + "=<launcher callback URL>. Required for the M7 C4 T2D "
+            "async LAHC path so the Cloud Batch finalizer can POST "
+            "to the launcher per §10A.5.",
+        )
+    region = os.environ.get(
+        _LAHC_BATCH_REGION_ENV, _LAHC_DEFAULT_BATCH_REGION,
+    ).strip()
+    if not region:
+        # `LAHC_BATCH_REGION=""` (or whitespace-only) would survive
+        # the `.strip()` + propagate into `submit_job` as an empty
+        # region → Cloud Batch raises an uncaught error → Flask 500.
+        # Mirror the bucket-guard treatment below for symmetry.
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has " + _LAHC_BATCH_REGION_ENV
+            + " set to an empty/whitespace value. Maintainer must "
+            "redeploy with --set-env-vars " + _LAHC_BATCH_REGION_ENV
+            + "=<region-id> (or unset to use the default "
+            + _LAHC_DEFAULT_BATCH_REGION + ").",
+        )
+    bucket = os.environ.get(
+        _LAHC_BUCKET_ENV, _LAHC_DEFAULT_BUCKET,
+    ).strip()
+    if not bucket:
+        # Codex P2 round 3 finding on PR #157 commit ae14294339:
+        # pre-fix `LAHC_BUCKET=""` (or whitespace-only) survived
+        # `.strip()` + `build_lahc_batch_job_spec()` raised an
+        # uncaught ValueError → Flask 500 instead of the documented
+        # SERVICE_MISCONFIGURED envelope. The other deploy-time env
+        # checks above (CONTAINER_IMAGE_URI, GCP_PROJECT,
+        # RM_LAUNCHER_CALLBACK_URL) already follow this pattern;
+        # extending it to LAHC_BUCKET for symmetry.
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has " + _LAHC_BUCKET_ENV
+            + " set to an empty/whitespace value. Maintainer must "
+            "redeploy with --set-env-vars " + _LAHC_BUCKET_ENV
+            + "=<bucket-name> (or unset to use the default "
+            + _LAHC_DEFAULT_BUCKET + ").",
+        )
+    K_approved_str = os.environ.get(_LAHC_K_APPROVED_ENV)
+    if K_approved_str:
+        try:
+            K_approved = int(K_approved_str)
+        except ValueError:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
+                + repr(K_approved_str) + " which is not a valid integer. "
+                "Maintainer must redeploy with --set-env-vars "
+                + _LAHC_K_APPROVED_ENV + "=<positive integer>.",
+            )
+        # Codex P2 finding on PR #157 commit bb50582899: pre-fix,
+        # `LAHC_K_APPROVED=0` or a negative integer slipped through
+        # the int() guard + propagated into `build_lahc_batch_job_spec`
+        # which raises ValueError outside any structured-error path
+        # → Flask 500 instead of the documented SERVICE_MISCONFIGURED
+        # envelope. Guard here too.
+        if K_approved <= 0:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
+                + repr(K_approved_str) + " which is not a positive "
+                "integer (parsed to " + str(K_approved) + "). "
+                "K_approved must be > 0 per `docs/cloud_compute_contract.md` "
+                "§8.7 single-VM dense-pack (Pool size must be positive). "
+                "Maintainer must redeploy with --set-env-vars "
+                + _LAHC_K_APPROVED_ENV + "=<positive integer>.",
+            )
+    else:
+        K_approved = _LAHC_DEFAULT_K_APPROVED
+
+    # Codex P2 round 10 finding on PR #157 commit 65108e42a3: pre-fix,
+    # there was no upper bound on the deploy-time `LAHC_K_APPROVED`
+    # value. A maintainer setting `LAHC_K_APPROVED=176` would forward
+    # 176 → `RM_K_APPROVED` env → `Pool(176)` on a c3-highcpu-88 VM
+    # (the job spec hardcodes c3-highcpu-88). Pool(176) on 88 vCPUs
+    # over-subscribes by 2x → process contention → likely blows the
+    # 10-min cap. The right cap is the fixed VM vCPU count, NOT the
+    # deploy-time env. Future quota bump to C3_CPUS≥176 unlocks
+    # `c3-highcpu-176` for K=176 via FW-0040; until then the cap is
+    # the load-bearing safety net.
+    if K_approved > _LAHC_VM_VCPU_COUNT:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
+            + str(K_approved) + " which exceeds the fixed VM vCPU "
+            "count (" + str(_LAHC_VM_VCPU_COUNT) + " on `c3-highcpu-88`"
+            " per §8.7). The job spec hardcodes c3-highcpu-88 +"
+            " `Pool(K)` matches K to vCPU count — K above 88 would "
+            "over-subscribe the VM + blow the 10-min cap. Future "
+            "quota bump to `C3_CPUS≥176` unlocks `c3-highcpu-176` "
+            "for K=176 via FW-0040; until then, redeploy with "
+            "--set-env-vars " + _LAHC_K_APPROVED_ENV + "=<≤"
+            + str(_LAHC_VM_VCPU_COUNT) + ">.",
+        )
+
+    # Codex P2 round 8 finding on PR #157 commit d1fdbf4ac6: pre-fix,
+    # `optionalConfig.maxCandidates` was documented in §9.3 +
+    # `docs/solver_contract.md` §12A.3 defines LAHC outer-loop
+    # termination as `K = maxCandidates`, but the async LAHC path
+    # silently ignored it + ran deploy-time K_approved (default 88).
+    # A maintainer experiment requesting `maxCandidates: 5` got
+    # SUBMITTED but ran 88 trajectories, skewing benchmark/cost
+    # comparisons. Honor the override here: if present + valid,
+    # overrides the deploy-time K_approved (capped at deploy-time
+    # capacity per the round 9 fix below).
+    try:
+        max_candidates_override = _coerce_optional_int(
+            optional_block.get("maxCandidates"), "maxCandidates",
+            min_val=1,
+        )
+    except _ConfigValidationError as e:
+        return _input_error("INVALID_OPTIONAL_CONFIG", str(e))
+    if max_candidates_override is not None:
+        # Codex P2 round 9 finding on PR #157 commit e60372d464: pre-
+        # fix the override forwarded uncapped to `K_approved`, but
+        # `K` becomes the Pool(K) size on the c3-highcpu-88 VM (88
+        # vCPUs). A maintainer requesting `maxCandidates: 500` would
+        # spawn 500 worker processes contending for 88 cores,
+        # blowing past the §8.7 single-VM dense-pack invariant +
+        # likely missing the 10-min operator-facing cap. Cap at the
+        # deploy-time `K_approved` (VM capacity) + reject excess.
+        # Maintainer wanting higher K must redeploy with a higher
+        # `LAHC_K_APPROVED` env (and the matching VM size) first.
+        if max_candidates_override > K_approved:
+            return _input_error(
+                "MAX_CANDIDATES_EXCEEDS_VM_CAPACITY",
+                "`optionalConfig.maxCandidates=" + str(max_candidates_override)
+                + "` exceeds the deploy-time `K_approved="
+                + str(K_approved) + "` (the Pool size matching the "
+                "c3-highcpu-88 VM's vCPU count per §8.7). To run more "
+                "trajectories, redeploy with `LAHC_K_APPROVED=<higher>` "
+                "+ a VM size that fits (e.g., `c3-highcpu-176` for "
+                "K=176 once `C3_CPUS` quota allows it per FW-0040). "
+                "Pre-cap, oversized K would over-subscribe the VM "
+                "(processes contending for vCPUs) and likely blow "
+                "the 10-min operator-facing cap.",
+            )
+        K_approved = max_candidates_override
+
+    # --- Wire SDK deps + concurrent-rejection ----------------------------
+    try:
+        from rostermonster_service.batch_client import BatchClient
+        from rostermonster_service.batch_job_spec import (
+            build_lahc_batch_job_spec,
+            normalize_label_value,
+        )
+        from rostermonster_service.lahc_orchestrator import derive_run_id
+        batch_client = BatchClient()
+    except ImportError as e:
+        return _compute_error(
+            "ORCHESTRATOR_DEPS_UNAVAILABLE",
+            "Cloud Batch SDK missing on the service. Maintainer should "
+            "redeploy. (" + str(e) + ")",
+        )
+
+    # Concurrent-rejection query per §8.7 sub-decision 8 + Codex P2
+    # round 11 fix (Cloud Batch filter syntax doesn't support SQL `IN`;
+    # explicit OR-joined disjunction).
+    spreadsheet_id_label = normalize_label_value(source_spreadsheet_id)
+    concurrent_filter = (
+        "labels.spreadsheet_id=" + spreadsheet_id_label
+        + " AND (status.state=QUEUED OR status.state=SCHEDULED"
+        " OR status.state=RUNNING)"
+    )
+    try:
+        in_flight_jobs = batch_client.list_jobs(
+            project=project, region=region,
+            filter_str=concurrent_filter,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.exception("Concurrent-rejection list_jobs raised")
+        return _compute_error(
+            "CONCURRENT_CHECK_FAILED",
+            "Cloud Batch concurrent-rejection query failed: "
+            + type(e).__name__ + ": " + str(e),
+        )
+    if in_flight_jobs:
+        existing = in_flight_jobs[0]
+        return _input_error(
+            "CONCURRENT_RUN_REJECTED",
+            "A solve is already running for this spreadsheet "
+            "(started at " + existing.get("createTime", "<unknown>")
+            + " by " + (existing.get("operatorEmail") or "<unknown>")
+            + "). Wait for completion (you'll receive an email when "
+            "done) before submitting again.",
+        )
+
+    # --- Build + submit Batch job ----------------------------------------
+    # Codex P2 round 4 finding on PR #157 commit e761bb975a: pre-fix,
+    # a non-empty `snapshotId` that sanitizes to nothing (e.g.,
+    # `"!!!"` → all special chars → `derive_run_id` strips them all)
+    # caused `derive_run_id()` to raise `ValueError` outside any
+    # structured-error block → Flask 500 instead of the documented
+    # always-200 INPUT_ERROR envelope. Catch + surface here so the
+    # boundary fails loud + structured.
+    try:
+        run_id = derive_run_id(snapshot_id, master_seed)
+    except ValueError as e:
+        return _input_error(
+            "INVALID_SNAPSHOT_SHAPE",
+            "`snapshot.metadata.snapshotId=" + repr(snapshot_id)
+            + "` is not a valid runId-derivation input "
+            "(sanitizes to empty after removing non-alphanumeric "
+            "characters per `lahc_orchestrator.derive_run_id`). "
+            "snapshotId must contain at least one alphanumeric "
+            "character. Detail: " + str(e),
+        )
+    import uuid
+    attempt_id = uuid.uuid4().hex
+    submit_timestamp_ms = int(time.time() * 1000)
+    job_spec = build_lahc_batch_job_spec(
+        run_id=run_id,
+        container_image_uri=container_image_uri,
+        master_seed=master_seed,
+        source_spreadsheet_id=source_spreadsheet_id,
+        attempt_id=attempt_id,
+        submit_timestamp_ms=submit_timestamp_ms,
+        K_approved=K_approved,
+        bucket=bucket,
+        region=region,
+        operator_email=operator_email,
+        launcher_callback_url=launcher_callback_url,
+    )
+    # Write the snapshot to GCS so the worker can read it (the §8.7
+    # input contract: worker reads `gs://bucket/runId/snapshot.json`).
+    try:
+        from rostermonster_service.gcs import make_gcs_adapter
+        _, write_json = make_gcs_adapter(bucket)
+        snapshot_uri = (
+            "gs://" + bucket + "/" + run_id + "/snapshot.json"
+        )
+        write_json(snapshot_uri, snapshot_raw)
+    except Exception as e:  # noqa: BLE001
+        log.exception("Snapshot GCS write failed")
+        return _compute_error(
+            "SNAPSHOT_WRITE_FAILED",
+            "Could not write snapshot to GCS: "
+            + type(e).__name__ + ": " + str(e),
+        )
+
+    try:
+        job_name = batch_client.submit_job(
+            project=project, region=region,
+            run_id=run_id, job_spec=job_spec,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.exception("Cloud Batch submit_job raised")
+        return _compute_error(
+            "BATCH_SUBMIT_FAILED",
+            "Cloud Batch submit_job failed: "
+            + type(e).__name__ + ": " + str(e),
+        )
+    log.info(
+        "LAHC Batch job submitted: %s (run_id=%s, operator=%s)",
+        job_name, run_id, operator_email,
+    )
+
+    return _submitted_response(
+        batch_job_name=job_name,
+        run_id=run_id,
+        attempt_id=attempt_id,
+    )
+
+
+def _submitted_response(
+    *, batch_job_name: str, run_id: str, attempt_id: str,
+) -> Response:
+    """§10.1 SUBMITTED-state envelope. `submission.batchJobName`
+    surfaces the full resource name; `runId` + `attemptId` are
+    diagnostic IDs the operator's email body references."""
+    # `submission.jobId` is the trailing segment of the batch job name
+    # for convenience (operators rarely paste the full resource path).
+    job_id = batch_job_name.rsplit("/", 1)[-1] if "/" in batch_job_name else batch_job_name
+    return jsonify({
+        "state": "SUBMITTED",
+        "writebackEnvelope": None,
+        "error": None,
+        "submission": {
+            "batchJobName": batch_job_name,
+            "jobId": job_id,
+            "runId": run_id,
+            "attemptId": attempt_id,
+        },
+    })
 
 
 def _compute_lahc_test_endpoint() -> Response:

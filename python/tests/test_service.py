@@ -346,6 +346,972 @@ def test_compute_lahc_test_malformed_K_approved_returns_compute_error() -> None:
                 os.environ[name] = prior
 
 
+# --- M7 C4 T2D async LAHC front-door tests ------------------------------
+
+
+_T2D_ENV_VARS = [
+    "CONTAINER_IMAGE_URI", "GCP_PROJECT", "RM_LAUNCHER_CALLBACK_URL",
+    "LAHC_K_APPROVED", "LAHC_BATCH_REGION", "LAHC_BUCKET",
+]
+
+
+def _t2d_env_setup() -> dict[str, str | None]:
+    """Snapshot env vars + set required ones for the LAHC async path."""
+    saved = {k: os.environ.get(k) for k in _T2D_ENV_VARS}
+    os.environ["CONTAINER_IMAGE_URI"] = "gcr.io/rostermonsterv2/test:tag"
+    os.environ["GCP_PROJECT"] = "rostermonsterv2"
+    os.environ["RM_LAUNCHER_CALLBACK_URL"] = (
+        "https://script.google.com/macros/s/AKfycbXFAKE/exec"
+    )
+    return saved
+
+
+def _t2d_env_teardown(saved: dict[str, str | None]) -> None:
+    for name, prior in saved.items():
+        if prior is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = prior
+
+
+def _t2d_patch_clients(monkeypatch, *, list_jobs_response=None):
+    """Patch `BatchClient` → `InMemoryBatchClient`; patch GCS adapter
+    so the snapshot write is in-memory. Returns the in-memory batch
+    client + the GCS storage dict for assertion."""
+    from rostermonster_service import batch_client as bc_mod
+    from rostermonster_service import gcs as gcs_mod
+
+    storage: dict[str, dict] = {}
+
+    def fake_make_gcs_adapter(bucket):
+        def read_json(uri):
+            if uri not in storage:
+                raise FileNotFoundError(uri)
+            return json.loads(json.dumps(storage[uri]))
+
+        def write_json(uri, data):
+            storage[uri] = json.loads(json.dumps(data))
+
+        return read_json, write_json
+
+    inmem_client = bc_mod.InMemoryBatchClient(
+        list_jobs_response=list_jobs_response,
+    )
+
+    monkeypatch.setattr(bc_mod, "BatchClient", lambda: inmem_client)
+    monkeypatch.setattr(gcs_mod, "make_gcs_adapter", fake_make_gcs_adapter)
+    return inmem_client, storage
+
+
+def test_compute_lahc_async_happy_path_returns_submitted(monkeypatch) -> None:
+    """LAHC strategy + valid operatorEmail + no in-flight job →
+    SUBMITTED state with submission.batchJobName + jobId + runId +
+    attemptId per §10.1 SUBMITTED + Cloud Run thin front door."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, storage = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC", "seed": 12345},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED", (
+            "LAHC + valid operatorEmail MUST return SUBMITTED; got "
+            + repr(data.get("state"))
+        )
+        assert data["writebackEnvelope"] is None
+        assert data["error"] is None
+        sub = data["submission"]
+        assert sub["batchJobName"].startswith(
+            "projects/rostermonsterv2/locations/asia-southeast1/jobs/"
+        )
+        assert sub["jobId"]
+        assert sub["runId"]
+        assert sub["attemptId"]
+        # One Batch job submitted
+        assert len(inmem_client.submitted_jobs) == 1
+        # Snapshot written to GCS
+        snapshot_uris = [u for u in storage if u.endswith("/snapshot.json")]
+        assert len(snapshot_uris) == 1
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_missing_operator_email(monkeypatch) -> None:
+    """§9.3: operatorEmail REQUIRED on LAHC path → INPUT_ERROR with
+    code OPERATOR_EMAIL_REQUIRED when missing."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            # operatorEmail omitted
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "OPERATOR_EMAIL_REQUIRED"
+        # No Batch job submitted on missing operatorEmail
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_concurrent_run(monkeypatch) -> None:
+    """§8.7 sub-decision 8: concurrent-rejection via batch.jobs.list
+    filter. If an in-flight job matches the spreadsheet's label,
+    reject with INPUT_ERROR/CONCURRENT_RUN_REJECTED + include the
+    existing job's createTime + operator email in the message."""
+    saved = _t2d_env_setup()
+    try:
+        # Pre-seed an "existing in-flight job"
+        inmem_client, _ = _t2d_patch_clients(
+            monkeypatch,
+            list_jobs_response=[{
+                "name": "projects/rostermonsterv2/locations/asia-southeast1/jobs/existing-job",
+                "createTime": "2026-05-12T10:00:00Z",
+                "operatorEmail": "someone-else@example.com",
+            }],
+        )
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "CONCURRENT_RUN_REJECTED"
+        assert "someone-else@example.com" in data["error"]["message"]
+        assert "2026-05-12T10:00:00Z" in data["error"]["message"]
+        # No new Batch job submitted
+        assert len(inmem_client.submitted_jobs) == 0
+        # list_jobs WAS called with the expected filter
+        assert len(inmem_client.list_jobs_calls) == 1
+        filter_str = inmem_client.list_jobs_calls[0]["filter_str"]
+        assert "labels.spreadsheet_id=" in filter_str
+        assert "status.state=QUEUED" in filter_str
+        assert "status.state=SCHEDULED" in filter_str
+        assert "status.state=RUNNING" in filter_str
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_parser_failure(monkeypatch) -> None:
+    """Pre-Batch validation: snapshot that deserializes but is parser-
+    NON_CONSUMABLE → INPUT_ERROR/PARSER_REJECTED. Saves the Cloud
+    Batch round-trip cost on snapshots that can't produce a valid
+    envelope per the M7 C2 T2F orchestrator discipline (Codex P2
+    bad297f) — now duplicated on the new front door."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        # Mutate the real fixture to break parser consumability (empty
+        # doctorRecords → structural rejection without breaking shallow
+        # snapshotId / metadata deserialization).
+        bad_snapshot = _load_snapshot_dict()
+        bad_snapshot["doctorRecords"] = []
+        resp = client.post("/compute", json={
+            "snapshot": bad_snapshot,
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "PARSER_REJECTED"
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_missing_callback_url(monkeypatch) -> None:
+    """Deploy-time `RM_LAUNCHER_CALLBACK_URL` MUST be set for the LAHC
+    async path. Missing → COMPUTE_ERROR/SERVICE_MISCONFIGURED so the
+    maintainer's logs surface the misconfig immediately."""
+    saved = _t2d_env_setup()
+    # Clear the callback URL after setup
+    os.environ.pop("RM_LAUNCHER_CALLBACK_URL", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "COMPUTE_ERROR"
+        assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+        assert "RM_LAUNCHER_CALLBACK_URL" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_unknown_solver_strategy(monkeypatch) -> None:
+    """Codex P2 finding on PR #157 commit bb50582899: a typo'd
+    `solverStrategy` (e.g., `"LACH"`) used to silently fall through
+    to the SRB sync path, writing back a synchronous result instead
+    of surfacing the contract violation. Fix validates against the
+    `_VALID_SOLVER_STRATEGIES` enum + returns INPUT_ERROR /
+    INVALID_SOLVER_STRATEGY."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        # Typo: LACH instead of LAHC
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LACH"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR", (
+            "typo'd solverStrategy MUST surface as INPUT_ERROR, not "
+            "silently fall through to SRB"
+        )
+        assert data["error"]["code"] == "INVALID_SOLVER_STRATEGY"
+        # No Batch job submitted, no sync compute either
+        assert len(inmem_client.submitted_jobs) == 0
+        assert data["writebackEnvelope"] is None
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_non_string_solver_strategy(monkeypatch) -> None:
+    """Non-string `solverStrategy` (e.g., a number or null-but-explicit
+    bool) MUST surface as INPUT_ERROR / INVALID_SOLVER_STRATEGY rather
+    than silently route somewhere. Tests the type-coercion guard."""
+    saved = _t2d_env_setup()
+    try:
+        _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": 42},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "INVALID_SOLVER_STRATEGY"
+        assert "int" in data["error"]["message"]
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_non_positive_K_approved_env(monkeypatch) -> None:
+    """Codex P2 finding on PR #157 commit bb50582899: pre-fix
+    `LAHC_K_APPROVED=0` (or a negative integer) slipped through the
+    `int()` guard + propagated into `build_lahc_batch_job_spec` which
+    raises ValueError outside any error-handling block → Flask 500
+    instead of the documented SERVICE_MISCONFIGURED envelope.
+
+    Verifies both `LAHC_K_APPROVED=0` and `LAHC_K_APPROVED=-1` surface
+    as structured COMPUTE_ERROR/SERVICE_MISCONFIGURED at HTTP 200."""
+    for bad_value in ("0", "-1", "-88"):
+        saved = _t2d_env_setup()
+        os.environ["LAHC_K_APPROVED"] = bad_value
+        try:
+            inmem_client, _ = _t2d_patch_clients(monkeypatch)
+            client = _client()
+            resp = client.post("/compute", json={
+                "snapshot": _load_snapshot_dict(),
+                "operatorEmail": "operator@example.com",
+                "optionalConfig": {"solverStrategy": "LAHC"},
+            })
+            assert resp.status_code == 200, (
+                "expected HTTP 200 always per §10; got "
+                + str(resp.status_code) + " on LAHC_K_APPROVED="
+                + bad_value
+            )
+            data = resp.get_json()
+            assert data["state"] == "COMPUTE_ERROR", (
+                "non-positive LAHC_K_APPROVED MUST surface as "
+                "COMPUTE_ERROR/SERVICE_MISCONFIGURED; got "
+                + repr(data.get("state")) + " for value=" + bad_value
+            )
+            assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+            assert "LAHC_K_APPROVED" in data["error"]["message"]
+            assert "positive" in data["error"]["message"]
+            # No Batch job submitted
+            assert len(inmem_client.submitted_jobs) == 0
+        finally:
+            _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_explicit_null_solver_strategy(monkeypatch) -> None:
+    """Codex P2 round 2 finding on PR #157 commit f0c2d2ac82: pre-fix,
+    `solverStrategy: null` (explicit null) was treated as omitted +
+    silently routed to SRB. Tightening: explicit null surfaces as
+    INPUT_ERROR/INVALID_SOLVER_STRATEGY so a misconfigured bound-shim
+    payload doesn't mask the intent."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": None},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "INVALID_SOLVER_STRATEGY"
+        assert "explicitly null" in data["error"]["message"].lower() or (
+            "null" in data["error"]["message"].lower()
+        )
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_empty_solver_strategy(monkeypatch) -> None:
+    """Explicit empty-string `solverStrategy` is a client defect —
+    treat the same as explicit null per Codex P2 round 2 finding on
+    PR #157 commit f0c2d2ac82."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "   "},  # whitespace-only
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "INVALID_SOLVER_STRATEGY"
+        assert "empty" in data["error"]["message"].lower()
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_lahc_params_override(monkeypatch) -> None:
+    """Codex P2 round 2 finding on PR #157 commit f0c2d2ac82:
+    `optionalConfig.lahcParams` is documented in §9.3 as a maintainer
+    override but the worker currently hardcodes the FW-0037 tuple +
+    doesn't read an override env var. Silent-ignore would let a
+    maintainer think they're running a parameter sweep when the
+    worker is using FW-0037 the whole time — reject explicitly with
+    INPUT_ERROR/LAHC_PARAMS_OVERRIDE_NOT_SUPPORTED instead.
+
+    Operator-facing path always omits lahcParams (defaults are the
+    production tuple), so this restriction has no operator regression."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {
+                "solverStrategy": "LAHC",
+                "lahcParams": {
+                    "historyListLength": 100,
+                    "idleThreshold": 1000,
+                    "swapProbability": 0.3,
+                },
+            },
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "LAHC_PARAMS_OVERRIDE_NOT_SUPPORTED"
+        assert "FW-0037" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_accepts_omitted_lahc_params(monkeypatch) -> None:
+    """Omitting lahcParams entirely keeps the LAHC happy path working
+    — the worker uses the hardcoded FW-0037 defaults per §8.7. Counter-
+    test to `..._rejects_lahc_params_override` to lock the boundary."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED", (
+            "omitting lahcParams MUST still let the LAHC path go through"
+        )
+        assert len(inmem_client.submitted_jobs) == 1
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_non_string_snapshot_id(monkeypatch) -> None:
+    """Codex P2 round 3 finding on PR #157 commit ae14294339: pre-fix,
+    `metadata.snapshotId` was checked truthy-only — a numeric value
+    would slip through + `derive_run_id()` would raise an uncaught
+    ValueError → Flask 500. Tighten to require non-empty string."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        snap = _load_snapshot_dict()
+        # Corrupt: numeric snapshotId
+        snap["metadata"]["snapshotId"] = 12345
+        resp = client.post("/compute", json={
+            "snapshot": snap,
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200, (
+            "expected HTTP 200 always per §10; got "
+            + str(resp.status_code)
+        )
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "INVALID_SNAPSHOT_SHAPE"
+        assert "snapshotId" in data["error"]["message"]
+        assert "non-empty string" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_non_string_source_spreadsheet_id(monkeypatch) -> None:
+    """Same boundary as `snapshotId` — `metadata.sourceSpreadsheetId`
+    feeds into `normalize_label_value` for the Batch label, which
+    would raise an uncaught error on a non-string. Codex P2 round 3
+    finding on PR #157 commit ae14294339."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        snap = _load_snapshot_dict()
+        snap["metadata"]["sourceSpreadsheetId"] = ["not", "a", "string"]
+        resp = client.post("/compute", json={
+            "snapshot": snap,
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "INVALID_SNAPSHOT_SHAPE"
+        assert "sourceSpreadsheetId" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_empty_lahc_bucket_env(monkeypatch) -> None:
+    """Codex P2 round 3 finding on PR #157 commit ae14294339: pre-fix,
+    `LAHC_BUCKET=""` survived `.strip()` + propagated into
+    `build_lahc_batch_job_spec()` which raises ValueError outside any
+    structured-error path → Flask 500. Fix: guard for empty bucket
+    + return SERVICE_MISCONFIGURED."""
+    for bad_value in ("", "   ", "\t\n"):
+        saved = _t2d_env_setup()
+        os.environ["LAHC_BUCKET"] = bad_value
+        try:
+            inmem_client, _ = _t2d_patch_clients(monkeypatch)
+            client = _client()
+            resp = client.post("/compute", json={
+                "snapshot": _load_snapshot_dict(),
+                "operatorEmail": "operator@example.com",
+                "optionalConfig": {"solverStrategy": "LAHC"},
+            })
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["state"] == "COMPUTE_ERROR", (
+                "empty LAHC_BUCKET MUST surface as COMPUTE_ERROR / "
+                "SERVICE_MISCONFIGURED; got " + repr(data.get("state"))
+                + " on value=" + repr(bad_value)
+            )
+            assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+            assert "LAHC_BUCKET" in data["error"]["message"]
+            assert len(inmem_client.submitted_jobs) == 0
+        finally:
+            _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_empty_lahc_batch_region_env(monkeypatch) -> None:
+    """Same pattern as `LAHC_BUCKET=""` — `LAHC_BATCH_REGION=""` would
+    survive `.strip()` + propagate into `submit_job` as empty region
+    → Cloud Batch error → Flask 500. Mirror the bucket-guard treatment
+    for symmetry. Caught by Codex P2 round 3 finding analysis on
+    PR #157 commit ae14294339."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_BATCH_REGION"] = "   "
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "COMPUTE_ERROR"
+        assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+        assert "LAHC_BATCH_REGION" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_unsanitizable_snapshot_id(monkeypatch) -> None:
+    """Codex P2 round 4 finding on PR #157 commit e761bb975a:
+    `snapshotId` that's non-empty but sanitizes to nothing (all non-
+    alphanumeric characters, e.g., `"!!!"` or `"@@@"`) made
+    `derive_run_id()` raise ValueError outside any structured-error
+    block → Flask 500. Fix: catch + surface as INPUT_ERROR /
+    INVALID_SNAPSHOT_SHAPE."""
+    for bad_id in ("!!!", "@@@", "---", "...", "!@#$%^&*()"):
+        saved = _t2d_env_setup()
+        try:
+            inmem_client, _ = _t2d_patch_clients(monkeypatch)
+            client = _client()
+            snap = _load_snapshot_dict()
+            snap["metadata"]["snapshotId"] = bad_id
+            resp = client.post("/compute", json={
+                "snapshot": snap,
+                "operatorEmail": "operator@example.com",
+                "optionalConfig": {"solverStrategy": "LAHC"},
+            })
+            assert resp.status_code == 200, (
+                "expected HTTP 200 always per §10; got "
+                + str(resp.status_code) + " on snapshotId=" + repr(bad_id)
+            )
+            data = resp.get_json()
+            assert data["state"] == "INPUT_ERROR", (
+                "unsanitizable snapshotId MUST surface as INPUT_ERROR; "
+                "got " + repr(data.get("state")) + " on " + repr(bad_id)
+            )
+            assert data["error"]["code"] == "INVALID_SNAPSHOT_SHAPE"
+            assert "snapshotId" in data["error"]["message"]
+            assert len(inmem_client.submitted_jobs) == 0
+        finally:
+            _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_explicit_null_source_spreadsheet_id(monkeypatch) -> None:
+    """Codex P2 round 5 finding on PR #157 commit 918e6a3685: pre-fix,
+    explicit `metadata.sourceSpreadsheetId: null` silently fell back
+    to `snapshotId` for the Cloud Batch `labels.spreadsheet_id` label.
+    The front door would SUBMIT a Batch job for a malformed snapshot
+    whose finalizer/writeback would later target an unusable
+    spreadsheet ID — operator-facing failure landed downstream rather
+    than at admission. Tighten: explicit `null` is a client defect."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        snap = _load_snapshot_dict()
+        snap["metadata"]["sourceSpreadsheetId"] = None
+        resp = client.post("/compute", json={
+            "snapshot": snap,
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR", (
+            "explicit null sourceSpreadsheetId MUST surface as "
+            "INPUT_ERROR, not silently fall back to snapshotId"
+        )
+        assert data["error"]["code"] == "INVALID_SNAPSHOT_SHAPE"
+        assert "sourceSpreadsheetId" in data["error"]["message"]
+        assert "null" in data["error"]["message"].lower()
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_omitted_source_spreadsheet_id(monkeypatch) -> None:
+    """Counter-test to confirm the snapshot contract: removing
+    `sourceSpreadsheetId` from `metadata` causes `_snapshot_from_dict()`
+    to raise `KeyError` upstream → INVALID_SNAPSHOT_SHAPE (via the
+    pre-existing snapshot-deserializability guard). The Codex P2
+    round 5 fix's tighter validation only handles EXPLICIT
+    `null`/non-string/empty cases; OMITTED is already caught upstream."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        snap = _load_snapshot_dict()
+        snap["metadata"].pop("sourceSpreadsheetId", None)
+        resp = client.post("/compute", json={
+            "snapshot": snap,
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "INVALID_SNAPSHOT_SHAPE"
+        assert "sourceSpreadsheetId" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_out_of_int64_seed(monkeypatch) -> None:
+    """Codex P2 round 6 finding on PR #157 commit a504e377ea: pre-fix,
+    an explicit `optionalConfig.seed` outside the signed 64-bit range
+    passed `_coerce_optional_int` (which only rejected bool/float/non-
+    int) and slipped through SUBMITTED, then failed inside
+    `derive_K_seeds` on the Cloud Batch worker → task error-result
+    write → operator silently got no email (FW-0039 territory).
+    Front door now validates the int64 bound per
+    `docs/solver_contract.md` §9 + returns INPUT_ERROR /
+    INVALID_OPTIONAL_CONFIG at admission."""
+    int64_max = (2 ** 63) - 1
+    int64_min = -(2 ** 63)
+    # Out-of-range values: max+1, min-1, +/- 2^70
+    for bad_seed in (int64_max + 1, int64_min - 1, 2 ** 70, -(2 ** 70)):
+        saved = _t2d_env_setup()
+        try:
+            inmem_client, _ = _t2d_patch_clients(monkeypatch)
+            client = _client()
+            resp = client.post("/compute", json={
+                "snapshot": _load_snapshot_dict(),
+                "operatorEmail": "operator@example.com",
+                "optionalConfig": {"solverStrategy": "LAHC", "seed": bad_seed},
+            })
+            assert resp.status_code == 200, (
+                "expected HTTP 200 always per §10; got "
+                + str(resp.status_code) + " on seed=" + str(bad_seed)
+            )
+            data = resp.get_json()
+            assert data["state"] == "INPUT_ERROR", (
+                "out-of-int64 seed MUST surface as INPUT_ERROR; got "
+                + repr(data.get("state")) + " on seed=" + str(bad_seed)
+            )
+            assert data["error"]["code"] == "INVALID_OPTIONAL_CONFIG"
+            assert "64-bit" in data["error"]["message"]
+            # No Batch job submitted
+            assert len(inmem_client.submitted_jobs) == 0
+        finally:
+            _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_accepts_int64_boundary_seeds(monkeypatch) -> None:
+    """Counter-test: seeds AT the int64 boundary (`int64_min`,
+    `int64_max`, 0) MUST pass + reach SUBMITTED. Locks the inclusive-
+    bound invariant — strict-less-than would silently reject valid
+    seeds. Boundary test pairs with `..._rejects_out_of_int64_seed`."""
+    int64_max = (2 ** 63) - 1
+    int64_min = -(2 ** 63)
+    for good_seed in (int64_max, int64_min, 0, 12345, -42):
+        saved = _t2d_env_setup()
+        try:
+            inmem_client, _ = _t2d_patch_clients(monkeypatch)
+            client = _client()
+            resp = client.post("/compute", json={
+                "snapshot": _load_snapshot_dict(),
+                "operatorEmail": "operator@example.com",
+                "optionalConfig": {"solverStrategy": "LAHC", "seed": good_seed},
+            })
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["state"] == "SUBMITTED", (
+                "boundary seed " + str(good_seed) + " MUST pass; got "
+                + repr(data.get("state")) + " / "
+                + repr(data.get("error"))
+            )
+            assert len(inmem_client.submitted_jobs) == 1
+        finally:
+            _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_catches_parse_exception(monkeypatch) -> None:
+    """Codex P2 round 7 finding on PR #157 commit 3f62f8130e: pre-fix,
+    `parse()` could raise on malformed nested fields (e.g.,
+    `dayRecords[0].rawDateText: null`) that `_snapshot_from_dict()`
+    accepted. Uncaught exception made the LAHC path return Flask
+    500 HTML instead of the documented always-200 structured
+    envelope. Fix: wrap `parse()` in try/except + surface as
+    INPUT_ERROR/INVALID_SNAPSHOT_SHAPE."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        snap = _load_snapshot_dict()
+        # Corrupt a nested field: `rawDateText: null` deserializes OK
+        # but trips `_validate_structural` on `.strip()`.
+        if snap.get("dayRecords"):
+            snap["dayRecords"][0]["rawDateText"] = None
+        else:
+            # Defensive fallback if fixture shape changes.
+            snap["dayRecords"] = [{"rawDateText": None}]
+        resp = client.post("/compute", json={
+            "snapshot": snap,
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200, (
+            "expected HTTP 200 always per §10; got "
+            + str(resp.status_code)
+        )
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR", (
+            "parse() raise on malformed nested field MUST surface as "
+            "INPUT_ERROR, not Flask 500. Got " + repr(data.get("state"))
+        )
+        assert data["error"]["code"] == "INVALID_SNAPSHOT_SHAPE"
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_honors_max_candidates_override(monkeypatch) -> None:
+    """Codex P2 round 8 finding on PR #157 commit d1fdbf4ac6: pre-fix,
+    `optionalConfig.maxCandidates` was silently ignored on the LAHC
+    async path even though §9.3 documents it + §12A.3 defines K as
+    `maxCandidates`. Maintainer experiments requesting custom K got
+    SUBMITTED but ran the deploy-time default (88), corrupting
+    benchmark results. Fix: override K_approved with the request's
+    maxCandidates when present + valid; verified by inspecting the
+    submitted Batch job spec's RM_K_APPROVED env."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC", "maxCandidates": 5},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED", (
+            "valid maxCandidates override MUST pass; got "
+            + repr(data.get("state"))
+        )
+        assert len(inmem_client.submitted_jobs) == 1
+        # Inspect the submitted Batch job spec's RM_K_APPROVED env
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        env = (
+            job_spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
+        )
+        assert env["RM_K_APPROVED"] == "5", (
+            "request's maxCandidates=5 MUST override the deploy-time "
+            "default; got RM_K_APPROVED=" + repr(env.get("RM_K_APPROVED"))
+        )
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_invalid_max_candidates(monkeypatch) -> None:
+    """`maxCandidates` MUST be a positive int when present. Zero,
+    negative, non-int values surface as INPUT_ERROR/
+    INVALID_OPTIONAL_CONFIG (counter-test to lock the boundary fix)."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        for bad_value in (0, -1, "five"):
+            resp = client.post("/compute", json={
+                "snapshot": _load_snapshot_dict(),
+                "operatorEmail": "operator@example.com",
+                "optionalConfig": {
+                    "solverStrategy": "LAHC",
+                    "maxCandidates": bad_value,
+                },
+            })
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["state"] == "INPUT_ERROR", (
+                "invalid maxCandidates=" + repr(bad_value)
+                + " MUST surface as INPUT_ERROR; got "
+                + repr(data.get("state"))
+            )
+            assert data["error"]["code"] == "INVALID_OPTIONAL_CONFIG"
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_omitted_max_candidates_uses_default(monkeypatch) -> None:
+    """When `maxCandidates` is omitted, the deploy-time default
+    (88 via `_LAHC_DEFAULT_K_APPROVED`) applies. Boundary counter-test
+    to lock the override-vs-default invariant."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED"
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        env = (
+            job_spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
+        )
+        # No env override → default 88
+        assert env["RM_K_APPROVED"] == "88"
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_max_candidates_above_vm_capacity(monkeypatch) -> None:
+    """Codex P2 round 9 finding on PR #157 commit e60372d464: pre-
+    fix, my round-8 `maxCandidates` honoring forwarded uncapped to
+    `K_approved`, but `Pool(K)` on the c3-highcpu-88 VM can't fit
+    `maxCandidates: 500` (88 vCPUs). Would spawn 500 worker processes
+    contending for 88 cores → over-subscribe + likely blow 10-min
+    cap. Cap at deploy-time K_approved + reject excess with
+    INPUT_ERROR/MAX_CANDIDATES_EXCEEDS_VM_CAPACITY."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {
+                "solverStrategy": "LAHC",
+                "maxCandidates": 500,  # > deploy-time 88
+            },
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "MAX_CANDIDATES_EXCEEDS_VM_CAPACITY"
+        assert "maxCandidates" in data["error"]["message"]
+        assert "K_approved" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_accepts_max_candidates_at_vm_capacity(monkeypatch) -> None:
+    """Boundary counter-test: `maxCandidates == K_approved` (88 by
+    default) MUST pass — cap is inclusive. Locks the boundary so a
+    strict-less-than regression rejecting K=88 surfaces immediately."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {
+                "solverStrategy": "LAHC",
+                "maxCandidates": 88,  # AT deploy-time capacity
+            },
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED", (
+            "maxCandidates == K_approved (88) MUST pass (inclusive cap); "
+            "got " + repr(data.get("state"))
+        )
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        env = (
+            job_spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
+        )
+        assert env["RM_K_APPROVED"] == "88"
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_deploy_time_K_above_vm_capacity(monkeypatch) -> None:
+    """Codex P2 round 10 finding on PR #157 commit 65108e42a3: my
+    round-9 cap on `maxCandidates` used the deploy-time `K_approved`
+    (env or default 88) as the upper bound. But if the env itself
+    is misconfigured above 88 (e.g., `LAHC_K_APPROVED=176`), the
+    cap is too loose — Pool(176) on a c3-highcpu-88 VM (job spec
+    hardcoded) over-subscribes 2x. The right cap is the fixed VM
+    vCPU count. Fix: SERVICE_MISCONFIGURED rejection at admission
+    when LAHC_K_APPROVED > 88."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_K_APPROVED"] = "176"
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "COMPUTE_ERROR", (
+            "LAHC_K_APPROVED > VM vCPU count MUST surface as "
+            "SERVICE_MISCONFIGURED; got " + repr(data.get("state"))
+        )
+        assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+        assert "LAHC_K_APPROVED" in data["error"]["message"]
+        assert "vCPU" in data["error"]["message"] or "88" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_accepts_deploy_time_K_at_vm_capacity(monkeypatch) -> None:
+    """Boundary counter-test: `LAHC_K_APPROVED == 88` (= VM vCPU
+    count) MUST pass — cap is inclusive. Locks the invariant so a
+    strict-less-than regression silently rejecting the default
+    deploy-time setting surfaces immediately."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_K_APPROVED"] = "88"
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED", (
+            "LAHC_K_APPROVED == 88 (= VM vCPU count) MUST pass "
+            "(inclusive cap); got " + repr(data.get("state"))
+        )
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_srb_path_stays_synchronous() -> None:
+    """Back-compat: omitting `solverStrategy` (or passing
+    "SEEDED_RANDOM_BLIND") keeps the existing sync /compute path —
+    returns OK / UNSATISFIED / etc. with a wrapper envelope, not
+    SUBMITTED. M7 C4 T2D's async dispatch only fires on
+    solverStrategy=LAHC."""
+    client = _client()
+    resp = client.post("/compute", json={
+        "snapshot": _load_snapshot_dict(),
+        "optionalConfig": {"maxCandidates": 2, "seed": 99},
+    })
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["state"] in ("OK", "UNSATISFIED")
+    assert data["state"] != "SUBMITTED"
+    # SRB sync path carries the writebackEnvelope inline.
+    assert data["writebackEnvelope"] is not None
+
+
 # Minimal pytest-equivalent runner.
 def _run() -> int:
     tests = [
