@@ -1548,10 +1548,11 @@ def test_compute_lahc_async_machine_type_and_vcpu_count_match_succeeds(monkeypat
 
 
 def test_compute_lahc_async_rejects_unknown_machine_type_without_vcpu_env(monkeypatch) -> None:
-    """Codex P2 round 3 on PR #161: a non-c3-highcpu machine_type (or
-    typo like c3-highcpu-101 not in the table) without an explicit
-    LAHC_VM_VCPU_COUNT MUST reject — pre-fix vm_vcpu_count fell back
-    to the static default 88 and the job spec over-claimed."""
+    """Codex P2 round 4: any unsupported machine_type (non-c3-highcpu
+    or c3-highcpu-N where N isn't in the table) MUST reject. Memory
+    per vCPU varies across families (n2-highcpu = 1 GB/vCPU vs
+    c3-highcpu = 2 GB/vCPU), so vCPU count alone can't derive a safe
+    memoryMib."""
     saved = _t2d_env_setup()
     os.environ["LAHC_MACHINE_TYPE"] = "n2-highcpu-32"
     os.environ.pop("LAHC_VM_VCPU_COUNT", None)
@@ -1568,17 +1569,18 @@ def test_compute_lahc_async_rejects_unknown_machine_type_without_vcpu_env(monkey
         assert data["state"] == "COMPUTE_ERROR"
         assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
         assert "n2-highcpu-32" in data["error"]["message"]
-        assert "LAHC_VM_VCPU_COUNT" in data["error"]["message"]
+        assert "supported" in data["error"]["message"].lower()
         assert len(inmem_client.submitted_jobs) == 0
     finally:
         _t2d_env_teardown(saved)
 
 
-def test_compute_lahc_async_unknown_machine_type_with_explicit_vcpu_succeeds(monkeypatch) -> None:
-    """Counter-test: unknown machine_type + explicit LAHC_VM_VCPU_COUNT
-    succeeds, with cpu_milli + memory_mib derived from the fallback
-    formula. Lets operators deploy a new VM family without code change
-    once they pin the vCPU count."""
+def test_compute_lahc_async_unknown_machine_type_rejected_even_with_explicit_vcpu(monkeypatch) -> None:
+    """Codex P2 on PR #161 round 4: an explicit vCPU env is not enough
+    to safely derive memoryMib across machine families (n2-highcpu
+    has 1 GB/vCPU vs c3-highcpu's 2 GB/vCPU). Unsupported machine
+    families MUST reject — adding one means adding a row to
+    _C3_HIGHCPU_TOPOLOGIES with the right memory claim."""
     saved = _t2d_env_setup()
     os.environ["LAHC_MACHINE_TYPE"] = "n2-highcpu-32"
     os.environ["LAHC_VM_VCPU_COUNT"] = "32"
@@ -1592,16 +1594,11 @@ def test_compute_lahc_async_unknown_machine_type_with_explicit_vcpu_succeeds(mon
         })
         assert resp.status_code == 200
         data = resp.get_json()
-        assert data["state"] == "SUBMITTED", (
-            "unknown machine_type + explicit vCPU MUST submit; got "
-            + repr(data.get("state"))
-            + " message=" + str(data.get("error", {}).get("message"))
-        )
-        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
-        compute_resource = (
-            job_spec["allocationPolicy"]["instances"][0]["policy"]
-        )
-        assert compute_resource["machineType"] == "n2-highcpu-32"
+        assert data["state"] == "COMPUTE_ERROR"
+        assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+        assert "n2-highcpu-32" in data["error"]["message"]
+        assert "supported" in data["error"]["message"].lower()
+        assert len(inmem_client.submitted_jobs) == 0
     finally:
         _t2d_env_teardown(saved)
 

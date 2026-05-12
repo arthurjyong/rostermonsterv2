@@ -606,41 +606,34 @@ def _resolve_vm_topology() -> tuple[int, str, int, int] | Response:
             )
 
     topology = _C3_HIGHCPU_TOPOLOGIES.get(machine_type)
-    if topology is not None:
-        table_vcpu, cpu_milli, memory_mib = topology
-        if explicit_vcpu is not None and explicit_vcpu != table_vcpu:
-            return _compute_error(
-                "SERVICE_MISCONFIGURED",
-                _LAHC_MACHINE_TYPE_ENV + "=" + machine_type + " has "
-                + str(table_vcpu) + " vCPUs, but "
-                + _LAHC_VM_VCPU_COUNT_ENV + "=" + str(explicit_vcpu)
-                + ". These two env vars MUST describe the same VM. "
-                "Maintainer must redeploy with matching values "
-                "(or unset " + _LAHC_VM_VCPU_COUNT_ENV
-                + " to derive from " + _LAHC_MACHINE_TYPE_ENV + ").",
-            )
-        return (table_vcpu, machine_type, cpu_milli, memory_mib)
-
-    # Unknown machine family — require explicit VM_VCPU_COUNT so the
-    # K cap doesn't silently fall back to 88 + over-claim. Codex P2 on
-    # PR #161 round 3: a non-c3-highcpu deploy without VCPU env should
-    # fail fast, not submit an oversized job.
-    if explicit_vcpu is None:
+    if topology is None:
+        # Codex P2 on PR #161 round 4: a vCPU env alone isn't enough
+        # to infer memoryMib across machine families (n2-highcpu has
+        # 1 GB/vCPU; c3-highcpu has 2 GB/vCPU). Reject unsupported
+        # machine_types fail-fast — adding a family means adding a
+        # row to _C3_HIGHCPU_TOPOLOGIES with the family's safe claim.
         return _compute_error(
             "SERVICE_MISCONFIGURED",
             _LAHC_MACHINE_TYPE_ENV + "=" + machine_type + " is not a "
-            "known c3-highcpu size (supported: "
-            + ", ".join(sorted(_C3_HIGHCPU_TOPOLOGIES)) + "). When "
-            "deploying a different machine family, "
-            + _LAHC_VM_VCPU_COUNT_ENV + " MUST be set explicitly so the "
-            "K cap + Pool size match the VM.",
+            "supported machine type (supported: "
+            + ", ".join(sorted(_C3_HIGHCPU_TOPOLOGIES)) + "). To "
+            "deploy a different VM family, add an entry to "
+            "_C3_HIGHCPU_TOPOLOGIES with its safe cpu_milli + "
+            "memory_mib claims.",
         )
-    # 1818 MiB/vCPU is the M7 baseline lock ratio (160000 MiB on 88
-    # vCPUs ≈ 89% of N*2 GiB). Floor 1024 MiB so a hypothetical 1-vCPU
-    # entry still has positive memoryMib.
-    cpu_milli = explicit_vcpu * 1000
-    memory_mib = max(1024, explicit_vcpu * 1818)
-    return (explicit_vcpu, machine_type, cpu_milli, memory_mib)
+    table_vcpu, cpu_milli, memory_mib = topology
+    if explicit_vcpu is not None and explicit_vcpu != table_vcpu:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            _LAHC_MACHINE_TYPE_ENV + "=" + machine_type + " has "
+            + str(table_vcpu) + " vCPUs, but "
+            + _LAHC_VM_VCPU_COUNT_ENV + "=" + str(explicit_vcpu)
+            + ". These two env vars MUST describe the same VM. "
+            "Maintainer must redeploy with matching values "
+            "(or unset " + _LAHC_VM_VCPU_COUNT_ENV
+            + " to derive from " + _LAHC_MACHINE_TYPE_ENV + ").",
+        )
+    return (table_vcpu, machine_type, cpu_milli, memory_mib)
 
 
 def _compute_lahc_async_endpoint(
