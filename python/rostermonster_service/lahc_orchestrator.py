@@ -498,40 +498,41 @@ def _build_post_aggregation_envelope(
     # per-trajectory entries; this is a Cloud-Batch-specific gap with
     # no local-CLI analog. Operators see those tasks counted in
     # `lahcSummary.incompleteTaskIndices` instead.
-    candidate_lookup = {
-        (c["taskIndex"], c["candidateSeed"]): c
-        for c in candidates_raw
-    }
-    failed_lookup = {
-        (f["taskIndex"], f["candidateSeed"]): f
-        for f in agg["failedTrajectories"]
-    }
+    # Look up by candidateSeed only (Codex P2 round 1 finding 1 fix for
+    # M7 C4 T2A.1): `derive_K_seeds()` produces K UNIQUE seeds, so seed
+    # alone disambiguates a candidate. Pre-amendment used
+    # `(taskIndex, candidateSeed)` keys which assumed multi-task
+    # partitioning — under single-task, every candidate carries
+    # `taskIndex=0`, so the partition-based lookup would only match
+    # seeds 0..7 (first pseudo-task) and lose per-trajectory diagnostics
+    # for seeds 8..K-1. Walking `derive_K_seeds()` once + keying by seed
+    # is the simpler shape that works for both single-task and the
+    # historical multi-task path.
+    candidate_lookup = {c["candidateSeed"]: c for c in candidates_raw}
+    failed_lookup = {f["candidateSeed"]: f for f in agg["failedTrajectories"]}
     all_seeds = derive_K_seeds(master_seed, K_approved)
-    # Local re-import to avoid circular: _partition_seeds is module-level.
-    per_task_seeds = _partition_seeds(all_seeds)
     per_traj_status_list: list[str] = []
     per_traj_iters_list: list[int] = []
     per_traj_accepted_list: list[int] = []
     per_traj_best_list: list[float | None] = []
     per_traj_terminal_list: list[float | None] = []
-    for t_idx, t_seeds in enumerate(per_task_seeds):
-        for seed in t_seeds:
-            key = (t_idx, seed)
-            if key in candidate_lookup:
-                c = candidate_lookup[key]
-                per_traj_status_list.append("SUCCEEDED")
-                per_traj_iters_list.append(int(c["iters"]))
-                per_traj_accepted_list.append(int(c["acceptedMoves"]))
-                per_traj_best_list.append(c["bestScore"])
-                per_traj_terminal_list.append(c["terminalScore"])
-            elif key in failed_lookup:
-                per_traj_status_list.append("SEED_FAILED")
-                per_traj_iters_list.append(0)
-                per_traj_accepted_list.append(0)
-                per_traj_best_list.append(None)
-                per_traj_terminal_list.append(None)
-            # else: missing task — no per-trajectory entry recorded;
-            # surfaces via `lahcSummary.incompleteTaskIndices`.
+    for seed in all_seeds:
+        if seed in candidate_lookup:
+            c = candidate_lookup[seed]
+            per_traj_status_list.append("SUCCEEDED")
+            per_traj_iters_list.append(int(c["iters"]))
+            per_traj_accepted_list.append(int(c["acceptedMoves"]))
+            per_traj_best_list.append(c["bestScore"])
+            per_traj_terminal_list.append(c["terminalScore"])
+        elif seed in failed_lookup:
+            per_traj_status_list.append("SEED_FAILED")
+            per_traj_iters_list.append(0)
+            per_traj_accepted_list.append(0)
+            per_traj_best_list.append(None)
+            per_traj_terminal_list.append(None)
+        # else: missing — no per-trajectory entry recorded; surfaces via
+        # `lahcSummary.incompleteTaskIndices` (single-task: always [] or
+        # [0] depending on resultPresent).
     per_traj_status = tuple(per_traj_status_list)
     per_traj_iters = tuple(per_traj_iters_list)
     per_traj_accepted = tuple(per_traj_accepted_list)
