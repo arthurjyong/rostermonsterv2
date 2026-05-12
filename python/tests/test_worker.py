@@ -47,6 +47,14 @@ import pytest  # noqa: E402
 from rostermonster.solver import derive_K_seeds  # noqa: E402
 from rostermonster_service import worker as worker_mod  # noqa: E402
 
+# Tests that need the real FW-0037 LAHC search (e.g., end-to-end smoke,
+# determinism, derive_K_seeds → solve() integration) carry
+# `@pytest.mark.slow` per Codex P2 finding on PR #150 commit faceff1831
+# — default `pytest` deselects via the `[tool.pytest.ini_options]`
+# addopts in `python/pyproject.toml`. Tests that only audit the
+# worker's wrapper / aggregation logic use `_stub_succeeded_executor`
+# (defined below) to bypass real solver work.
+
 
 _FIXTURE_PATH = (
     Path(__file__).resolve().parent / "data" / "icu_hd_may_2026_snapshot.json"
@@ -58,8 +66,47 @@ _ATTEMPT_ID = "attempt-test-aaaa1111"
 
 def _serial_executor(fn, args_iter):
     """Test-only pool executor — runs trajectories in-process to avoid
-    multiprocessing spawn semantics + keep test wall-time bounded."""
+    multiprocessing spawn semantics + keep test wall-time bounded.
+    NOTE: still drives the real FW-0037 LAHC (idleThreshold=3500) per
+    trajectory; only use in tests marked `@pytest.mark.slow` or in
+    tests that genuinely audit solver behavior end-to-end. Tests that
+    only check the worker's wrapper / aggregation logic should use
+    `_stub_succeeded_executor` below to bypass the multi-second LAHC
+    search per Codex P2 finding on PR #150 commit faceff1831."""
     return [fn(a) for a in args_iter]
+
+
+def _stub_succeeded_executor(fn, args_iter):
+    """Test-only pool executor that returns synthetic SUCCEEDED per-
+    trajectory dicts WITHOUT calling `fn` (which would invoke the real
+    FW-0037 LAHC search at idleThreshold=3500, ~30-90s per trajectory).
+    Use in tests that only audit the worker's wrapper / aggregation /
+    field-shape behavior; tests that need real solver output keep
+    `_serial_executor` and carry `@pytest.mark.slow`.
+
+    Each arg tuple is `(model, scoring_config, lahc_params, master_seed,
+    candidate_seed)` per `_run_one_trajectory`; we extract candidate_seed
+    + emit a SUCCEEDED dict mirroring `_run_one_trajectory`'s shape so
+    `worker_main`'s aggregation downstream stays a pure dict-to-dict
+    pipeline."""
+    out = []
+    for args in args_iter:
+        candidate_seed = int(args[-1])
+        out.append({
+            "status": "SUCCEEDED",
+            "candidateSeed": candidate_seed,
+            "assignments": [
+                {"dateKey": "2026-05-01", "slotType": "ICU",
+                 "unitIndex": 0, "doctorId": "dr_a"},
+            ],
+            "iters": 1,
+            "acceptedMoves": 0,
+            "bestScore": 0.0,
+            "terminalScore": 0.0,
+            "placementAttempts": 1,
+            "rejectionsByReason": {},
+        })
+    return out
 
 
 def _make_inmem_gcs(initial: dict[str, dict]):
@@ -131,12 +178,16 @@ def test_lahc_constants_match_fw_0037_elbow_tuple() -> None:
 # --- Round-trip ----------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_worker_main_round_trips_snapshot_to_result() -> None:
     """Full pipeline: K=2 trajectories → result.json with 2 entries
     (the real fixture is satisfiable so both trajectories should
     SUCCEED). Result appears at the §8.7 single-task key path
     (`gs://{bucket}/{runId}/result.json`, no `task-N` subdir); schema
-    fields all populated."""
+    fields all populated. Runs the REAL FW-0037 LAHC end-to-end —
+    smoke-test variant of the worker contract — so this test
+    carries `@pytest.mark.slow` per Codex P2 on PR #150 commit
+    faceff1831; opt-in via `pytest -m slow`."""
     read_json, write_json, storage = _make_inmem_gcs(_build_storage())
 
     result = worker_mod.worker_main(
@@ -186,7 +237,10 @@ def test_worker_result_candidate_fields_match_schema() -> None:
     per-trajectory fields (`candidateSeed`, `assignments`, `iters`,
     `acceptedMoves`, `bestScore`, `terminalScore`) per the §8.7
     result.json schema. Orchestrator T2F's analyzer pass-through depends
-    on `assignments` being present + structurally valid."""
+    on `assignments` being present + structurally valid.
+
+    Stubbed executor — only the worker's wrapper / aggregation field
+    shape is under test; real LAHC isn't required."""
     read_json, write_json, _ = _make_inmem_gcs(_build_storage())
 
     result = worker_mod.worker_main(
@@ -195,14 +249,11 @@ def test_worker_result_candidate_fields_match_schema() -> None:
         K_approved=1,
         read_json=read_json,
         write_json=write_json,
-        pool_executor=_serial_executor,
+        pool_executor=_stub_succeeded_executor,
         bucket=_BUCKET,
     )
 
-    if not result["candidates"]:
-        # The single-trajectory case may SEED_FAIL; that's still
-        # contract-valid — just skip the field-shape assertion.
-        return
+    assert result["candidates"], "stub executor should always SUCCEED"
     cand = result["candidates"][0]
     expected = {"candidateSeed", "assignments", "iters", "acceptedMoves",
                 "bestScore", "terminalScore"}
@@ -221,7 +272,11 @@ def test_worker_derives_K_seeds_locally_matching_solver_helper() -> None:
     CLI K-trajectory loop uses. Verified by comparing the result.json
     `candidateSeed` field for each surfaced trajectory against the
     helper's output for the same `(masterSeed, K)`. Drift would silently
-    fork the local-CLI vs Cloud-Batch determinism per §12A.4."""
+    fork the local-CLI vs Cloud-Batch determinism per §12A.4.
+
+    Stubbed executor — only the worker→derive_K_seeds wiring is under
+    test; the candidate seeds surface in result.json regardless of
+    whether the executor runs real LAHC or stubs it."""
     master_seed = 7777
     K = 3
     expected_seeds = derive_K_seeds(master_seed, K)
@@ -233,7 +288,7 @@ def test_worker_derives_K_seeds_locally_matching_solver_helper() -> None:
         K_approved=K,
         read_json=read_json,
         write_json=write_json,
-        pool_executor=_serial_executor,
+        pool_executor=_stub_succeeded_executor,
         bucket=_BUCKET,
     )
 
@@ -252,7 +307,11 @@ def test_worker_negative_master_seed_round_trips() -> None:
     seeds (via the `_UINT64_MASK` wrap). The worker MUST NOT pre-
     normalize or reject negative `master_seed` — it relays the raw int
     to `derive_K_seeds()`. Closes the door on a silent surface-skew if
-    the worker added defensive guards `derive_K_seeds` doesn't have."""
+    the worker added defensive guards `derive_K_seeds` doesn't have.
+
+    Stubbed executor — the worker's seed-relay path doesn't depend on
+    solver behavior; we only need to verify the seeds in result.json
+    match `derive_K_seeds(-999, 2)`."""
     read_json, write_json, _ = _make_inmem_gcs(_build_storage())
 
     result = worker_mod.worker_main(
@@ -261,7 +320,7 @@ def test_worker_negative_master_seed_round_trips() -> None:
         K_approved=2,
         read_json=read_json,
         write_json=write_json,
-        pool_executor=_serial_executor,
+        pool_executor=_stub_succeeded_executor,
         bucket=_BUCKET,
     )
 
@@ -281,7 +340,9 @@ def test_worker_echoes_attempt_id_kwarg_into_result_json() -> None:
     worker echoes the `attempt_id` kwarg (env-plumbed via `RM_ATTEMPT_ID`
     at the CLI entry) back into result.json so the orchestrator can
     validate on aggregation. Echo, not derive — the orchestrator owns
-    attempt-id generation."""
+    attempt-id generation.
+
+    Stubbed executor — attempt-id flow is independent of solver work."""
     read_json, write_json, _ = _make_inmem_gcs(_build_storage())
 
     result = worker_mod.worker_main(
@@ -290,7 +351,7 @@ def test_worker_echoes_attempt_id_kwarg_into_result_json() -> None:
         K_approved=1,
         read_json=read_json,
         write_json=write_json,
-        pool_executor=_serial_executor,
+        pool_executor=_stub_succeeded_executor,
         bucket=_BUCKET,
         attempt_id="attempt-custom-zzz",
     )
@@ -301,7 +362,9 @@ def test_worker_default_attempt_id_is_empty_string() -> None:
     """`attempt_id` kwarg defaults to `""` when callers (e.g.,
     `/compute-lahc-test` self-contained surface) don't need replay-
     collision protection. The empty-string echo is the orchestrator's
-    sentinel for "skip attempt-id validation on read" per §8.7."""
+    sentinel for "skip attempt-id validation on read" per §8.7.
+
+    Stubbed executor — attempt-id flow is independent of solver work."""
     read_json, write_json, _ = _make_inmem_gcs(_build_storage())
 
     result = worker_mod.worker_main(
@@ -310,7 +373,7 @@ def test_worker_default_attempt_id_is_empty_string() -> None:
         K_approved=1,
         read_json=read_json,
         write_json=write_json,
-        pool_executor=_serial_executor,
+        pool_executor=_stub_succeeded_executor,
         bucket=_BUCKET,
     )
     assert result["attemptId"] == ""
@@ -319,11 +382,14 @@ def test_worker_default_attempt_id_is_empty_string() -> None:
 # --- Determinism --------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_worker_main_byte_identical_across_calls() -> None:
     """§12A.4 determinism through the worker: same `(masterSeed, K)`
     produces byte-identical result.json across two invocations. This is
     the cross-surface invariant T2G re-audits at the local-CLI vs
-    Cloud-Batch level."""
+    Cloud-Batch level. Requires real LAHC — solver output is what the
+    byte-identity check is comparing — so this test carries
+    `@pytest.mark.slow` per Codex P2 on PR #150 commit faceff1831."""
     read_a, write_a, _ = _make_inmem_gcs(_build_storage())
     read_b, write_b, _ = _make_inmem_gcs(_build_storage())
 
@@ -359,26 +425,39 @@ def test_worker_main_byte_identical_across_calls() -> None:
 def test_per_trajectory_exception_isolates_to_single_entry() -> None:
     """Per-trajectory exceptions MUST surface as a `trajectoryExceptions`
     entry instead of killing the whole task per §12A.8 drop-and-continue.
-    Tests this by injecting a serial executor that returns an EXCEPTION
-    status for the first trajectory; the second still completes and
-    lands in candidates / failedTrajectories."""
+    Tests this by injecting an executor that returns an EXCEPTION status
+    for the first trajectory + a stubbed SUCCEEDED for the second; the
+    second still surfaces in `candidates`. Both branches are synthetic
+    — the test isolates the aggregation logic, not the solver, per
+    Codex P2 on PR #150 commit faceff1831."""
     read_json, write_json, _ = _make_inmem_gcs(_build_storage())
 
-    real_runner = worker_mod._run_one_trajectory
-    call_index = {"n": 0}
-
     def flaky_runner(args):
-        call_index["n"] += 1
-        if call_index["n"] == 1:
+        candidate_seed = int(args[-1])
+        # First trajectory raises (simulated); subsequent stub-SUCCEED.
+        if flaky_runner.calls == 0:
+            flaky_runner.calls += 1
             return {
                 "status": "EXCEPTION",
-                "candidateSeed": args[-1],
+                "candidateSeed": candidate_seed,
                 "exceptionType": "RuntimeError",
                 "exceptionMessage": "simulated trajectory failure",
                 "placementAttempts": 0,
                 "rejectionsByReason": {},
             }
-        return real_runner(args)
+        flaky_runner.calls += 1
+        return {
+            "status": "SUCCEEDED",
+            "candidateSeed": candidate_seed,
+            "assignments": [
+                {"dateKey": "2026-05-01", "slotType": "ICU",
+                 "unitIndex": 0, "doctorId": "dr_a"},
+            ],
+            "iters": 1, "acceptedMoves": 0,
+            "bestScore": 0.0, "terminalScore": 0.0,
+            "placementAttempts": 1, "rejectionsByReason": {},
+        }
+    flaky_runner.calls = 0
 
     def serial_with_flaky(fn, args_iter):
         return [flaky_runner(a) for a in args_iter]
@@ -410,7 +489,9 @@ def test_no_trajectory_exceptions_omits_block() -> None:
     """When all trajectories complete cleanly (SUCCEEDED or SEED_FAILED),
     the `trajectoryExceptions` field MUST be omitted from result.json
     to keep the common-case schema surface area minimal for orchestrator
-    consumption."""
+    consumption.
+
+    Stubbed executor — only asserts field absence in the common case."""
     read_json, write_json, _ = _make_inmem_gcs(_build_storage())
 
     result = worker_mod.worker_main(
@@ -419,7 +500,7 @@ def test_no_trajectory_exceptions_omits_block() -> None:
         K_approved=1,
         read_json=read_json,
         write_json=write_json,
-        pool_executor=_serial_executor,
+        pool_executor=_stub_succeeded_executor,
         bucket=_BUCKET,
     )
 
@@ -490,7 +571,11 @@ def test_aggregate_attempts_sums_across_trajectories() -> None:
     """`aggregateAttempts` MUST be the sum of `placementAttempts`
     across all trajectories' diagnostics. The orchestrator surfaces this
     in the run envelope's `SearchDiagnostics` field; under-counting would
-    make M7 runs look more efficient than they are."""
+    make M7 runs look more efficient than they are.
+
+    Stubbed executor (each stub returns `placementAttempts=1`) — so the
+    expected sum for K=2 is exactly 2; we assert the precise value
+    rather than the weaker `>= 0` shape check."""
     read_json, write_json, _ = _make_inmem_gcs(_build_storage())
 
     result = worker_mod.worker_main(
@@ -499,12 +584,15 @@ def test_aggregate_attempts_sums_across_trajectories() -> None:
         K_approved=2,
         read_json=read_json,
         write_json=write_json,
-        pool_executor=_serial_executor,
+        pool_executor=_stub_succeeded_executor,
         bucket=_BUCKET,
     )
 
     assert isinstance(result["aggregateAttempts"], int)
-    assert result["aggregateAttempts"] >= 0
+    assert result["aggregateAttempts"] == 2, (
+        "stub executor emits placementAttempts=1 per trajectory; K=2 "
+        "must aggregate to exactly 2"
+    )
     assert isinstance(result["aggregateRejectionsByReason"], dict)
 
 
@@ -515,12 +603,18 @@ def test_worker_passes_K_approved_args_to_pool_executor() -> None:
     """Worker MUST hand exactly `K_approved` (model, scoring, lahc,
     master_seed, candidate_seed) tuples to the injected pool executor —
     one per derived trajectory seed. Drift here would silently over- or
-    under-subscribe Pool(K_approved) on the c3-highcpu-88 VM."""
+    under-subscribe Pool(K_approved) on the c3-highcpu-88 VM.
+
+    Capturing executor returns stubbed SUCCEEDED dicts WITHOUT calling
+    the real trajectory runner — only the args dispatch is under test."""
     captured: dict[str, list] = {"args": []}
 
     def capturing_executor(fn, args_iter):
-        captured["args"].extend(args_iter)
-        return [fn(a) for a in args_iter]
+        args_list = list(args_iter)
+        captured["args"].extend(args_list)
+        # Bypass `fn` (real LAHC) — emit stubbed SUCCEEDED dicts so
+        # worker_main's aggregation downstream gets well-formed entries.
+        return _stub_succeeded_executor(fn, args_list)
 
     read_json, write_json, _ = _make_inmem_gcs(_build_storage())
     worker_mod.worker_main(
