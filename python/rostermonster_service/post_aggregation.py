@@ -274,11 +274,15 @@ def build_post_aggregation_envelope(
         unsatisfied = build_unsatisfied_from_aggregation(
             agg=agg, diagnostics=diagnostics, master_seed=master_seed,
         )
-        # Failure branch skips sidecar emission regardless of retention
-        # mode (selector_contract §15).
+        # Failure branch: match local-CLI's BEST_ONLY (pipeline.
+        # run_pipeline forces BEST_ONLY for UnsatisfiedResult before
+        # calling select). The analyzer doesn't run here, so the
+        # success-path FULL requirement doesn't apply. Codex P2 round
+        # 3 on PR #163: leaving FULL here broke §13 byte-identity on
+        # the K'==0 branch.
         envelope = select(
             unsatisfied,
-            retentionMode=RetentionMode.FULL,
+            retentionMode=RetentionMode.BEST_ONLY,
             runEnvelope=run_envelope,
         )
 
