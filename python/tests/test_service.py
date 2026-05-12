@@ -474,6 +474,7 @@ def test_compute_lahc_async_rejects_concurrent_run(monkeypatch) -> None:
             monkeypatch,
             list_jobs_response=[{
                 "name": "projects/rostermonsterv2/locations/asia-southeast1/jobs/existing-job",
+                "state": "RUNNING",  # T2D hotfix: client-side filter requires state per the Cloud Batch jobs.list filter-syntax constraint
                 "createTime": "2026-05-12T10:00:00Z",
                 "operatorEmail": "someone-else@example.com",
             }],
@@ -492,13 +493,88 @@ def test_compute_lahc_async_rejects_concurrent_run(monkeypatch) -> None:
         assert "2026-05-12T10:00:00Z" in data["error"]["message"]
         # No new Batch job submitted
         assert len(inmem_client.submitted_jobs) == 0
-        # list_jobs WAS called with the expected filter
+        # list_jobs WAS called with the label-only colon filter.
+        # T2D hotfix 2026-05-12: Cloud Batch v1 `jobs.list` API rejects
+        # `=` on labels + any `status.state=...` clause; the working
+        # filter is `labels.<key>:<value>` (colon) + client-side
+        # state filter on the returned jobs.
         assert len(inmem_client.list_jobs_calls) == 1
         filter_str = inmem_client.list_jobs_calls[0]["filter_str"]
-        assert "labels.spreadsheet_id=" in filter_str
-        assert "status.state=QUEUED" in filter_str
-        assert "status.state=SCHEDULED" in filter_str
-        assert "status.state=RUNNING" in filter_str
+        assert "labels.spreadsheet_id:" in filter_str
+        # State filter is client-side now; MUST NOT appear in filter_str
+        assert "status.state" not in filter_str
+        assert "state=" not in filter_str
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_concurrent_filter_uses_label_colon_syntax(monkeypatch) -> None:
+    """T2D hotfix lock: Cloud Batch's `jobs.list` filter API rejects
+    `labels.<key>=<value>` and any `state` clause as `invalid list
+    filter`. The fix: filter server-side with `labels.<key>:<value>`
+    (colon) for the label match + filter for in-flight states
+    client-side on the returned Job objects. Verifies the front door
+    sends the label-only colon filter."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert len(inmem_client.list_jobs_calls) == 1
+        filter_str = inmem_client.list_jobs_calls[0]["filter_str"]
+        # Must use `:` (colon) not `=` per Cloud Batch v1 API constraint
+        assert "labels.spreadsheet_id:" in filter_str, (
+            "concurrent-rejection filter MUST use labels.<key>:<value> "
+            "(colon) per Cloud Batch v1 filter constraint; got "
+            + repr(filter_str)
+        )
+        # Must NOT include state clauses (server-side rejects them)
+        assert "status.state" not in filter_str
+        assert "state=" not in filter_str
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_terminal_jobs_with_same_label_dont_reject(monkeypatch) -> None:
+    """T2D hotfix: server-side filter returns ALL jobs carrying the
+    label (including terminal SUCCEEDED/FAILED/CANCELLED). The
+    client-side `_BATCH_IN_FLIGHT_STATES` filter must skip terminal
+    jobs so a maintainer's historical run on the same spreadsheet
+    doesn't block fresh submissions."""
+    saved = _t2d_env_setup()
+    try:
+        # Pre-seed a historical SUCCEEDED job + an in-flight RUNNING job
+        # carrying the same label. Only the RUNNING one should trigger
+        # concurrent-rejection.
+        inmem_client, _ = _t2d_patch_clients(
+            monkeypatch,
+            list_jobs_response=[
+                {
+                    "name": "projects/p/locations/r/jobs/old-succeeded",
+                    "state": "SUCCEEDED",
+                    "createTime": "2026-05-10T08:00:00Z",
+                    "operatorEmail": "operator@example.com",
+                },
+            ],
+        )
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        # Terminal SUCCEEDED job → NO rejection → SUBMITTED
+        assert data["state"] == "SUBMITTED", (
+            "terminal SUCCEEDED job carrying the same label MUST NOT "
+            "trigger concurrent-rejection; got " + repr(data.get("state"))
+        )
+        assert len(inmem_client.submitted_jobs) == 1
     finally:
         _t2d_env_teardown(saved)
 
