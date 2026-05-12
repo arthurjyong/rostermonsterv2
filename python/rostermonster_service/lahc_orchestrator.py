@@ -326,6 +326,9 @@ def orchestrate_lahc_run(
     project: str,
     bucket: str = _DEFAULT_BUCKET,
     region: str = _DEFAULT_REGION,
+    machine_type: str | None = None,
+    cpu_milli: int | None = None,
+    memory_mib: int | None = None,
     completion_deadline_seconds: float = _COMPLETION_DEADLINE_SECONDS,
     poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
     sleep_fn: Callable[[float], None] = time.sleep,
@@ -512,7 +515,7 @@ def orchestrate_lahc_run(
     # must be in the comparable epoch-time scale). Codex P2 round 2
     # finding 2 fix.
     submit_ts_ms = int(wall_time_fn() * 1000)
-    job_spec = build_lahc_batch_job_spec(
+    job_spec_kwargs: dict[str, Any] = dict(
         run_id=run_id,
         container_image_uri=container_image_uri,
         master_seed=master_seed,
@@ -523,6 +526,16 @@ def orchestrate_lahc_run(
         bucket=bucket,
         region=region,
     )
+    # Forward VM overrides only when supplied (None preserves
+    # build_lahc_batch_job_spec's c3-highcpu-88 defaults for back-
+    # compat callers that don't thread topology).
+    if machine_type is not None:
+        job_spec_kwargs["machine_type"] = machine_type
+    if cpu_milli is not None:
+        job_spec_kwargs["cpu_milli"] = cpu_milli
+    if memory_mib is not None:
+        job_spec_kwargs["memory_mib"] = memory_mib
+    job_spec = build_lahc_batch_job_spec(**job_spec_kwargs)
     job_name = batch_client.submit_job(
         project=project, region=region, run_id=run_id, job_spec=job_spec,
     )

@@ -1547,6 +1547,166 @@ def test_compute_lahc_async_machine_type_and_vcpu_count_match_succeeds(monkeypat
         _t2d_env_teardown(saved)
 
 
+def test_compute_lahc_async_rejects_unknown_machine_type_without_vcpu_env(monkeypatch) -> None:
+    """Codex P2 round 3 on PR #161: a non-c3-highcpu machine_type (or
+    typo like c3-highcpu-101 not in the table) without an explicit
+    LAHC_VM_VCPU_COUNT MUST reject — pre-fix vm_vcpu_count fell back
+    to the static default 88 and the job spec over-claimed."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_MACHINE_TYPE"] = "n2-highcpu-32"
+    os.environ.pop("LAHC_VM_VCPU_COUNT", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "COMPUTE_ERROR"
+        assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+        assert "n2-highcpu-32" in data["error"]["message"]
+        assert "LAHC_VM_VCPU_COUNT" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_unknown_machine_type_with_explicit_vcpu_succeeds(monkeypatch) -> None:
+    """Counter-test: unknown machine_type + explicit LAHC_VM_VCPU_COUNT
+    succeeds, with cpu_milli + memory_mib derived from the fallback
+    formula. Lets operators deploy a new VM family without code change
+    once they pin the vCPU count."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_MACHINE_TYPE"] = "n2-highcpu-32"
+    os.environ["LAHC_VM_VCPU_COUNT"] = "32"
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED", (
+            "unknown machine_type + explicit vCPU MUST submit; got "
+            + repr(data.get("state"))
+            + " message=" + str(data.get("error", {}).get("message"))
+        )
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        compute_resource = (
+            job_spec["allocationPolicy"]["instances"][0]["policy"]
+        )
+        assert compute_resource["machineType"] == "n2-highcpu-32"
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_memory_mib_from_table_not_overclaim(monkeypatch) -> None:
+    """Codex P1 on PR #162 round 3: pre-fix formula was
+    `N*2*1024 - 1024 MiB` which gave 179200 MiB on c3-highcpu-88,
+    above the 176000 MiB cap. Post-fix memoryMib comes from the
+    _C3_HIGHCPU_TOPOLOGIES table (160000 for c3-highcpu-88, the M7
+    baseline lock value)."""
+    saved = _t2d_env_setup()
+    os.environ.pop("LAHC_VM_VCPU_COUNT", None)
+    os.environ.pop("LAHC_MACHINE_TYPE", None)
+    os.environ.pop("LAHC_K_APPROVED", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED"
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        cr = job_spec["taskGroups"][0]["taskSpec"]["computeResource"]
+        assert cr["cpuMilli"] == 88_000
+        assert cr["memoryMib"] == 160_000, (
+            "memoryMib MUST come from the _C3_HIGHCPU_TOPOLOGIES "
+            "table value 160000 (M7 baseline), not the over-claiming "
+            "formula's 179200 MiB. Got " + str(cr["memoryMib"])
+        )
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_memory_mib_for_c3_highcpu_22(monkeypatch) -> None:
+    """Same as above but for the quota-workaround VM (c3-highcpu-22):
+    memoryMib MUST come from the table (40000), not the formula's
+    44032 MiB which only leaves 1 GiB headroom."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_MACHINE_TYPE"] = "c3-highcpu-22"
+    os.environ.pop("LAHC_VM_VCPU_COUNT", None)
+    os.environ.pop("LAHC_K_APPROVED", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED"
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        cr = job_spec["taskGroups"][0]["taskSpec"]["computeResource"]
+        assert cr["cpuMilli"] == 22_000
+        assert cr["memoryMib"] == 40_000
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_test_endpoint_honors_vm_env_overrides(monkeypatch) -> None:
+    """Codex P2 on PR #162 round 3: pre-fix, /compute-lahc-test
+    ignored LAHC_MACHINE_TYPE + LAHC_VM_VCPU_COUNT and always
+    submitted a c3-highcpu-88/K=88 job, so the quota workaround
+    couldn't be validated via the maintainer route. Post-fix this
+    endpoint shares _resolve_vm_topology() with the operator path."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_MACHINE_TYPE"] = "c3-highcpu-22"
+    os.environ.pop("LAHC_VM_VCPU_COUNT", None)
+    os.environ.pop("LAHC_K_APPROVED", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute-lahc-test", json={
+            "snapshot": _load_snapshot_dict(),
+            "optionalConfig": {"seed": 12345},
+        })
+        # /compute-lahc-test runs synchronously; we don't drive the
+        # whole orchestrator here (InMemoryBatchClient returns
+        # SUCCEEDED but there's no real worker output). The relevant
+        # assertion is: job_spec actually got built with c3-highcpu-22
+        # before any downstream failure.
+        assert resp.status_code == 200
+        # Look at the submitted job spec regardless of orchestrator
+        # outcome.
+        if inmem_client.submitted_jobs:
+            job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+            policy = (
+                job_spec["allocationPolicy"]["instances"][0]["policy"]
+            )
+            assert policy["machineType"] == "c3-highcpu-22", (
+                "/compute-lahc-test MUST honor LAHC_MACHINE_TYPE; got "
+                + policy["machineType"]
+            )
+            cr = job_spec["taskGroups"][0]["taskSpec"]["computeResource"]
+            assert cr["cpuMilli"] == 22_000
+            assert cr["memoryMib"] == 40_000
+    finally:
+        _t2d_env_teardown(saved)
+
+
 def test_compute_srb_path_stays_synchronous() -> None:
     """Back-compat: omitting `solverStrategy` (or passing
     "SEEDED_RANDOM_BLIND") keeps the existing sync /compute path —

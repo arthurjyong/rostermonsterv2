@@ -101,12 +101,23 @@ _BATCH_IN_FLIGHT_STATES = frozenset({"QUEUED", "SCHEDULED", "RUNNING"})
 # CPUS_ALL_REGIONS lands, redeploy with `LAHC_VM_VCPU_COUNT=176 +
 # LAHC_MACHINE_TYPE=c3-highcpu-176`.
 _LAHC_VM_VCPU_COUNT_ENV = "LAHC_VM_VCPU_COUNT"
-_LAHC_DEFAULT_VM_VCPU_COUNT = 88
 _LAHC_MACHINE_TYPE_ENV = "LAHC_MACHINE_TYPE"
 _LAHC_DEFAULT_MACHINE_TYPE = "c3-highcpu-88"
-# c3-highcpu-N has N vCPUs; used to derive vm_vcpu_count from
-# machine_type so the two env vars can't silently disagree.
-_C3_HIGHCPU_PATTERN = re.compile(r"^c3-highcpu-(\d+)$")
+# Per-VM safe resource claims for the c3-highcpu family (the only family
+# we deploy today per `docs/cloud_compute_contract.md` §8.7). cpuMilli
+# claims all vCPUs; memoryMib leaves OS/agent headroom (~10%) so Cloud
+# Batch doesn't reject the job spec at submit time. M7 baseline lock
+# for c3-highcpu-88 = 160000 MiB (180 GiB total, 16 GiB headroom).
+# {machine_type: (vcpu_count, cpu_milli, memory_mib)}
+_C3_HIGHCPU_TOPOLOGIES: dict[str, tuple[int, int, int]] = {
+    "c3-highcpu-4":   (4,   4_000,   7_000),
+    "c3-highcpu-8":   (8,   8_000,  14_000),
+    "c3-highcpu-22":  (22,  22_000,  40_000),
+    "c3-highcpu-44":  (44,  44_000,  80_000),
+    "c3-highcpu-88":  (88,  88_000, 160_000),  # M7 baseline lock
+    "c3-highcpu-176": (176, 176_000, 320_000),
+    "c3-highcpu-192": (192, 192_000, 352_000),
+}
 
 
 log = logging.getLogger("rostermonster_service")
@@ -544,6 +555,94 @@ def _coerce_optional_int(value: Any, field_name: str, *,
     return value
 
 
+def _resolve_vm_topology() -> tuple[int, str, int, int] | Response:
+    """Resolve VM topology from LAHC_MACHINE_TYPE + LAHC_VM_VCPU_COUNT.
+
+    Returns (vm_vcpu_count, machine_type, cpu_milli, memory_mib) on
+    success, or a SERVICE_MISCONFIGURED error Response on rejection.
+
+    Rules:
+      - When LAHC_MACHINE_TYPE is in _C3_HIGHCPU_TOPOLOGIES (the
+        supported set), derive vcpu/cpu_milli/memory_mib from the
+        table. If LAHC_VM_VCPU_COUNT is also set, it MUST match the
+        table's vcpu_count (else SERVICE_MISCONFIGURED).
+      - When LAHC_MACHINE_TYPE is unknown (non-c3-highcpu family),
+        LAHC_VM_VCPU_COUNT MUST be set explicitly so we don't silently
+        default to 88 and over-claim. cpu_milli + memory_mib are
+        derived conservatively (claim all vCPUs, ~89% of N*2 GiB RAM).
+    """
+    machine_type = os.environ.get(
+        _LAHC_MACHINE_TYPE_ENV, _LAHC_DEFAULT_MACHINE_TYPE,
+    ).strip()
+    if not machine_type:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            _LAHC_MACHINE_TYPE_ENV + " is set to an empty value. "
+            "Maintainer must redeploy with --set-env-vars "
+            + _LAHC_MACHINE_TYPE_ENV + "=<machine-type> "
+            "(e.g., c3-highcpu-88 for K=88, c3-highcpu-22 for the M7 "
+            "C4 quota-workaround deploy).",
+        )
+
+    vm_vcpu_count_str = os.environ.get(_LAHC_VM_VCPU_COUNT_ENV)
+    explicit_vcpu: int | None = None
+    if vm_vcpu_count_str:
+        try:
+            explicit_vcpu = int(vm_vcpu_count_str)
+        except ValueError:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                _LAHC_VM_VCPU_COUNT_ENV + "=" + repr(vm_vcpu_count_str)
+                + " is not a valid integer. Maintainer must redeploy "
+                "with --set-env-vars " + _LAHC_VM_VCPU_COUNT_ENV
+                + "=<positive integer>.",
+            )
+        if explicit_vcpu <= 0:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                _LAHC_VM_VCPU_COUNT_ENV + "=" + repr(vm_vcpu_count_str)
+                + " is not a positive integer (parsed to "
+                + str(explicit_vcpu) + ").",
+            )
+
+    topology = _C3_HIGHCPU_TOPOLOGIES.get(machine_type)
+    if topology is not None:
+        table_vcpu, cpu_milli, memory_mib = topology
+        if explicit_vcpu is not None and explicit_vcpu != table_vcpu:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                _LAHC_MACHINE_TYPE_ENV + "=" + machine_type + " has "
+                + str(table_vcpu) + " vCPUs, but "
+                + _LAHC_VM_VCPU_COUNT_ENV + "=" + str(explicit_vcpu)
+                + ". These two env vars MUST describe the same VM. "
+                "Maintainer must redeploy with matching values "
+                "(or unset " + _LAHC_VM_VCPU_COUNT_ENV
+                + " to derive from " + _LAHC_MACHINE_TYPE_ENV + ").",
+            )
+        return (table_vcpu, machine_type, cpu_milli, memory_mib)
+
+    # Unknown machine family — require explicit VM_VCPU_COUNT so the
+    # K cap doesn't silently fall back to 88 + over-claim. Codex P2 on
+    # PR #161 round 3: a non-c3-highcpu deploy without VCPU env should
+    # fail fast, not submit an oversized job.
+    if explicit_vcpu is None:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            _LAHC_MACHINE_TYPE_ENV + "=" + machine_type + " is not a "
+            "known c3-highcpu size (supported: "
+            + ", ".join(sorted(_C3_HIGHCPU_TOPOLOGIES)) + "). When "
+            "deploying a different machine family, "
+            + _LAHC_VM_VCPU_COUNT_ENV + " MUST be set explicitly so the "
+            "K cap + Pool size match the VM.",
+        )
+    # 1818 MiB/vCPU is the M7 baseline lock ratio (160000 MiB on 88
+    # vCPUs ≈ 89% of N*2 GiB). Floor 1024 MiB so a hypothetical 1-vCPU
+    # entry still has positive memoryMib.
+    cpu_milli = explicit_vcpu * 1000
+    memory_mib = max(1024, explicit_vcpu * 1818)
+    return (explicit_vcpu, machine_type, cpu_milli, memory_mib)
+
+
 def _compute_lahc_async_endpoint(
     *, raw: dict, snapshot_raw: dict,
 ) -> Response:
@@ -841,77 +940,16 @@ def _compute_lahc_async_endpoint(
             + "=<bucket-name> (or unset to use the default "
             + _LAHC_DEFAULT_BUCKET + ").",
         )
-    # VM topology (LAHC_VM_VCPU_COUNT + LAHC_MACHINE_TYPE) is read
+    # VM topology resolution (Codex P2 rounds 1-3 on PR #161/#162):
+    # consolidates LAHC_MACHINE_TYPE + LAHC_VM_VCPU_COUNT into a
+    # consistent (vcpu, machine_type, cpu_milli, memory_mib) tuple,
+    # rejecting mismatches + unsupported families at admission. Reads
     # before LAHC_K_APPROVED so the K default can match the deployed
-    # VM size. Pre-fix, K defaulted to 88 even when the maintainer
-    # deployed a smaller VM (e.g., c3-highcpu-22 for the quota
-    # workaround), and every /compute request rejected with
-    # SERVICE_MISCONFIGURED at the K>vm_vcpu_count cap below. Codex P2
-    # on PR #161: default K to vm_vcpu_count so the two-env-var
-    # workaround path is usable without a third matching env.
-    vm_vcpu_count_str = os.environ.get(_LAHC_VM_VCPU_COUNT_ENV)
-    if vm_vcpu_count_str:
-        try:
-            vm_vcpu_count = int(vm_vcpu_count_str)
-        except ValueError:
-            return _compute_error(
-                "SERVICE_MISCONFIGURED",
-                "Cloud Run service has " + _LAHC_VM_VCPU_COUNT_ENV + "="
-                + repr(vm_vcpu_count_str) + " which is not a valid "
-                "integer. Maintainer must redeploy with --set-env-vars "
-                + _LAHC_VM_VCPU_COUNT_ENV + "=<positive integer>.",
-            )
-        if vm_vcpu_count <= 0:
-            return _compute_error(
-                "SERVICE_MISCONFIGURED",
-                "Cloud Run service has " + _LAHC_VM_VCPU_COUNT_ENV + "="
-                + repr(vm_vcpu_count_str) + " which is not a positive "
-                "integer (parsed to " + str(vm_vcpu_count) + ").",
-            )
-    else:
-        vm_vcpu_count = _LAHC_DEFAULT_VM_VCPU_COUNT
-    machine_type = os.environ.get(
-        _LAHC_MACHINE_TYPE_ENV, _LAHC_DEFAULT_MACHINE_TYPE,
-    ).strip()
-    if not machine_type:
-        return _compute_error(
-            "SERVICE_MISCONFIGURED",
-            "Cloud Run service has " + _LAHC_MACHINE_TYPE_ENV + " set "
-            "to an empty value. Maintainer must redeploy with "
-            "--set-env-vars " + _LAHC_MACHINE_TYPE_ENV + "=<machine-type> "
-            "(e.g., c3-highcpu-88 for K=88, c3-highcpu-22 for the M7 "
-            "C4 quota-workaround deploy).",
-        )
-
-    # Codex P2 round 2 on PR #161/#162: when LAHC_MACHINE_TYPE is set
-    # but LAHC_VM_VCPU_COUNT is omitted (or mistyped), the env reader
-    # above defaults vm_vcpu_count to 88 while machine_type may say
-    # c3-highcpu-22 — Cloud Batch then receives `Pool(88)` on a 22-
-    # vCPU VM. Derive vm_vcpu_count from the c3-highcpu-N suffix when
-    # we can, and reject explicit env mismatches before the job spec
-    # is built. Unknown machine families (non-c3-highcpu) fall through
-    # to the env value with no derivation — future families can add
-    # their own patterns or callers can keep both envs in sync.
-    parsed_vcpu = _C3_HIGHCPU_PATTERN.match(machine_type)
-    if parsed_vcpu is not None:
-        machine_type_vcpu = int(parsed_vcpu.group(1))
-        if vm_vcpu_count_str and vm_vcpu_count != machine_type_vcpu:
-            return _compute_error(
-                "SERVICE_MISCONFIGURED",
-                _LAHC_MACHINE_TYPE_ENV + "=" + machine_type + " implies "
-                + str(machine_type_vcpu) + " vCPUs, but "
-                + _LAHC_VM_VCPU_COUNT_ENV + "=" + str(vm_vcpu_count)
-                + ". These two env vars MUST describe the same VM. "
-                "Maintainer must redeploy with matching values "
-                "(or unset one to derive from the other).",
-            )
-        if not vm_vcpu_count_str:
-            # Env unset → derive from machine_type rather than using
-            # the static 88 default. Means deploying with just
-            # LAHC_MACHINE_TYPE=c3-highcpu-22 yields a correct
-            # vm_vcpu_count=22 without operators needing to set both
-            # envs.
-            vm_vcpu_count = machine_type_vcpu
+    # VM.
+    topology = _resolve_vm_topology()
+    if isinstance(topology, Response):
+        return topology
+    vm_vcpu_count, machine_type, cpu_milli, memory_mib = topology
 
     K_approved_str = os.environ.get(_LAHC_K_APPROVED_ENV)
     if K_approved_str:
@@ -1112,17 +1150,9 @@ def _compute_lahc_async_endpoint(
     import uuid
     attempt_id = uuid.uuid4().hex
     submit_timestamp_ms = int(time.time() * 1000)
-    # cpuMilli + memoryMib derived from vm_vcpu_count to claim the
-    # whole VM per the §8.7 single-task pattern. cpuMilli = N * 1000;
-    # memoryMib uses the c3-highcpu family's ~2 GB/vCPU spec minus
-    # 1 GB OS headroom (gives 7168 MiB at N=4, 178176 MiB at N=88).
-    # The M7 C2 lock pinned 160000 MiB for c3-highcpu-88 — slightly
-    # smaller than the formula's 178176 (= more conservative); use
-    # the formula here so other VM sizes (c3-highcpu-22 = 43008
-    # MiB) auto-scale. Cloud Batch validates against the live VM's
-    # actual capacity at submitJob time so under-claiming is safe.
-    cpu_milli = vm_vcpu_count * 1000
-    memory_mib = max(vm_vcpu_count * 2 * 1024 - 1024, 1024)
+    # cpu_milli + memory_mib come from _resolve_vm_topology(): the
+    # c3-highcpu table holds safe per-VM claims with OS/agent
+    # headroom (M7 baseline: 160000 MiB on c3-highcpu-88).
     job_spec = build_lahc_batch_job_spec(
         run_id=run_id,
         container_image_uri=container_image_uri,
@@ -1266,13 +1296,18 @@ def _compute_lahc_test_endpoint() -> Response:
             + " env var set. Maintainer must redeploy with "
             "--set-env-vars " + _GCP_PROJECT_ENV + "=<project-id>.",
         )
+    # VM topology + K_approved share resolution with the operator path
+    # so maintainer validation through /compute-lahc-test exercises the
+    # same env vars (Codex P2 on PR #162 round 3). Pre-fix, this route
+    # ignored LAHC_MACHINE_TYPE/LAHC_VM_VCPU_COUNT and always submitted
+    # a c3-highcpu-88 job, so the quota workaround couldn't be tested.
+    topology = _resolve_vm_topology()
+    if isinstance(topology, Response):
+        return topology
+    vm_vcpu_count, machine_type, cpu_milli, memory_mib = topology
+
     K_approved_str = os.environ.get(_LAHC_K_APPROVED_ENV)
     if K_approved_str:
-        # Wrap the int() conversion so a malformed deploy-time env value
-        # (e.g., LAHC_K_APPROVED=fast) surfaces as the structured
-        # COMPUTE_ERROR envelope this endpoint documents — without the
-        # wrap, the conversion raises ValueError pre-orchestrator-try
-        # and the endpoint returns a Flask 500 instead.
         try:
             K_approved = int(K_approved_str)
         except ValueError:
@@ -1283,8 +1318,25 @@ def _compute_lahc_test_endpoint() -> Response:
                 "Maintainer must redeploy with --set-env-vars "
                 + _LAHC_K_APPROVED_ENV + "=<positive integer>.",
             )
+        if K_approved <= 0:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
+                + repr(K_approved_str) + " which is not a positive "
+                "integer (parsed to " + str(K_approved) + ").",
+            )
     else:
-        K_approved = _LAHC_DEFAULT_K_APPROVED
+        K_approved = vm_vcpu_count
+    if K_approved > vm_vcpu_count:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            _LAHC_K_APPROVED_ENV + "=" + str(K_approved)
+            + " exceeds the VM vCPU count (" + str(vm_vcpu_count)
+            + " on `" + machine_type + "`). Pool(K) would "
+            "over-subscribe the VM. Drop "
+            + _LAHC_K_APPROVED_ENV + " to ≤" + str(vm_vcpu_count)
+            + ", or redeploy with a larger VM.",
+        )
 
     # --- Stage 4: dispatch to the orchestrator ------------------------
     # The rostermonster_service modules import cleanly at the top-level
@@ -1329,6 +1381,9 @@ def _compute_lahc_test_endpoint() -> Response:
             gcs_delete_prefix=delete_prefix,
             project=project,
             bucket=bucket,
+            machine_type=machine_type,
+            cpu_milli=cpu_milli,
+            memory_mib=memory_mib,
         )
     except Exception as e:
         log.exception("lahc orchestrator raised")
