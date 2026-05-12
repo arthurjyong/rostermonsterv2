@@ -1173,6 +1173,68 @@ def test_compute_lahc_async_omitted_max_candidates_uses_default(monkeypatch) -> 
         _t2d_env_teardown(saved)
 
 
+def test_compute_lahc_async_rejects_max_candidates_above_vm_capacity(monkeypatch) -> None:
+    """Codex P2 round 9 finding on PR #157 commit e60372d464: pre-
+    fix, my round-8 `maxCandidates` honoring forwarded uncapped to
+    `K_approved`, but `Pool(K)` on the c3-highcpu-88 VM can't fit
+    `maxCandidates: 500` (88 vCPUs). Would spawn 500 worker processes
+    contending for 88 cores → over-subscribe + likely blow 10-min
+    cap. Cap at deploy-time K_approved + reject excess with
+    INPUT_ERROR/MAX_CANDIDATES_EXCEEDS_VM_CAPACITY."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {
+                "solverStrategy": "LAHC",
+                "maxCandidates": 500,  # > deploy-time 88
+            },
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "MAX_CANDIDATES_EXCEEDS_VM_CAPACITY"
+        assert "maxCandidates" in data["error"]["message"]
+        assert "K_approved" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_accepts_max_candidates_at_vm_capacity(monkeypatch) -> None:
+    """Boundary counter-test: `maxCandidates == K_approved` (88 by
+    default) MUST pass — cap is inclusive. Locks the boundary so a
+    strict-less-than regression rejecting K=88 surfaces immediately."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {
+                "solverStrategy": "LAHC",
+                "maxCandidates": 88,  # AT deploy-time capacity
+            },
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED", (
+            "maxCandidates == K_approved (88) MUST pass (inclusive cap); "
+            "got " + repr(data.get("state"))
+        )
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        env = (
+            job_spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
+        )
+        assert env["RM_K_APPROVED"] == "88"
+    finally:
+        _t2d_env_teardown(saved)
+
+
 def test_compute_srb_path_stays_synchronous() -> None:
     """Back-compat: omitting `solverStrategy` (or passing
     "SEEDED_RANDOM_BLIND") keeps the existing sync /compute path —

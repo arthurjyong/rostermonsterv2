@@ -849,7 +849,8 @@ def _compute_lahc_async_endpoint(
     # A maintainer experiment requesting `maxCandidates: 5` got
     # SUBMITTED but ran 88 trajectories, skewing benchmark/cost
     # comparisons. Honor the override here: if present + valid,
-    # overrides the deploy-time K_approved.
+    # overrides the deploy-time K_approved (capped at deploy-time
+    # capacity per the round 9 fix below).
     try:
         max_candidates_override = _coerce_optional_int(
             optional_block.get("maxCandidates"), "maxCandidates",
@@ -858,6 +859,30 @@ def _compute_lahc_async_endpoint(
     except _ConfigValidationError as e:
         return _input_error("INVALID_OPTIONAL_CONFIG", str(e))
     if max_candidates_override is not None:
+        # Codex P2 round 9 finding on PR #157 commit e60372d464: pre-
+        # fix the override forwarded uncapped to `K_approved`, but
+        # `K` becomes the Pool(K) size on the c3-highcpu-88 VM (88
+        # vCPUs). A maintainer requesting `maxCandidates: 500` would
+        # spawn 500 worker processes contending for 88 cores,
+        # blowing past the §8.7 single-VM dense-pack invariant +
+        # likely missing the 10-min operator-facing cap. Cap at the
+        # deploy-time `K_approved` (VM capacity) + reject excess.
+        # Maintainer wanting higher K must redeploy with a higher
+        # `LAHC_K_APPROVED` env (and the matching VM size) first.
+        if max_candidates_override > K_approved:
+            return _input_error(
+                "MAX_CANDIDATES_EXCEEDS_VM_CAPACITY",
+                "`optionalConfig.maxCandidates=" + str(max_candidates_override)
+                + "` exceeds the deploy-time `K_approved="
+                + str(K_approved) + "` (the Pool size matching the "
+                "c3-highcpu-88 VM's vCPU count per §8.7). To run more "
+                "trajectories, redeploy with `LAHC_K_APPROVED=<higher>` "
+                "+ a VM size that fits (e.g., `c3-highcpu-176` for "
+                "K=176 once `C3_CPUS` quota allows it per FW-0040). "
+                "Pre-cap, oversized K would over-subscribe the VM "
+                "(processes contending for vCPUs) and likely blow "
+                "the 10-min operator-facing cap.",
+            )
         K_approved = max_candidates_override
 
     # --- Wire SDK deps + concurrent-rejection ----------------------------
