@@ -742,6 +742,7 @@ def orchestrate_lahc_run(
     poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
     sleep_fn: Callable[[float], None] = time.sleep,
     time_fn: Callable[[], float] = time.monotonic,
+    wall_time_fn: Callable[[], float] = time.time,
     attempt_id_fn: Callable[[], str] = lambda: uuid.uuid4().hex,
 ) -> dict[str, Any]:
     """Orchestrate one M7 LAHC Cloud Batch run end-to-end. Returns a
@@ -917,7 +918,12 @@ def orchestrate_lahc_run(
     # use them; T2A.2's inline finalize step will read them when
     # those land).
     source_spreadsheet_id = metadata.get("sourceSpreadsheetId") or snapshot_id
-    submit_ts_ms = int(time_fn() * 1000)
+    # Wall-clock epoch ms — NOT time_fn() (which defaults to time.monotonic
+    # and is process-local; the worker reads RM_SUBMIT_TIMESTAMP_MS in a
+    # different process for T2A.2's elapsed self-check, so the timestamp
+    # must be in the comparable epoch-time scale). Codex P2 round 2
+    # finding 2 fix.
+    submit_ts_ms = int(wall_time_fn() * 1000)
     job_spec = build_lahc_batch_job_spec(
         run_id=run_id,
         container_image_uri=container_image_uri,
