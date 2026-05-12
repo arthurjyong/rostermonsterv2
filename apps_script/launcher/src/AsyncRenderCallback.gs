@@ -531,11 +531,7 @@ function _sendSuccessEmail_(body) {
   ];
   var options = {};
   if (body.analyzerOutput) {
-    options.attachments = [{
-      fileName: 'analyzerOutput-' + runIdShort + '.json',
-      mimeType: 'application/json',
-      content: JSON.stringify(body.analyzerOutput, null, 2),
-    }];
+    options.attachments = [_buildAnalyzerOutputBlob_(body, runIdShort)];
   }
   MailApp.sendEmail(body.operatorEmail, subject, lines.join('\n'), options);
 }
@@ -607,13 +603,31 @@ function _sendFailureEmail_(body, error) {
   // Attach if present per §10A.7's failure-path attachment rule.
   var options = {};
   if (body.analyzerOutput) {
-    options.attachments = [{
-      fileName: 'analyzerOutput-' + runIdShort + '.json',
-      mimeType: 'application/json',
-      content: JSON.stringify(body.analyzerOutput, null, 2),
-    }];
+    options.attachments = [_buildAnalyzerOutputBlob_(body, runIdShort)];
   }
   MailApp.sendEmail(body.operatorEmail, subject, lines.join('\n'), options);
+}
+
+
+function _buildAnalyzerOutputBlob_(body, runIdShort) {
+  // `MailApp.sendEmail` `attachments` option requires `BlobSource[]`
+  // (https://developers.google.com/apps-script/reference/mail/mail-app)
+  // — NOT plain `{fileName, mimeType, content}` dicts. Pre-fix passed
+  // a plain object which made `sendEmail` throw AFTER the writeback +
+  // analyzer tabs had already been written; the outer try/catch
+  // returned 500 + the dedup key was already recorded → the
+  // finalizer's retry-on-5xx returned `DUPLICATE_IGNORED` → operator
+  // never received the completion email. Real production defect
+  // surfaced as a P1 by Codex on PR #154 commit ad6bdd0e75 AFTER
+  // initial merge; followed up here.
+  //
+  // `Utilities.newBlob(data, mimeType, fileName)` constructs a real
+  // Blob (a `BlobSource` per the GAS docs) that MailApp accepts.
+  return Utilities.newBlob(
+    JSON.stringify(body.analyzerOutput, null, 2),
+    'application/json',
+    'analyzerOutput-' + runIdShort + '.json'
+  );
 }
 
 
