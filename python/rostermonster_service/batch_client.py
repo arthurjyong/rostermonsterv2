@@ -152,19 +152,30 @@ class BatchClient:
         """List Cloud Batch jobs matching `filter_str` under
         `projects/<project>/locations/<region>`. Used by M7 C4 T2D's
         Cloud Run thin front-door for concurrent-rejection per
-        `docs/cloud_compute_contract.md` §8.7 sub-decision 8 +
-        D-0071 sub-decision 8 — query by `labels.spreadsheet_id=...`
-        AND any in-flight state, reject the new request if a match
-        exists.
+        `docs/cloud_compute_contract.md` §8.7 sub-decision 8.
+
+        **Filter syntax constraint (M7 C4 T2D hotfix, 2026-05-12):**
+        the live Cloud Batch v1 `jobs.list` API rejects `=` on label
+        fields AND any `status.state=...` clause as `invalid list
+        filter`. The contract's M7 C3 docs lock pre-amendment
+        prescribed both shapes; both were wrong. The working filter
+        syntax is `labels.<key>:<value>` (colon — substring/has
+        match per AIP-160) for label fields; state filtering must be
+        client-side on the returned Job objects. Callers should pass
+        a label-only filter + filter by state on the returned dicts'
+        `state` field.
 
         Returns a list of dicts with the fields the front door needs
-        for the rejection message: `name` (full resource), `createTime`
-        (ISO-ish timestamp), `operatorEmail` (read off the existing
-        job's task env per §8.7 — emails can't be labels, label
-        validation only allows `[a-z0-9_-]{1,63}`). Lists are best-
-        effort under Cloud Batch's eventual consistency — race window
-        for concurrent submits is tight but non-zero, per the
-        accepted-gap-for-v1 stance in D-0071 sub-decision 8."""
+        for the rejection message: `name` (full resource), `state`
+        (Job.status.state enum name, e.g., "RUNNING" / "SUCCEEDED" —
+        used for client-side in-flight filtering per the hotfix),
+        `createTime` (ISO-ish timestamp), `operatorEmail` (read off
+        the existing job's task env per §8.7 — emails can't be
+        labels, label validation only allows `[a-z0-9_-]{1,63}`).
+        Lists are best-effort under Cloud Batch's eventual
+        consistency — race window for concurrent submits is tight
+        but non-zero, per the accepted-gap-for-v1 stance in D-0071
+        sub-decision 8."""
         parent = "projects/" + project + "/locations/" + region
         request = self._batch_v1.ListJobsRequest(
             parent=parent, filter=filter_str,
@@ -190,8 +201,17 @@ class BatchClient:
                 operator_email = env.get("RM_OPERATOR_EMAIL", "")
             except Exception:  # noqa: BLE001
                 operator_email = ""
+            state_name = ""
+            try:
+                # JobStatus.State is an IntEnum proto-plus wrapper;
+                # `.name` gives the readable enum string ("RUNNING"
+                # / "SUCCEEDED" / "FAILED" / "CANCELLED" / etc.).
+                state_name = job.status.state.name
+            except Exception:  # noqa: BLE001
+                state_name = ""
             out.append({
                 "name": job.name,
+                "state": state_name,
                 "createTime": create_time_iso,
                 "operatorEmail": operator_email,
             })

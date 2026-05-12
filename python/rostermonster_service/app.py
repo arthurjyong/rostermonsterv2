@@ -76,6 +76,15 @@ _VALID_SOLVER_STRATEGIES = frozenset({"SEEDED_RANDOM_BLIND", "LAHC"})
 _INT64_SIGNED_MIN = -(2 ** 63)
 _INT64_SIGNED_MAX = (2 ** 63) - 1
 
+# Cloud Batch `Job.status.state` enum values that count as "in flight"
+# for the §8.7 sub-decision 8 concurrent-rejection check. Cloud Batch's
+# `jobs.list` filter API doesn't support `status.state=...` server-
+# side; we filter client-side after fetching all jobs matching the
+# `labels.spreadsheet_id:<val>` filter. Hotfix on PR #157's deploy
+# trial 2026-05-12 — pre-hotfix the server-side filter returned 400
+# `invalid list filter`.
+_BATCH_IN_FLIGHT_STATES = frozenset({"QUEUED", "SCHEDULED", "RUNNING"})
+
 # Single-VM dense-pack vCPU count per `docs/cloud_compute_contract.md`
 # §8.7 — the worker's `Pool(K)` size MUST NOT exceed this or
 # multiprocessing oversubscribes the VM + blows the 10-min cap. The
@@ -938,17 +947,32 @@ def _compute_lahc_async_endpoint(
             "redeploy. (" + str(e) + ")",
         )
 
-    # Concurrent-rejection query per §8.7 sub-decision 8 + Codex P2
-    # round 11 fix (Cloud Batch filter syntax doesn't support SQL `IN`;
-    # explicit OR-joined disjunction).
+    # Concurrent-rejection query per §8.7 sub-decision 8.
+    #
+    # **Filter syntax fix (M7 C4 T2D hotfix, 2026-05-12):** the M7 C3
+    # docs lock specified `labels.spreadsheet_id=<val> AND
+    # (status.state=QUEUED OR status.state=SCHEDULED OR
+    # status.state=RUNNING)` but empirical probing against the live
+    # Cloud Batch v1 `jobs.list` API rejected both `=` on labels AND
+    # any `status.state` clause as `invalid list filter`. The API
+    # accepts:
+    #   - `labels.<key>:<value>` (colon — substring/has match per
+    #     AIP-160)
+    #   - `name="<full resource name>"`
+    #   - empty filter (returns all jobs)
+    # and REJECTS:
+    #   - `labels.<key>=<value>` (equals)
+    #   - `state=<state>` or `status.state=<state>` (state field path
+    #     not supported in the server-side filter at all)
+    # Workaround: server-side filter on label only (returns all jobs
+    # carrying the label, including terminal ones still within
+    # Cloud Batch's job-retention window); client-side filter for
+    # in-flight states by reading each job's `status.state` on the
+    # returned Job objects.
     spreadsheet_id_label = normalize_label_value(source_spreadsheet_id)
-    concurrent_filter = (
-        "labels.spreadsheet_id=" + spreadsheet_id_label
-        + " AND (status.state=QUEUED OR status.state=SCHEDULED"
-        " OR status.state=RUNNING)"
-    )
+    concurrent_filter = "labels.spreadsheet_id:" + spreadsheet_id_label
     try:
-        in_flight_jobs = batch_client.list_jobs(
+        candidate_jobs = batch_client.list_jobs(
             project=project, region=region,
             filter_str=concurrent_filter,
         )
@@ -959,6 +983,15 @@ def _compute_lahc_async_endpoint(
             "Cloud Batch concurrent-rejection query failed: "
             + type(e).__name__ + ": " + str(e),
         )
+    # Client-side filter for in-flight states. Cloud Batch's
+    # `Job.status.state` enum has terminal states {SUCCEEDED, FAILED,
+    # CANCELLED, DELETION_IN_PROGRESS} + in-flight {QUEUED,
+    # SCHEDULED, RUNNING}. Concurrent-rejection only applies when an
+    # in-flight job already exists.
+    in_flight_jobs = [
+        j for j in candidate_jobs
+        if j.get("state") in _BATCH_IN_FLIGHT_STATES
+    ]
     if in_flight_jobs:
         existing = in_flight_jobs[0]
         return _input_error(
