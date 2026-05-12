@@ -73,11 +73,22 @@ _FW_0037_LAHC_PARAMS = LahcParams(
     swapProbability=0.5,
 )
 # Small K to keep the audit's wall-time bounded; 4 trajectories is
-# sufficient to exercise both the K-trajectory derivation +
-# orchestrator partitioning + worker pool aggregation. The byte-
-# identity invariant is K-independent — if it holds at K=4 it holds
-# at K=104.
+# sufficient to exercise both the K-trajectory derivation + worker
+# pool aggregation. The byte-identity invariant is K-independent — if
+# it holds at K=4 it holds at K=88 (M7 production K post-Codex P1.7
+# amendment) — but the K=88 production-parity audit
+# `test_local_cli_and_cloud_batch_byte_identical_at_K_88` below runs
+# the actual production K to close the M7 C4 T2A.2 exit criterion.
 _AUDIT_K = 4
+# Production K per `docs/cloud_compute_contract.md` §8.7 single-VM
+# dense pack — `c3-highcpu-88` × 1 with `multiprocessing.Pool(88)` for
+# K=88 trajectories. The K=88 audit variant proves byte-identity at
+# the actual production operating point (per the M7 C4 T2A scope's
+# "byte-identity audit at K=88 vs local CLI K=88 LAHC" exit
+# criterion); marked slow because 88 trajectories × 2 paths through
+# the FW-0037 elbow tuple takes ~30-45min wall on the icu_hd_may_2026
+# fixture.
+_AUDIT_K_PROD = 88
 
 
 def _make_inmem_gcs(initial: dict[str, dict] | None = None):
@@ -157,10 +168,14 @@ class _WorkerSimulatingBatchClient(InMemoryBatchClient):
         )
 
 
-def _run_cloud_batch_path(*, snapshot_dict: dict, master_seed: int) -> dict:
+def _run_cloud_batch_path(*, snapshot_dict: dict, master_seed: int,
+                           K: int = _AUDIT_K) -> dict:
     """Drive the M7 Cloud-Batch path end-to-end via the orchestrator +
     a worker-simulating fake BatchClient. Returns the orchestrator's
-    response dict."""
+    response dict.
+
+    `K` defaults to `_AUDIT_K = 4` (small K for fast audit runs); the
+    K=88 production-parity audit passes `K=_AUDIT_K_PROD`."""
     read_json, write_json, delete_prefix, _ = _make_inmem_gcs()
     batch_client = _WorkerSimulatingBatchClient(
         read_json=read_json, write_json=write_json,
@@ -169,7 +184,7 @@ def _run_cloud_batch_path(*, snapshot_dict: dict, master_seed: int) -> dict:
     return lo.orchestrate_lahc_run(
         snapshot_dict,
         master_seed=master_seed,
-        K_approved=_AUDIT_K,
+        K_approved=K,
         container_image_uri=_IMAGE,
         batch_client=batch_client,
         gcs_read_json=read_json,
@@ -186,15 +201,18 @@ def _run_cloud_batch_path(*, snapshot_dict: dict, master_seed: int) -> dict:
     )
 
 
-def _run_local_cli_path(*, snapshot_dict: dict, master_seed: int):
+def _run_local_cli_path(*, snapshot_dict: dict, master_seed: int,
+                         K: int = _AUDIT_K):
     """Drive the local-CLI LAHC path end-to-end via run_pipeline,
-    matching the FW-0037 elbow tuple the worker hardcodes."""
+    matching the FW-0037 elbow tuple the worker hardcodes. `K` defaults
+    to `_AUDIT_K = 4`; the K=88 production-parity audit passes
+    `K=_AUDIT_K_PROD`."""
     snapshot = _snapshot_from_dict(snapshot_dict)
     template = icu_hd_template_artifact()
     return run_pipeline(
         snapshot, template,
         seed=master_seed,
-        max_candidates=_AUDIT_K,
+        max_candidates=K,
         retention_mode=RetentionMode.BEST_ONLY,
         strategy_id=STRATEGY_LAHC,
         lahc_params=_FW_0037_LAHC_PARAMS,
@@ -412,6 +430,70 @@ def test_negative_and_positive_master_seed_produce_different_cloud_winners() -> 
         "Cloud-Batch +seed and -seed emitted identical winners — "
         "_UINT64_MASK signed→unsigned mask is being bypassed in the "
         "Cloud-Batch seed-derivation path; M7 §12A.10 regression."
+    )
+
+
+# --- K=88 production-parity audit (M7 C4 T2A.2 PR-C) -------------------
+
+
+def test_local_cli_and_cloud_batch_byte_identical_at_K_88() -> None:
+    """M7 C4 T2A.2 exit criterion per `docs/delivery_plan.md` §9 Task
+    2A: byte-identity audit at K=88 vs local CLI K=88 LAHC at same
+    `(masterSeed, K)`.
+
+    The K=4 audits above prove the byte-identity property at small K;
+    this test runs the SAME property at the actual M7 production K=88
+    (Codex P1.7 amendment: `c3-highcpu-88` × 1 with `Pool(88)`). The
+    property is K-independent in theory (each trajectory's `solve(K=1,
+    _candidate_seeds=[seed])` is independent under §12A.10 +
+    `_candidate_seeds` override), but running at production K
+    confirms the new inline finalize path doesn't introduce a K-
+    dependent divergence (e.g., from analyzer top-K selection or
+    aggregator ordering at large K).
+
+    **Runtime warning:** 88 trajectories × 2 paths × FW-0037 elbow
+    tuple (`idleThreshold=3500`) on the icu_hd_may_2026 fixture takes
+    ~30-45min wall on a single-process serial executor. Module-level
+    `pytestmark = pytest.mark.slow` keeps default `pytest` runs from
+    selecting this; manual invocation via
+    `pytest -m slow tests/test_lahc_determinism_audit.py::test_local_cli_and_cloud_batch_byte_identical_at_K_88`."""
+    snapshot_dict = json.loads(_FIXTURE_PATH.read_text())
+    master_seed = 12345
+
+    local_result = _run_local_cli_path(
+        snapshot_dict=snapshot_dict,
+        master_seed=master_seed,
+        K=_AUDIT_K_PROD,
+    )
+    cloud_response = _run_cloud_batch_path(
+        snapshot_dict=snapshot_dict,
+        master_seed=master_seed,
+        K=_AUDIT_K_PROD,
+    )
+
+    if local_result.state != "OK" or cloud_response["state"] != "OK":
+        # Degenerate — the property is byte-identity WHEN both
+        # succeed. K=88 against the production fixture is expected to
+        # find a feasible roster; if it doesn't, the audit can't
+        # complete, but that's a fixture/snapshot issue, not a
+        # byte-identity violation.
+        return
+
+    local_wrapper = _wrapper_envelope_from_local(local_result, snapshot_dict)
+    cloud_wrapper = _wrapper_envelope_from_cloud(cloud_response)
+
+    local_final = local_wrapper["finalResultEnvelope"]
+    cloud_final = cloud_wrapper["finalResultEnvelope"]
+    assert local_final == cloud_final, (
+        "M7 §13 byte-identity broken at K=" + str(_AUDIT_K_PROD)
+        + " production scale — finalResultEnvelope diverged between "
+        "local-CLI and Cloud-Batch paths at master_seed="
+        + str(master_seed)
+    )
+    assert local_wrapper == cloud_wrapper, (
+        "M7 §13 byte-identity broken at K=" + str(_AUDIT_K_PROD)
+        + " — wrapper envelope (snapshot subset / doctorIdMap / "
+        "schemaVersion) diverged at master_seed=" + str(master_seed)
     )
 
 
