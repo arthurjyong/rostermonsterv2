@@ -23,6 +23,26 @@ function doGet(e) {
   // and never reach this `doGet` dispatch. `ScriptApp.getService().getUrl()`
   // returns the `/exec` deployment URL of the currently-running script.
   var rootUrl = ScriptApp.getService().getUrl();
+
+  // M7 C4 T2B deployment-URL gate per `docs/cloud_compute_contract.md`
+  // §10A.3 (security-critical per Codex P1 round 5 finding 9). The
+  // callback deployment runs under `executeAs: USER_DEPLOYING` +
+  // `Access: ANYONE` — that grants script-owner privileges to anyone
+  // hitting the callback URL. Operator-facing routes (`/exec`,
+  // `?action=writeback`, `?action=analysis-render`) MUST be blocked
+  // when the request comes in via the callback URL; otherwise an
+  // operator's GET on the callback deployment URL would render the
+  // sheet-gen form under script-owner identity. Callback deployment
+  // is POST-only; reject ALL GETs.
+  if (_isCallbackDeployment_()) {
+    return ContentService
+      .createTextOutput(JSON.stringify({
+        state: 'INVALID_DEPLOYMENT',
+        code: 'GET_NOT_ALLOWED_ON_CALLBACK_DEPLOYMENT',
+      }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   if (action === 'writeback') {
     // M3 C1 writeback route per `docs/decision_log.md` D-0044 sub-decision 3.
     // Operator uploads the wrapper-envelope JSON file produced by the Python
@@ -50,6 +70,70 @@ function doGet(e) {
   return tpl.evaluate()
     .setTitle('CGH ICU/HD Roster Launcher')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+// M7 C4 T2B Web App POST dispatcher — added so the SECOND launcher
+// deployment (callback deployment per `docs/cloud_compute_contract.md`
+// §10A.5) can receive the Cloud Batch finalizer's POST. The Cloud Run
+// thin front door does NOT POST through the launcher; only the Cloud
+// Batch task's inline finalize step does (per §10A.3).
+function doPost(e) {
+  var params = (e && e.parameter) ? e.parameter : {};
+  var action = (params.action == null ? '' : String(params.action)).trim().toLowerCase();
+
+  // Deployment-URL gate per §10A.3 + Codex P1 round 5 finding 9. The
+  // callback deployment MUST reject any POST whose action isn't
+  // `async-render-callback`; otherwise a misrouted writeback /
+  // analysis-render POST would execute under script-owner privileges.
+  if (_isCallbackDeployment_()) {
+    if (action !== 'async-render-callback') {
+      return ContentService
+        .createTextOutput(JSON.stringify({
+          state: 'INVALID_DEPLOYMENT',
+          code: 'NON_CALLBACK_ROUTE_REJECTED',
+          action: action,
+        }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    // Route to the async-render-callback handler in
+    // `AsyncRenderCallback.gs`. The handler is responsible for auth
+    // validation, idempotency, state dispatch, + email.
+    return handleAsyncRenderCallback_(e);
+  }
+
+  // Operator-facing deployment — no POST routes are defined here
+  // (operator submissions go through `google.script.run` not raw
+  // HTTPS POST). Reject for parity with the callback deployment's
+  // POST gate.
+  return ContentService
+    .createTextOutput(JSON.stringify({
+      state: 'INVALID_ROUTE',
+      code: 'POST_NOT_SUPPORTED_ON_OPERATOR_DEPLOYMENT',
+    }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+// `_isCallbackDeployment_` returns true when the current request is
+// running under the SECOND launcher deployment (callback deployment)
+// per §10A.5. The check compares `ScriptApp.getService().getUrl()`
+// against the `CALLBACK_DEPLOYMENT_URL` ScriptProperty the maintainer
+// sets at T2B deploy time. When the property is unset, treats the
+// current deployment as operator-facing (default fail-open is safe
+// because the callback handler still requires a valid OIDC token to
+// run anything destructive — but the deployment-URL gate is the
+// load-bearing isolation per Codex P1 round 5 finding 9 for the
+// `Access: ANYONE` callback deployment).
+function _isCallbackDeployment_() {
+  var configuredCallbackUrl;
+  try {
+    configuredCallbackUrl = PropertiesService.getScriptProperties()
+      .getProperty('CALLBACK_DEPLOYMENT_URL');
+  } catch (err) {
+    return false;
+  }
+  if (!configuredCallbackUrl) return false;
+  var currentUrl = ScriptApp.getService().getUrl();
+  return currentUrl === configuredCallbackUrl;
 }
 
 // Public server handler invoked by `google.script.run.submitLauncherForm()`
