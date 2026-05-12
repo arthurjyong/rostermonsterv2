@@ -352,6 +352,7 @@ def test_compute_lahc_test_malformed_K_approved_returns_compute_error() -> None:
 _T2D_ENV_VARS = [
     "CONTAINER_IMAGE_URI", "GCP_PROJECT", "RM_LAUNCHER_CALLBACK_URL",
     "LAHC_K_APPROVED", "LAHC_BATCH_REGION", "LAHC_BUCKET",
+    "LAHC_VM_VCPU_COUNT", "LAHC_MACHINE_TYPE",
 ]
 
 
@@ -1365,6 +1366,100 @@ def test_compute_lahc_async_accepts_deploy_time_K_at_vm_capacity(monkeypatch) ->
             "LAHC_K_APPROVED == 88 (= VM vCPU count) MUST pass "
             "(inclusive cap); got " + repr(data.get("state"))
         )
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_K_defaults_to_vm_vcpu_count_when_unset(monkeypatch) -> None:
+    """Codex P2 finding on PR #161: pre-fix, deploying with
+    LAHC_VM_VCPU_COUNT=22 + LAHC_MACHINE_TYPE=c3-highcpu-22 but
+    leaving LAHC_K_APPROVED unset left K_approved at the hardcoded
+    default 88, and every /compute request rejected with
+    SERVICE_MISCONFIGURED at the K>vm_vcpu_count cap. The
+    quota-workaround path must work with just the two VM env vars.
+    """
+    saved = _t2d_env_setup()
+    os.environ["LAHC_VM_VCPU_COUNT"] = "22"
+    os.environ["LAHC_MACHINE_TYPE"] = "c3-highcpu-22"
+    os.environ.pop("LAHC_K_APPROVED", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED", (
+            "VM_VCPU_COUNT=22 + K_APPROVED unset MUST default K to 22 "
+            "and submit; got " + repr(data.get("state"))
+            + " message=" + str(data.get("error", {}).get("message"))
+        )
+        assert len(inmem_client.submitted_jobs) == 1
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        env = (
+            job_spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
+        )
+        assert env["RM_K_APPROVED"] == "22", (
+            "K must propagate as 22 (matching VM vCPU count), not 88"
+        )
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_K_defaults_to_88_when_both_envs_unset(monkeypatch) -> None:
+    """Backwards compatibility: with neither LAHC_VM_VCPU_COUNT nor
+    LAHC_K_APPROVED set, K defaults to 88 (the M7 production
+    baseline) — same behavior as before the parametric-VM PR."""
+    saved = _t2d_env_setup()
+    os.environ.pop("LAHC_K_APPROVED", None)
+    os.environ.pop("LAHC_VM_VCPU_COUNT", None)
+    os.environ.pop("LAHC_MACHINE_TYPE", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED"
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        env = (
+            job_spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
+        )
+        assert env["RM_K_APPROVED"] == "88"
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_explicit_K_above_parametric_VM_rejects(monkeypatch) -> None:
+    """Explicit `LAHC_K_APPROVED=88` on a `LAHC_VM_VCPU_COUNT=22`
+    deploy MUST still reject (over-subscription guard); the P2 fix
+    only changed the *default* behavior, not the explicit-K cap."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_VM_VCPU_COUNT"] = "22"
+    os.environ["LAHC_MACHINE_TYPE"] = "c3-highcpu-22"
+    os.environ["LAHC_K_APPROVED"] = "88"
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "COMPUTE_ERROR"
+        assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+        assert "LAHC_K_APPROVED" in data["error"]["message"]
+        assert "22" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
     finally:
         _t2d_env_teardown(saved)
 

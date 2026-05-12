@@ -837,56 +837,14 @@ def _compute_lahc_async_endpoint(
             + "=<bucket-name> (or unset to use the default "
             + _LAHC_DEFAULT_BUCKET + ").",
         )
-    K_approved_str = os.environ.get(_LAHC_K_APPROVED_ENV)
-    if K_approved_str:
-        try:
-            K_approved = int(K_approved_str)
-        except ValueError:
-            return _compute_error(
-                "SERVICE_MISCONFIGURED",
-                "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
-                + repr(K_approved_str) + " which is not a valid integer. "
-                "Maintainer must redeploy with --set-env-vars "
-                + _LAHC_K_APPROVED_ENV + "=<positive integer>.",
-            )
-        # Codex P2 finding on PR #157 commit bb50582899: pre-fix,
-        # `LAHC_K_APPROVED=0` or a negative integer slipped through
-        # the int() guard + propagated into `build_lahc_batch_job_spec`
-        # which raises ValueError outside any structured-error path
-        # → Flask 500 instead of the documented SERVICE_MISCONFIGURED
-        # envelope. Guard here too.
-        if K_approved <= 0:
-            return _compute_error(
-                "SERVICE_MISCONFIGURED",
-                "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
-                + repr(K_approved_str) + " which is not a positive "
-                "integer (parsed to " + str(K_approved) + "). "
-                "K_approved must be > 0 per `docs/cloud_compute_contract.md` "
-                "§8.7 single-VM dense-pack (Pool size must be positive). "
-                "Maintainer must redeploy with --set-env-vars "
-                + _LAHC_K_APPROVED_ENV + "=<positive integer>.",
-            )
-    else:
-        K_approved = _LAHC_DEFAULT_K_APPROVED
-
-    # Codex P2 round 10 finding on PR #157 commit 65108e42a3: pre-fix,
-    # there was no upper bound on the deploy-time `LAHC_K_APPROVED`
-    # value. A maintainer setting `LAHC_K_APPROVED=176` would forward
-    # 176 → `RM_K_APPROVED` env → `Pool(176)` on a c3-highcpu-88 VM
-    # (the job spec hardcodes c3-highcpu-88). Pool(176) on 88 vCPUs
-    # over-subscribes by 2x → process contention → likely blows the
-    # 10-min cap. The right cap is the fixed VM vCPU count, NOT the
-    # deploy-time env. Future quota bump to C3_CPUS≥176 unlocks
-    # `c3-highcpu-176` for K=176 via FW-0040; until then the cap is
-    # the load-bearing safety net.
-    # M7 C4 quota-workaround amendment 2026-05-12: VM size is now
-    # parametric via the deploy-time `LAHC_VM_VCPU_COUNT` +
-    # `LAHC_MACHINE_TYPE` env vars (defaults preserve M7 production
-    # c3-highcpu-88). Read here so the K_approved cap matches the
-    # actual deployed VM, NOT a hardcoded 88. When GCP global
-    # `CPUS_ALL_REGIONS` quota blocks c3-highcpu-88, maintainer drops
-    # both env vars to a smaller VM (e.g., c3-highcpu-22) for a sub-
-    # quota deploy; the K_approved cap auto-adjusts.
+    # VM topology (LAHC_VM_VCPU_COUNT + LAHC_MACHINE_TYPE) is read
+    # before LAHC_K_APPROVED so the K default can match the deployed
+    # VM size. Pre-fix, K defaulted to 88 even when the maintainer
+    # deployed a smaller VM (e.g., c3-highcpu-22 for the quota
+    # workaround), and every /compute request rejected with
+    # SERVICE_MISCONFIGURED at the K>vm_vcpu_count cap below. Codex P2
+    # on PR #161: default K to vm_vcpu_count so the two-env-var
+    # workaround path is usable without a third matching env.
     vm_vcpu_count_str = os.environ.get(_LAHC_VM_VCPU_COUNT_ENV)
     if vm_vcpu_count_str:
         try:
@@ -921,6 +879,50 @@ def _compute_lahc_async_endpoint(
             "C4 quota-workaround deploy).",
         )
 
+    K_approved_str = os.environ.get(_LAHC_K_APPROVED_ENV)
+    if K_approved_str:
+        try:
+            K_approved = int(K_approved_str)
+        except ValueError:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
+                + repr(K_approved_str) + " which is not a valid integer. "
+                "Maintainer must redeploy with --set-env-vars "
+                + _LAHC_K_APPROVED_ENV + "=<positive integer>.",
+            )
+        # Codex P2 finding on PR #157 commit bb50582899: pre-fix,
+        # `LAHC_K_APPROVED=0` or a negative integer slipped through
+        # the int() guard + propagated into `build_lahc_batch_job_spec`
+        # which raises ValueError outside any structured-error path
+        # → Flask 500 instead of the documented SERVICE_MISCONFIGURED
+        # envelope. Guard here too.
+        if K_approved <= 0:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
+                + repr(K_approved_str) + " which is not a positive "
+                "integer (parsed to " + str(K_approved) + "). "
+                "K_approved must be > 0 per `docs/cloud_compute_contract.md` "
+                "§8.7 single-VM dense-pack (Pool size must be positive). "
+                "Maintainer must redeploy with --set-env-vars "
+                + _LAHC_K_APPROVED_ENV + "=<positive integer>.",
+            )
+    else:
+        # Default K to the deployed VM's vCPU count so the
+        # quota-workaround path (LAHC_VM_VCPU_COUNT=22 +
+        # LAHC_MACHINE_TYPE=c3-highcpu-22) works without operators
+        # also setting LAHC_K_APPROVED=22. When neither env is set,
+        # vm_vcpu_count == _LAHC_DEFAULT_VM_VCPU_COUNT == 88 (the M7
+        # production baseline), so this preserves the prior default.
+        K_approved = vm_vcpu_count
+
+    # Codex P2 round 10 finding on PR #157 commit 65108e42a3: a
+    # maintainer explicitly setting LAHC_K_APPROVED above the VM
+    # vCPU count would forward to Pool(K) on a smaller VM →
+    # over-subscription + likely blows the 10-min cap. Keep the cap
+    # as a defensive guard for the explicit-K path; the default-K
+    # path above can't trip it because K == vm_vcpu_count.
     if K_approved > vm_vcpu_count:
         return _compute_error(
             "SERVICE_MISCONFIGURED",
