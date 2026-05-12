@@ -255,22 +255,26 @@ function _showSolveRosterResult_(result) {
   }
 
   if (result.kind === 'SUBMITTED_ASYNC') {
-    // M7 C4 T2C async UX per D-0071 sub-decision 9: one-time non-
-    // blocking toast post-submit. The actual writeback + analyzer
-    // tabs land asynchronously when the launcher Web App receives
-    // the §10A callback POST from the Cloud Batch worker's inline
-    // finalize step. Operator gets an email when complete (per
-    // §10A.7 always-email-on-every-outcome).
+    // M7 C4 T2C async UX per D-0071 sub-decision 9: post-submit
+    // notification. The actual writeback + analyzer tabs land
+    // asynchronously when the launcher Web App receives the §10A
+    // callback POST from the Cloud Batch worker's inline finalize
+    // step. Operator gets an email when complete (per §10A.7
+    // always-email-on-every-outcome).
     //
-    // `toast(message, title, timeoutSeconds)` — sticky-ish at 10s
-    // so the operator has time to read but the toast doesn't
-    // linger. Sheets dismisses on its own; non-blocking returns
-    // immediately from menuSolveRoster_.
-    SpreadsheetApp.getActiveSpreadsheet().toast(
-      'We’ll email you when the roster is ready — can take up '
-        + 'to 10 minutes.',
-      'Submitted',
-      10
+    // **Switched from `.toast()` (bottom-right, non-blocking) to
+    // `ui.alert()` (centered modal, requires OK click) on
+    // 2026-05-13** per operator feedback that the small bottom-
+    // right notification was easy to miss. The modal is more
+    // intrusive but acknowledges-by-default — operator must click
+    // OK to confirm they've seen "wait for email", which is the
+    // right signal for an async flow where nothing else changes
+    // on-screen for ~5-10 minutes.
+    ui.alert(
+      'Solve Roster — Submitted',
+      'We’ll email you when the roster is ready '
+        + '— can take up to 10 minutes.',
+      ui.ButtonSet.OK
     );
     return;
   }
