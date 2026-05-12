@@ -207,13 +207,17 @@ def _run_local_cli_path(*, snapshot_dict: dict, master_seed: int,
     matching the FW-0037 elbow tuple the worker hardcodes. `K` defaults
     to `_AUDIT_K = 4`; the K=88 production-parity audit passes
     `K=_AUDIT_K_PROD`."""
+    import tempfile
     snapshot = _snapshot_from_dict(snapshot_dict)
     template = icu_hd_template_artifact()
     return run_pipeline(
         snapshot, template,
         seed=master_seed,
         max_candidates=K,
-        retention_mode=RetentionMode.FULL,  # match cloud-side
+        # FULL matches cloud-side; selector requires sidecar_dir on
+        # the success branch.
+        retention_mode=RetentionMode.FULL,
+        sidecar_dir=Path(tempfile.mkdtemp(prefix="rm-lahc-audit-")),
         strategy_id=STRATEGY_LAHC,
         lahc_params=_FW_0037_LAHC_PARAMS,
     )
@@ -263,6 +267,21 @@ def _wrapper_envelope_from_cloud(cloud_response: dict) -> dict:
     return cloud_response["writebackEnvelope"]
 
 
+def _normalize_sidecar_paths(wrapper: dict) -> dict:
+    """Replace tempdir-specific sidecar paths with a fixed placeholder
+    so byte-identity holds across local vs cloud (which use independent
+    tempdirs). FULL retention writes candidates_summary.csv +
+    candidates_full.json to `sidecar_dir`; both paths bake the tempdir
+    name into AllocationResult, which is filesystem state, not part of
+    the §13 byte-identity contract."""
+    final = wrapper.get("finalResultEnvelope") or {}
+    result = final.get("result") or {}
+    for key in ("candidatesSummaryPath", "candidatesFullPath"):
+        if result.get(key):
+            result[key] = "<sidecar-path-normalized>"
+    return wrapper
+
+
 # --- Determinism re-audit (positive seed) -------------------------------
 
 
@@ -286,13 +305,12 @@ def test_local_cli_and_cloud_batch_writeback_envelope_byte_identical() -> None:
     )
     if local_result.state != "OK" or cloud_response["state"] != "OK":
         return  # degenerate; property requires both succeeding
-    local_wrapper = _wrapper_envelope_from_local(local_result, snapshot_dict)
-    cloud_wrapper = _wrapper_envelope_from_cloud(cloud_response)
-    # Strip volatile fields if any (e.g., generationTimestamp on
-    # synthetic SearchDiagnostics could differ depending on whether
-    # tests cap clocks). The §13 invariant covers the structural
-    # writeback content; non-deterministic timestamps would need a
-    # separate fixture lock.
+    local_wrapper = _normalize_sidecar_paths(
+        _wrapper_envelope_from_local(local_result, snapshot_dict),
+    )
+    cloud_wrapper = _normalize_sidecar_paths(
+        _wrapper_envelope_from_cloud(cloud_response),
+    )
     local_final = local_wrapper["finalResultEnvelope"]
     cloud_final = cloud_wrapper["finalResultEnvelope"]
     # Codex P2 finding on PR #144 commit 0153fc6: the audit MUST
@@ -479,8 +497,12 @@ def test_local_cli_and_cloud_batch_byte_identical_at_K_88() -> None:
         # byte-identity violation.
         return
 
-    local_wrapper = _wrapper_envelope_from_local(local_result, snapshot_dict)
-    cloud_wrapper = _wrapper_envelope_from_cloud(cloud_response)
+    local_wrapper = _normalize_sidecar_paths(
+        _wrapper_envelope_from_local(local_result, snapshot_dict),
+    )
+    cloud_wrapper = _normalize_sidecar_paths(
+        _wrapper_envelope_from_cloud(cloud_response),
+    )
 
     local_final = local_wrapper["finalResultEnvelope"]
     cloud_final = cloud_wrapper["finalResultEnvelope"]
