@@ -170,6 +170,26 @@ function _solveRoster_() {
       errorMessage: body.error && body.error.message,
     };
   }
+  // M7 C4 T2B defensive-async handler per `docs/delivery_plan.md` §9
+  // T2C scope: accept the new `SUBMITTED` enum value (added in M7 C3
+  // per D-0071 sub-decision 2 + Codex P2 round 1 ordering fix). When
+  // Cloud Run cuts over to the async LAHC path at T2D, the operator
+  // path returns `SUBMITTED` immediately + the actual outcome lands
+  // asynchronously via the launcher's `async-render-callback` route.
+  // Pre-T2C the bound shim would have thrown `CLOUD_UNEXPECTED_STATE`
+  // on every operator click between Cloud Run cutover and bound shim
+  // re-deploy; T2C lands FIRST to close that window. NO request-body
+  // change here — bound shim still sends the SRB shape; T2D flips
+  // the strategy to LAHC + threads operatorEmail through (so this
+  // SUBMITTED handler only fires once T2D's request-shape change
+  // also lands).
+  if (body.state === 'SUBMITTED') {
+    return {
+      kind: 'SUBMITTED_ASYNC',
+      cloudState: 'SUBMITTED',
+      submission: body.submission || {},
+    };
+  }
   if (body.state !== 'OK' && body.state !== 'UNSATISFIED') {
     throw new Error(
       'CLOUD_UNEXPECTED_STATE: ' + JSON.stringify(body.state)
@@ -208,6 +228,27 @@ function _showSolveRosterResult_(result) {
       (result.errorCode || 'no code') + '): ' +
       (result.errorMessage || '(no message)'),
       ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  if (result.kind === 'SUBMITTED_ASYNC') {
+    // M7 C4 T2C async UX per D-0071 sub-decision 9: one-time non-
+    // blocking toast post-submit. The actual writeback + analyzer
+    // tabs land asynchronously when the launcher Web App receives
+    // the §10A callback POST from the Cloud Batch worker's inline
+    // finalize step. Operator gets an email when complete (per
+    // §10A.7 always-email-on-every-outcome).
+    //
+    // `toast(message, title, timeoutSeconds)` — sticky-ish at 10s
+    // so the operator has time to read but the toast doesn't
+    // linger. Sheets dismisses on its own; non-blocking returns
+    // immediately from menuSolveRoster_.
+    SpreadsheetApp.getActiveSpreadsheet().toast(
+      'We’ll email you when the roster is ready — can take up '
+        + 'to 10 minutes.',
+      'Submitted',
+      10
     );
     return;
   }
