@@ -139,6 +139,8 @@ def build_lahc_batch_job_spec(
     bucket: str = _DEFAULT_BUCKET,
     region: str = _DEFAULT_REGION,
     machine_type: str = _DEFAULT_MACHINE_TYPE,
+    cpu_milli: int = _DEFAULT_CPU_MILLI,
+    memory_mib: int = _DEFAULT_MEMORY_MIB,
     per_task_max_run_duration: str = _DEFAULT_PER_TASK_MAX_RUN_DURATION,
     per_task_max_retry_count: int = _DEFAULT_PER_TASK_MAX_RETRY_COUNT,
     provisioning_model: str = _DEFAULT_PROVISIONING_MODEL,
@@ -284,13 +286,13 @@ def build_lahc_batch_job_spec(
                             }
                         }
                     ],
-                    # Pin the full c3-highcpu-88 to one task per the §8.7
+                    # Pin the full VM to one task per the §8.7
                     # single-VM dense-pack invariant (Codex P1.7 amendment).
                     # cpuMilli + memoryMib claim the whole VM so Cloud Batch's
                     # bin-packer doesn't co-schedule another task here.
                     "computeResource": {
-                        "cpuMilli": _DEFAULT_CPU_MILLI,
-                        "memoryMib": _DEFAULT_MEMORY_MIB,
+                        "cpuMilli": cpu_milli,
+                        "memoryMib": memory_mib,
                     },
                     # Per-task wall budget — 660s safety net per Codex P1
                     # round 10 amendment. Operator-facing 600s ceiling is
