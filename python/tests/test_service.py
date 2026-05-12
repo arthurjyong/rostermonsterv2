@@ -874,6 +874,41 @@ def test_compute_lahc_async_rejects_empty_lahc_batch_region_env(monkeypatch) -> 
         _t2d_env_teardown(saved)
 
 
+def test_compute_lahc_async_rejects_unsanitizable_snapshot_id(monkeypatch) -> None:
+    """Codex P2 round 4 finding on PR #157 commit e761bb975a:
+    `snapshotId` that's non-empty but sanitizes to nothing (all non-
+    alphanumeric characters, e.g., `"!!!"` or `"@@@"`) made
+    `derive_run_id()` raise ValueError outside any structured-error
+    block → Flask 500. Fix: catch + surface as INPUT_ERROR /
+    INVALID_SNAPSHOT_SHAPE."""
+    for bad_id in ("!!!", "@@@", "---", "...", "!@#$%^&*()"):
+        saved = _t2d_env_setup()
+        try:
+            inmem_client, _ = _t2d_patch_clients(monkeypatch)
+            client = _client()
+            snap = _load_snapshot_dict()
+            snap["metadata"]["snapshotId"] = bad_id
+            resp = client.post("/compute", json={
+                "snapshot": snap,
+                "operatorEmail": "operator@example.com",
+                "optionalConfig": {"solverStrategy": "LAHC"},
+            })
+            assert resp.status_code == 200, (
+                "expected HTTP 200 always per §10; got "
+                + str(resp.status_code) + " on snapshotId=" + repr(bad_id)
+            )
+            data = resp.get_json()
+            assert data["state"] == "INPUT_ERROR", (
+                "unsanitizable snapshotId MUST surface as INPUT_ERROR; "
+                "got " + repr(data.get("state")) + " on " + repr(bad_id)
+            )
+            assert data["error"]["code"] == "INVALID_SNAPSHOT_SHAPE"
+            assert "snapshotId" in data["error"]["message"]
+            assert len(inmem_client.submitted_jobs) == 0
+        finally:
+            _t2d_env_teardown(saved)
+
+
 def test_compute_srb_path_stays_synchronous() -> None:
     """Back-compat: omitting `solverStrategy` (or passing
     "SEEDED_RANDOM_BLIND") keeps the existing sync /compute path —

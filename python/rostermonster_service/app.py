@@ -824,7 +824,25 @@ def _compute_lahc_async_endpoint(
         )
 
     # --- Build + submit Batch job ----------------------------------------
-    run_id = derive_run_id(snapshot_id, master_seed)
+    # Codex P2 round 4 finding on PR #157 commit e761bb975a: pre-fix,
+    # a non-empty `snapshotId` that sanitizes to nothing (e.g.,
+    # `"!!!"` → all special chars → `derive_run_id` strips them all)
+    # caused `derive_run_id()` to raise `ValueError` outside any
+    # structured-error block → Flask 500 instead of the documented
+    # always-200 INPUT_ERROR envelope. Catch + surface here so the
+    # boundary fails loud + structured.
+    try:
+        run_id = derive_run_id(snapshot_id, master_seed)
+    except ValueError as e:
+        return _input_error(
+            "INVALID_SNAPSHOT_SHAPE",
+            "`snapshot.metadata.snapshotId=" + repr(snapshot_id)
+            + "` is not a valid runId-derivation input "
+            "(sanitizes to empty after removing non-alphanumeric "
+            "characters per `lahc_orchestrator.derive_run_id`). "
+            "snapshotId must contain at least one alphanumeric "
+            "character. Detail: " + str(e),
+        )
     import uuid
     attempt_id = uuid.uuid4().hex
     submit_timestamp_ms = int(time.time() * 1000)
