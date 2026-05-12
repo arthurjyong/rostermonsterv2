@@ -145,6 +145,23 @@ Pinned in M7 C2 Task 1 (2026-05-10) per `docs/decision_log.md` D-0070 + the M7 C
 
 **Cloud Batch job spec invariants** (single task group + single task per **D-0071 sub-decision 2 + Codex P1.7 amendment**; job submitted by Cloud Run Service on every LAHC request):
 - **Machine type:** `c3-highcpu-88` (88 vCPU, 176 GB RAM; Intel Sapphire Rapids per D-0070 sub-decision 3). Amended from the M7 C2 lock's `c3-highcpu-8` × 13 VMs to **single `c3-highcpu-88` × 1 VM** per the Codex P1.7 fix — Cloud Batch v1 single-task-group restriction makes a separate finalizer task group impossible, so workers + finalizer run on one VM in one Python process. K=88 trajectories via `multiprocessing.Pool(88)` (one trajectory per vCPU). C3 family has no 104-vCPU size; next size up is `c3-highcpu-176` which needs a C3_CPUS quota bump from 108 → 176 (parameterized config dial per FW entry "K=88 → K=176 future quota bump").
+
+  **Parametric VM override (M7 C4 quota-workaround amendment, 2026-05-12 / PRs #161+#162):** to unblock K=22 deploys while GCP's `CPUS_ALL_REGIONS=32` global quota blocks `c3-highcpu-88` provisioning, the Cloud Run service reads three deploy-time env vars before building the Cloud Batch job spec:
+  - `LAHC_MACHINE_TYPE` (default `c3-highcpu-88`): machine type string passed to Cloud Batch's `allocationPolicy.instances[0].policy.machineType`. MUST be one of the supported c3-highcpu sizes listed below — admission rejects unknown families with `SERVICE_MISCONFIGURED` because the memory/vCPU ratio differs across families (n2-highcpu = 1 GB/vCPU vs c3-highcpu = 2 GB/vCPU) and unknown values would produce unschedulable jobs.
+  - `LAHC_VM_VCPU_COUNT` (default: derived from `LAHC_MACHINE_TYPE`): vCPU count. When set, MUST equal the count derived from `LAHC_MACHINE_TYPE` (otherwise SERVICE_MISCONFIGURED) so the two envs can't silently disagree.
+  - `LAHC_K_APPROVED` (default: equal to `LAHC_VM_VCPU_COUNT`): K_approved value forwarded to the worker. MUST be ≤ `LAHC_VM_VCPU_COUNT` or SERVICE_MISCONFIGURED — `Pool(K)` on a smaller VM oversubscribes and would blow the 660s cap.
+
+  Supported topology table (machine_type → cpu_milli + memory_mib safe claims; memoryMib leaves OS/agent headroom so Cloud Batch doesn't reject at submit):
+  | machine_type | vCPU | cpu_milli | memory_mib |
+  |---|---|---|---|
+  | c3-highcpu-4 | 4 | 4 000 | 7 000 |
+  | c3-highcpu-8 | 8 | 8 000 | 14 000 |
+  | c3-highcpu-22 | 22 | 22 000 | 40 000 |
+  | c3-highcpu-44 | 44 | 44 000 | 80 000 |
+  | c3-highcpu-88 | 88 | 88 000 | 160 000 (M7 baseline lock) |
+  | c3-highcpu-176 | 176 | 176 000 | 320 000 |
+
+  Defaults preserve the M7 production baseline (c3-highcpu-88 + K=88 + 160000 MiB) so existing operators see no behavior change. The override path is for maintainer redeploys; both `/compute` (operator path) and `/compute-lahc-test` (maintainer-test path) honor the env vars uniformly. Future quota bump to `CPUS_ALL_REGIONS≥88` lifts the workaround need + a quota bump to `C3_CPUS≥176` unlocks c3-highcpu-176 / K=176 per FW-0040.
 - **Region:** `asia-southeast1` (intra-region with Cloud Run Service + GCS bucket; free egress).
 - **Allocation policy:** on-demand only (NOT Spot per D-0070 sub-decision 4 — predictable wall-time).
 - **Task count + packing:** `taskCount=1`, `parallelism=1`. Single task on a single VM. `taskCountPerNode: 1` is implicit (one task, one VM). The single task's `multiprocessing.Pool(88)` provides intra-task parallelism across the VM's 88 vCPUs; no cross-task coordination needed.

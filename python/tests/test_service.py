@@ -352,6 +352,7 @@ def test_compute_lahc_test_malformed_K_approved_returns_compute_error() -> None:
 _T2D_ENV_VARS = [
     "CONTAINER_IMAGE_URI", "GCP_PROJECT", "RM_LAUNCHER_CALLBACK_URL",
     "LAHC_K_APPROVED", "LAHC_BATCH_REGION", "LAHC_BUCKET",
+    "LAHC_VM_VCPU_COUNT", "LAHC_MACHINE_TYPE",
 ]
 
 
@@ -375,9 +376,10 @@ def _t2d_env_teardown(saved: dict[str, str | None]) -> None:
 
 
 def _t2d_patch_clients(monkeypatch, *, list_jobs_response=None):
-    """Patch `BatchClient` → `InMemoryBatchClient`; patch GCS adapter
-    so the snapshot write is in-memory. Returns the in-memory batch
-    client + the GCS storage dict for assertion."""
+    """Patch `BatchClient` → `InMemoryBatchClient`; patch both GCS
+    factories so they don't construct a real storage.Client (which
+    requires Google ADC and would 500 in CI). Returns the in-memory
+    batch client + the GCS storage dict for assertion."""
     from rostermonster_service import batch_client as bc_mod
     from rostermonster_service import gcs as gcs_mod
 
@@ -394,12 +396,24 @@ def _t2d_patch_clients(monkeypatch, *, list_jobs_response=None):
 
         return read_json, write_json
 
+    def fake_make_gcs_delete_prefix_fn(bucket):
+        def delete_prefix(uri):
+            keys = [k for k in storage if k.startswith(uri)]
+            for k in keys:
+                del storage[k]
+            return len(keys)
+
+        return delete_prefix
+
     inmem_client = bc_mod.InMemoryBatchClient(
         list_jobs_response=list_jobs_response,
     )
 
     monkeypatch.setattr(bc_mod, "BatchClient", lambda: inmem_client)
     monkeypatch.setattr(gcs_mod, "make_gcs_adapter", fake_make_gcs_adapter)
+    monkeypatch.setattr(
+        gcs_mod, "make_gcs_delete_prefix_fn", fake_make_gcs_delete_prefix_fn,
+    )
     return inmem_client, storage
 
 
@@ -1365,6 +1379,340 @@ def test_compute_lahc_async_accepts_deploy_time_K_at_vm_capacity(monkeypatch) ->
             "LAHC_K_APPROVED == 88 (= VM vCPU count) MUST pass "
             "(inclusive cap); got " + repr(data.get("state"))
         )
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_K_defaults_to_vm_vcpu_count_when_unset(monkeypatch) -> None:
+    """Codex P2 finding on PR #161: pre-fix, deploying with
+    LAHC_VM_VCPU_COUNT=22 + LAHC_MACHINE_TYPE=c3-highcpu-22 but
+    leaving LAHC_K_APPROVED unset left K_approved at the hardcoded
+    default 88, and every /compute request rejected with
+    SERVICE_MISCONFIGURED at the K>vm_vcpu_count cap. The
+    quota-workaround path must work with just the two VM env vars.
+    """
+    saved = _t2d_env_setup()
+    os.environ["LAHC_VM_VCPU_COUNT"] = "22"
+    os.environ["LAHC_MACHINE_TYPE"] = "c3-highcpu-22"
+    os.environ.pop("LAHC_K_APPROVED", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED", (
+            "VM_VCPU_COUNT=22 + K_APPROVED unset MUST default K to 22 "
+            "and submit; got " + repr(data.get("state"))
+            + " message=" + str(data.get("error", {}).get("message"))
+        )
+        assert len(inmem_client.submitted_jobs) == 1
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        env = (
+            job_spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
+        )
+        assert env["RM_K_APPROVED"] == "22", (
+            "K must propagate as 22 (matching VM vCPU count), not 88"
+        )
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_K_defaults_to_88_when_both_envs_unset(monkeypatch) -> None:
+    """Backwards compatibility: with neither LAHC_VM_VCPU_COUNT nor
+    LAHC_K_APPROVED set, K defaults to 88 (the M7 production
+    baseline) — same behavior as before the parametric-VM PR."""
+    saved = _t2d_env_setup()
+    os.environ.pop("LAHC_K_APPROVED", None)
+    os.environ.pop("LAHC_VM_VCPU_COUNT", None)
+    os.environ.pop("LAHC_MACHINE_TYPE", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED"
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        env = (
+            job_spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
+        )
+        assert env["RM_K_APPROVED"] == "88"
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_explicit_K_above_parametric_VM_rejects(monkeypatch) -> None:
+    """Explicit `LAHC_K_APPROVED=88` on a `LAHC_VM_VCPU_COUNT=22`
+    deploy MUST still reject (over-subscription guard); the P2 fix
+    only changed the *default* behavior, not the explicit-K cap."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_VM_VCPU_COUNT"] = "22"
+    os.environ["LAHC_MACHINE_TYPE"] = "c3-highcpu-22"
+    os.environ["LAHC_K_APPROVED"] = "88"
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "COMPUTE_ERROR"
+        assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+        assert "LAHC_K_APPROVED" in data["error"]["message"]
+        assert "22" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_derives_vcpu_count_from_machine_type(monkeypatch) -> None:
+    """Codex P2 round 2 on PR #161/#162: setting LAHC_MACHINE_TYPE=
+    c3-highcpu-22 without LAHC_VM_VCPU_COUNT should derive vCPU=22
+    from the machine_type suffix, not fall through to the default 88.
+    Pre-fix, vm_vcpu_count stayed at 88 and the cpuMilli claim
+    overshot the 22-vCPU VM → Cloud Batch reject."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_MACHINE_TYPE"] = "c3-highcpu-22"
+    os.environ.pop("LAHC_VM_VCPU_COUNT", None)
+    os.environ.pop("LAHC_K_APPROVED", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED", (
+            "MACHINE_TYPE=c3-highcpu-22 alone MUST derive vCPU=22 and "
+            "submit; got " + repr(data.get("state"))
+            + " message=" + str(data.get("error", {}).get("message"))
+        )
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        env = (
+            job_spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
+        )
+        assert env["RM_K_APPROVED"] == "22"
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_machine_type_vcpu_mismatch(monkeypatch) -> None:
+    """Codex P2 round 2: explicit LAHC_MACHINE_TYPE=c3-highcpu-22 +
+    LAHC_VM_VCPU_COUNT=88 is a misconfig (two envs claiming
+    different VMs). Reject at admission so the wrong cpuMilli
+    doesn't reach Cloud Batch."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_MACHINE_TYPE"] = "c3-highcpu-22"
+    os.environ["LAHC_VM_VCPU_COUNT"] = "88"
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "COMPUTE_ERROR"
+        assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+        assert "c3-highcpu-22" in data["error"]["message"]
+        assert "LAHC_VM_VCPU_COUNT" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_machine_type_and_vcpu_count_match_succeeds(monkeypatch) -> None:
+    """Both envs set and consistent (c3-highcpu-22 + 22) MUST pass —
+    the consistency check only fires on mismatch."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_MACHINE_TYPE"] = "c3-highcpu-22"
+    os.environ["LAHC_VM_VCPU_COUNT"] = "22"
+    os.environ["LAHC_K_APPROVED"] = "22"
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED"
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_unknown_machine_type_without_vcpu_env(monkeypatch) -> None:
+    """Codex P2 round 4: any unsupported machine_type (non-c3-highcpu
+    or c3-highcpu-N where N isn't in the table) MUST reject. Memory
+    per vCPU varies across families (n2-highcpu = 1 GB/vCPU vs
+    c3-highcpu = 2 GB/vCPU), so vCPU count alone can't derive a safe
+    memoryMib."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_MACHINE_TYPE"] = "n2-highcpu-32"
+    os.environ.pop("LAHC_VM_VCPU_COUNT", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "COMPUTE_ERROR"
+        assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+        assert "n2-highcpu-32" in data["error"]["message"]
+        assert "supported" in data["error"]["message"].lower()
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_unknown_machine_type_rejected_even_with_explicit_vcpu(monkeypatch) -> None:
+    """Codex P2 on PR #161 round 4: an explicit vCPU env is not enough
+    to safely derive memoryMib across machine families (n2-highcpu
+    has 1 GB/vCPU vs c3-highcpu's 2 GB/vCPU). Unsupported machine
+    families MUST reject — adding one means adding a row to
+    _C3_HIGHCPU_TOPOLOGIES with the right memory claim."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_MACHINE_TYPE"] = "n2-highcpu-32"
+    os.environ["LAHC_VM_VCPU_COUNT"] = "32"
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "COMPUTE_ERROR"
+        assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+        assert "n2-highcpu-32" in data["error"]["message"]
+        assert "supported" in data["error"]["message"].lower()
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_memory_mib_from_table_not_overclaim(monkeypatch) -> None:
+    """Codex P1 on PR #162 round 3: pre-fix formula was
+    `N*2*1024 - 1024 MiB` which gave 179200 MiB on c3-highcpu-88,
+    above the 176000 MiB cap. Post-fix memoryMib comes from the
+    _C3_HIGHCPU_TOPOLOGIES table (160000 for c3-highcpu-88, the M7
+    baseline lock value)."""
+    saved = _t2d_env_setup()
+    os.environ.pop("LAHC_VM_VCPU_COUNT", None)
+    os.environ.pop("LAHC_MACHINE_TYPE", None)
+    os.environ.pop("LAHC_K_APPROVED", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED"
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        cr = job_spec["taskGroups"][0]["taskSpec"]["computeResource"]
+        assert cr["cpuMilli"] == 88_000
+        assert cr["memoryMib"] == 160_000, (
+            "memoryMib MUST come from the _C3_HIGHCPU_TOPOLOGIES "
+            "table value 160000 (M7 baseline), not the over-claiming "
+            "formula's 179200 MiB. Got " + str(cr["memoryMib"])
+        )
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_memory_mib_for_c3_highcpu_22(monkeypatch) -> None:
+    """Same as above but for the quota-workaround VM (c3-highcpu-22):
+    memoryMib MUST come from the table (40000), not the formula's
+    44032 MiB which only leaves 1 GiB headroom."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_MACHINE_TYPE"] = "c3-highcpu-22"
+    os.environ.pop("LAHC_VM_VCPU_COUNT", None)
+    os.environ.pop("LAHC_K_APPROVED", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED"
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        cr = job_spec["taskGroups"][0]["taskSpec"]["computeResource"]
+        assert cr["cpuMilli"] == 22_000
+        assert cr["memoryMib"] == 40_000
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_test_endpoint_honors_vm_env_overrides(monkeypatch) -> None:
+    """Codex P2 on PR #162 round 3: pre-fix, /compute-lahc-test
+    ignored LAHC_MACHINE_TYPE + LAHC_VM_VCPU_COUNT and always
+    submitted a c3-highcpu-88/K=88 job, so the quota workaround
+    couldn't be validated via the maintainer route. Post-fix this
+    endpoint shares _resolve_vm_topology() with the operator path."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_MACHINE_TYPE"] = "c3-highcpu-22"
+    os.environ.pop("LAHC_VM_VCPU_COUNT", None)
+    os.environ.pop("LAHC_K_APPROVED", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute-lahc-test", json={
+            "snapshot": _load_snapshot_dict(),
+            "optionalConfig": {"seed": 12345},
+        })
+        # /compute-lahc-test runs synchronously; we don't drive the
+        # whole orchestrator here (InMemoryBatchClient returns
+        # SUCCEEDED but there's no real worker output). The relevant
+        # assertion is: job_spec actually got built with c3-highcpu-22
+        # before any downstream failure.
+        assert resp.status_code == 200
+        # Look at the submitted job spec regardless of orchestrator
+        # outcome.
+        if inmem_client.submitted_jobs:
+            job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+            policy = (
+                job_spec["allocationPolicy"]["instances"][0]["policy"]
+            )
+            assert policy["machineType"] == "c3-highcpu-22", (
+                "/compute-lahc-test MUST honor LAHC_MACHINE_TYPE; got "
+                + policy["machineType"]
+            )
+            cr = job_spec["taskGroups"][0]["taskSpec"]["computeResource"]
+            assert cr["cpuMilli"] == 22_000
+            assert cr["memoryMib"] == 40_000
     finally:
         _t2d_env_teardown(saved)
 
