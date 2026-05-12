@@ -1079,6 +1079,100 @@ def test_compute_lahc_async_catches_parse_exception(monkeypatch) -> None:
         _t2d_env_teardown(saved)
 
 
+def test_compute_lahc_async_honors_max_candidates_override(monkeypatch) -> None:
+    """Codex P2 round 8 finding on PR #157 commit d1fdbf4ac6: pre-fix,
+    `optionalConfig.maxCandidates` was silently ignored on the LAHC
+    async path even though §9.3 documents it + §12A.3 defines K as
+    `maxCandidates`. Maintainer experiments requesting custom K got
+    SUBMITTED but ran the deploy-time default (88), corrupting
+    benchmark results. Fix: override K_approved with the request's
+    maxCandidates when present + valid; verified by inspecting the
+    submitted Batch job spec's RM_K_APPROVED env."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC", "maxCandidates": 5},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED", (
+            "valid maxCandidates override MUST pass; got "
+            + repr(data.get("state"))
+        )
+        assert len(inmem_client.submitted_jobs) == 1
+        # Inspect the submitted Batch job spec's RM_K_APPROVED env
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        env = (
+            job_spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
+        )
+        assert env["RM_K_APPROVED"] == "5", (
+            "request's maxCandidates=5 MUST override the deploy-time "
+            "default; got RM_K_APPROVED=" + repr(env.get("RM_K_APPROVED"))
+        )
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_invalid_max_candidates(monkeypatch) -> None:
+    """`maxCandidates` MUST be a positive int when present. Zero,
+    negative, non-int values surface as INPUT_ERROR/
+    INVALID_OPTIONAL_CONFIG (counter-test to lock the boundary fix)."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        for bad_value in (0, -1, "five"):
+            resp = client.post("/compute", json={
+                "snapshot": _load_snapshot_dict(),
+                "operatorEmail": "operator@example.com",
+                "optionalConfig": {
+                    "solverStrategy": "LAHC",
+                    "maxCandidates": bad_value,
+                },
+            })
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["state"] == "INPUT_ERROR", (
+                "invalid maxCandidates=" + repr(bad_value)
+                + " MUST surface as INPUT_ERROR; got "
+                + repr(data.get("state"))
+            )
+            assert data["error"]["code"] == "INVALID_OPTIONAL_CONFIG"
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_omitted_max_candidates_uses_default(monkeypatch) -> None:
+    """When `maxCandidates` is omitted, the deploy-time default
+    (88 via `_LAHC_DEFAULT_K_APPROVED`) applies. Boundary counter-test
+    to lock the override-vs-default invariant."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED"
+        job_spec = inmem_client.submitted_jobs[0]["job_spec"]
+        env = (
+            job_spec["taskGroups"][0]["taskSpec"]["environment"]["variables"]
+        )
+        # No env override → default 88
+        assert env["RM_K_APPROVED"] == "88"
+    finally:
+        _t2d_env_teardown(saved)
+
+
 def test_compute_srb_path_stays_synchronous() -> None:
     """Back-compat: omitting `solverStrategy` (or passing
     "SEEDED_RANDOM_BLIND") keeps the existing sync /compute path —

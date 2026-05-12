@@ -841,6 +841,25 @@ def _compute_lahc_async_endpoint(
     else:
         K_approved = _LAHC_DEFAULT_K_APPROVED
 
+    # Codex P2 round 8 finding on PR #157 commit d1fdbf4ac6: pre-fix,
+    # `optionalConfig.maxCandidates` was documented in §9.3 +
+    # `docs/solver_contract.md` §12A.3 defines LAHC outer-loop
+    # termination as `K = maxCandidates`, but the async LAHC path
+    # silently ignored it + ran deploy-time K_approved (default 88).
+    # A maintainer experiment requesting `maxCandidates: 5` got
+    # SUBMITTED but ran 88 trajectories, skewing benchmark/cost
+    # comparisons. Honor the override here: if present + valid,
+    # overrides the deploy-time K_approved.
+    try:
+        max_candidates_override = _coerce_optional_int(
+            optional_block.get("maxCandidates"), "maxCandidates",
+            min_val=1,
+        )
+    except _ConfigValidationError as e:
+        return _input_error("INVALID_OPTIONAL_CONFIG", str(e))
+    if max_candidates_override is not None:
+        K_approved = max_candidates_override
+
     # --- Wire SDK deps + concurrent-rejection ----------------------------
     try:
         from rostermonster_service.batch_client import BatchClient
