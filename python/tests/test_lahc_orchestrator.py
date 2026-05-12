@@ -668,7 +668,13 @@ def test_post_aggregation_diagnostics_include_seed_failed_trajectories() -> None
         "perTaskResults": [{}],
     }
 
-    wrapper = lo._build_post_aggregation_envelope(
+    # Call the shared post_aggregation helper directly (T2A.2 PR-B
+    # dropped the orchestrator-side back-compat alias — the canonical
+    # home is `rostermonster_service.post_aggregation`).
+    from rostermonster_service.post_aggregation import (
+        build_post_aggregation_envelope,
+    )
+    wrapper = build_post_aggregation_envelope(
         snapshot_dict=snapshot_dict, agg=agg,
         master_seed=master_seed, K_approved=K,
         run_id="test-runid",

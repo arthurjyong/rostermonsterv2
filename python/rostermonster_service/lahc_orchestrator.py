@@ -17,43 +17,45 @@ each sees only its own attempt's results — at worst one attempt
 sees all its inputs stomped (UNSATISFIED) but never a polluted /
 mixed K' aggregation.
 
-`orchestrate_lahc_run(snapshot_dict, ...)` is the entry point the M7 C2
-Task 2F maintainer-only `/compute-lahc-test` route calls. End-to-end
-flow:
+`orchestrate_lahc_run(snapshot_dict, ...)` is the entry point the
+maintainer-only `/compute-lahc-test` route calls (D-0071 sub-decision
+14 — kept after the operator path moves async at M7 C4 because it
+exposes the synchronous-from-curl maintainer test pattern). The
+operator path no longer routes through this orchestrator: M7 C4 T2A.2
+PR-A moved the polling + aggregation + scoring + analyzer + callback
+POST chain INLINE into `worker.py`'s finalize step (per §8.7
+finalizer-inline pattern, Codex P1.7 amendment). End-to-end flow for
+the maintainer test path:
 
-  1. Derive runId from `(snapshotId, masterSeed)` so re-runs of the same
-     parameters overwrite GCS artifacts deterministically (idempotent),
-     and different parameters produce distinct artifact paths.
-  2. Pre-derive all `K_approved` trajectory seeds via
-     `derive_K_seeds(masterSeed, K_approved)` per §12A.10 — single
-     source of truth shared with the local-CLI K-trajectory loop.
-  3. Partition the K-length seed list into per-task slices of up to
-     `TRAJECTORIES_PER_TASK = 8` per the §8.7 dense-pack invariant.
-     Final task may carry fewer when K_approved isn't a multiple of 8
-     (current production K=104 → all 13 tasks fully packed at 8).
-  4. Write input snapshot.json + per-task seeds.json files to GCS at
-     the §8.7 key paths. The worker (T2D) picks them up via the same
-     URI scheme.
-  5. Build the Cloud Batch job spec via T2E's
-     `build_lahc_batch_job_spec(...)` and submit to Cloud Batch.
-  6. Poll `batch.jobs.get` at `_DEFAULT_POLL_INTERVAL_SECONDS`. On
+  1. Derive runId from `(snapshotId, masterSeed)` so re-runs of the
+     same parameters overwrite GCS artifacts deterministically
+     (idempotent), and different parameters produce distinct artifact
+     paths.
+  2. Write input snapshot.json to GCS at the §8.7 key path. The
+     worker derives all K trajectory seeds locally via
+     `derive_K_seeds(masterSeed, K_approved)` per §12A.10 (no
+     per-task seeds.json under the single-task pivot per Codex P1.7
+     amendment).
+  3. Build the Cloud Batch job spec via
+     `build_lahc_batch_job_spec(...)` and submit to Cloud Batch with
+     `RM_LAUNCHER_CALLBACK_URL=""` (empty — maintainer test path
+     skips the worker's inline callback POST per worker.py's
+     `_inline_finalize` short-circuit).
+  4. Poll `batch.jobs.get` at `_DEFAULT_POLL_INTERVAL_SECONDS`. On
      terminal state (SUCCEEDED / FAILED / CANCELLED), proceed to
      aggregation. On wall-clock elapsed > `_COMPLETION_DEADLINE_SECONDS`
      (240s per §8.7), call `cancel_job` + proceed to aggregation
      anyway (partial-failure tolerance).
-  7. Read per-task `result.json` files from GCS. Missing / unreadable
-     results contribute 0 candidates to K' per §8.7's primary K'
+  5. Read single `result.json` from GCS at `gs://bucket/{runId}/result.json`
+     (single-task pattern — no per-task subdirs). Missing / unreadable
+     result contributes 0 candidates to K' per §8.7's primary K'
      definition.
-  8. Aggregate: `K' = sum(len(result.json["candidates"]))` across
-     completed tasks; `dropped_count = K_approved - K'` is the derived
-     diagnostic. Returns a structured summary dict the test route
-     surfaces verbatim.
-
-The wrapper-envelope assembly (scorer → selector → final envelope) is
-NOT part of T2F's scope per the §9 cadence — that lands at T2G
-alongside the determinism re-audit, which needs the scored winner to
-verify byte-identity vs the local CLI. T2F's response is a raw K'
-summary suitable for maintainer inspection.
+  6. Run the post-aggregation pipeline (score → select → wrapper
+     envelope) via `post_aggregation.build_post_aggregation_envelope`
+     so the test route returns the same `writebackEnvelope` shape as
+     the operator path's inline finalize POSTs to the launcher.
+     Returns a structured summary dict the test route surfaces
+     verbatim.
 
 All I/O ports are injectable for testability — production wires the
 real `BatchClient` + `make_gcs_adapter(...)`; tests pass
@@ -84,16 +86,8 @@ from rostermonster_service.gcs import (
     ReadJsonFn,
     WriteJsonFn,
 )
-# Re-export the extracted post-aggregation helpers so existing imports
-# (`from rostermonster_service.lahc_orchestrator import
-# _build_post_aggregation_envelope`) keep working through the M7 C4
-# T2A.2 PR-A landing. The canonical home is now
-# `rostermonster_service.post_aggregation`; PR-B will sweep callers to
-# the new path.
-from rostermonster_service.post_aggregation import (  # noqa: F401
-    assignment_unit_from_dict as _assignment_unit_from_dict,
-    build_post_aggregation_envelope as _build_post_aggregation_envelope,
-    build_unsatisfied_from_aggregation as _build_unsatisfied_from_aggregation,
+from rostermonster_service.post_aggregation import (
+    build_post_aggregation_envelope,
 )
 
 
@@ -102,7 +96,6 @@ log = logging.getLogger("rostermonster_service.lahc_orchestrator")
 # §8.7 invariants — replicated here (vs imported from worker.py) so the
 # orchestrator can be reasoned about standalone without reading the
 # worker's module to know dense-pack semantics.
-TRAJECTORIES_PER_TASK = 8
 _DEFAULT_BUCKET = "rostermonsterv2-lahc"
 _DEFAULT_REGION = "asia-southeast1"
 
@@ -186,16 +179,6 @@ def derive_run_id(snapshot_id: str, master_seed: int) -> str:
     return sanitized[:prefix_room] + suffix
 
 
-def _partition_seeds(seeds: list[int], per_task: int = TRAJECTORIES_PER_TASK) -> list[list[int]]:
-    """Slice a K-length seed list into per-task chunks of `per_task`.
-    Final chunk may be smaller when len(seeds) isn't a multiple of
-    per_task (matches the §8.7 partial-pack tolerance for the final
-    task at full M7 quota K=2,500)."""
-    return [
-        seeds[i:i + per_task]
-        for i in range(0, len(seeds), per_task)
-    ]
-
 
 def _poll_until_terminal_or_deadline(
     *,
@@ -227,92 +210,6 @@ def _poll_until_terminal_or_deadline(
         sleep_fn(poll_interval_seconds)
 
 
-def _aggregate_results(
-    *,
-    task_count: int,
-    bucket: str,
-    run_id: str,
-    expected_attempt_id: str,
-    gcs_read_json: ReadJsonFn,
-) -> dict[str, Any]:
-    """Read per-task `result.json` files from GCS and aggregate.
-    Missing / unreadable results contribute 0 candidates per §8.7's
-    primary K' definition; they're counted in `incomplete_task_indices`
-    so the response surfaces which tasks contributed nothing.
-
-    Validates each result.json's `attemptId` against the
-    `expected_attempt_id` per the §8.7 concurrent-replay race fix
-    (T2G): a result.json with a mismatched / missing attemptId belongs
-    to a different attempt at the same runId prefix and MUST NOT
-    contribute candidates to this attempt's K'. Mismatches are counted
-    in `mismatched_attempt_task_indices` for diagnostics + treated the
-    same as missing results.
-    """
-    candidates: list[dict] = []
-    failed_trajectories: list[dict] = []
-    trajectory_exceptions: list[dict] = []
-    aggregate_attempts = 0
-    aggregate_rejections: dict[str, int] = {}
-    completed_task_indices: list[int] = []
-    incomplete_task_indices: list[int] = []
-    mismatched_attempt_task_indices: list[int] = []
-    per_task_results: list[dict | None] = []
-
-    for task_index in range(task_count):
-        result_uri = _gcs_uri(
-            bucket, run_id, "task-" + str(task_index), "result.json",
-        )
-        try:
-            result = gcs_read_json(result_uri)
-        except Exception as e:
-            log.warning(
-                "Failed to read result.json for task %d (%s): %s",
-                task_index, result_uri, e,
-            )
-            per_task_results.append(None)
-            incomplete_task_indices.append(task_index)
-            continue
-
-        # §8.7 attemptId validation per the T2G concurrent-replay race
-        # fix: a result.json from a different attempt (or pre-T2G with
-        # no attemptId) at the same runId prefix MUST NOT contribute
-        # to this attempt's K'.
-        result_attempt_id = result.get("attemptId")
-        if result_attempt_id != expected_attempt_id:
-            log.warning(
-                "Task %d result.json has attemptId=%r; expected %r — "
-                "treating as missing (stale from a prior attempt)",
-                task_index, result_attempt_id, expected_attempt_id,
-            )
-            per_task_results.append(None)
-            incomplete_task_indices.append(task_index)
-            mismatched_attempt_task_indices.append(task_index)
-            continue
-
-        per_task_results.append(result)
-        completed_task_indices.append(task_index)
-        for cand in result.get("candidates", []):
-            candidates.append({"taskIndex": task_index, **cand})
-        for failed in result.get("failedTrajectories", []):
-            failed_trajectories.append({"taskIndex": task_index, **failed})
-        for exc in result.get("trajectoryExceptions", []):
-            trajectory_exceptions.append({"taskIndex": task_index, **exc})
-        aggregate_attempts += int(result.get("aggregateAttempts", 0))
-        for code, count in result.get("aggregateRejectionsByReason", {}).items():
-            aggregate_rejections[code] = aggregate_rejections.get(code, 0) + int(count)
-
-    return {
-        "candidates": candidates,
-        "failedTrajectories": failed_trajectories,
-        "trajectoryExceptions": trajectory_exceptions,
-        "aggregateAttempts": aggregate_attempts,
-        "aggregateRejectionsByReason": aggregate_rejections,
-        "completedTaskIndices": completed_task_indices,
-        "incompleteTaskIndices": incomplete_task_indices,
-        "mismatchedAttemptTaskIndices": mismatched_attempt_task_indices,
-        "perTaskResults": per_task_results,
-    }
-
 
 def _aggregate_single_task_result(
     *,
@@ -322,7 +219,7 @@ def _aggregate_single_task_result(
     gcs_read_json: ReadJsonFn,
 ) -> dict[str, Any]:
     """Read the single result.json from GCS and surface its contents in
-    the shape `_build_post_aggregation_envelope` expects.
+    the shape `build_post_aggregation_envelope` expects.
 
     Under M7 C4 T2A.1 single-task pattern (Codex P1.7 amendment), the
     worker writes one result.json at `gs://bucket/{runId}/result.json`
@@ -391,7 +288,7 @@ def _aggregate_single_task_result(
     result_present = True
     per_task_results = [result]
     for cand in result.get("candidates", []):
-        # Preserve the "taskIndex": 0 shape `_build_post_aggregation_envelope`
+        # Preserve the "taskIndex": 0 shape `build_post_aggregation_envelope`
         # expects under the multi-task aggregation contract; under
         # single-task there's exactly one task at index 0.
         candidates.append({"taskIndex": 0, **cand})
@@ -680,7 +577,7 @@ def orchestrate_lahc_run(
     # orchestrator entry but parse() rejected — shouldn't happen since
     # snapshot is immutable in GCS); detect + promote to COMPUTE_ERROR
     # rather than violating §10.3.
-    wrapper_envelope = _build_post_aggregation_envelope(
+    wrapper_envelope = build_post_aggregation_envelope(
         snapshot_dict=snapshot_dict,
         agg=agg,
         master_seed=master_seed,
