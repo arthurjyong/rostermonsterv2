@@ -652,6 +652,33 @@ function _buildJsonResponse_(httpStatus, payload) {
 }
 
 
+// One-shot maintainer-side helper to trigger Apps Script's OAuth
+// re-consent prompt after manifest-scope additions. Apps Script
+// blocks trailing-underscore "private" functions from the editor's
+// Run button, so a no-underscore public wrapper is required to
+// invoke from the editor. Touches the two new scopes added at M7
+// C4 T2B (`script.external_request` + `script.send_mail`) via
+// no-op calls that intentionally fail / return silently — Apps
+// Script's auth flow fires BEFORE function invocation when the
+// manifest carries new scopes, so this is enough to surface the
+// consent dialog for the script owner. Retained in source rather
+// than added-then-deleted because future scope additions (e.g.,
+// FW-0039 watchdog scopes) follow the same pattern; document the
+// trigger here.
+function authorizeM7C4Scopes() {
+  try {
+    UrlFetchApp.fetch(
+      'https://oauth2.googleapis.com/tokeninfo?id_token=dummy'
+    );
+  } catch (e) {
+    // tokeninfo returns 400 on a bogus token; swallow — the call
+    // itself was sufficient to trigger script.external_request
+    // scope authorization.
+  }
+  MailApp.getRemainingDailyQuota();  // touches script.send_mail
+}
+
+
 function _sweepStaleIdempotencyEntries_(props) {
   // Drop dedup entries older than `IDEMPOTENCY_TTL_MS_`. Runs on
   // every callback as a cheap O(N) pass; at pilot scale N << 100 so
