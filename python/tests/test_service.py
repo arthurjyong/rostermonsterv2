@@ -346,6 +346,236 @@ def test_compute_lahc_test_malformed_K_approved_returns_compute_error() -> None:
                 os.environ[name] = prior
 
 
+# --- M7 C4 T2D async LAHC front-door tests ------------------------------
+
+
+_T2D_ENV_VARS = [
+    "CONTAINER_IMAGE_URI", "GCP_PROJECT", "RM_LAUNCHER_CALLBACK_URL",
+    "LAHC_K_APPROVED", "LAHC_BATCH_REGION", "LAHC_BUCKET",
+]
+
+
+def _t2d_env_setup() -> dict[str, str | None]:
+    """Snapshot env vars + set required ones for the LAHC async path."""
+    saved = {k: os.environ.get(k) for k in _T2D_ENV_VARS}
+    os.environ["CONTAINER_IMAGE_URI"] = "gcr.io/rostermonsterv2/test:tag"
+    os.environ["GCP_PROJECT"] = "rostermonsterv2"
+    os.environ["RM_LAUNCHER_CALLBACK_URL"] = (
+        "https://script.google.com/macros/s/AKfycbXFAKE/exec"
+    )
+    return saved
+
+
+def _t2d_env_teardown(saved: dict[str, str | None]) -> None:
+    for name, prior in saved.items():
+        if prior is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = prior
+
+
+def _t2d_patch_clients(monkeypatch, *, list_jobs_response=None):
+    """Patch `BatchClient` → `InMemoryBatchClient`; patch GCS adapter
+    so the snapshot write is in-memory. Returns the in-memory batch
+    client + the GCS storage dict for assertion."""
+    from rostermonster_service import batch_client as bc_mod
+    from rostermonster_service import gcs as gcs_mod
+
+    storage: dict[str, dict] = {}
+
+    def fake_make_gcs_adapter(bucket):
+        def read_json(uri):
+            if uri not in storage:
+                raise FileNotFoundError(uri)
+            return json.loads(json.dumps(storage[uri]))
+
+        def write_json(uri, data):
+            storage[uri] = json.loads(json.dumps(data))
+
+        return read_json, write_json
+
+    inmem_client = bc_mod.InMemoryBatchClient(
+        list_jobs_response=list_jobs_response,
+    )
+
+    monkeypatch.setattr(bc_mod, "BatchClient", lambda: inmem_client)
+    monkeypatch.setattr(gcs_mod, "make_gcs_adapter", fake_make_gcs_adapter)
+    return inmem_client, storage
+
+
+def test_compute_lahc_async_happy_path_returns_submitted(monkeypatch) -> None:
+    """LAHC strategy + valid operatorEmail + no in-flight job →
+    SUBMITTED state with submission.batchJobName + jobId + runId +
+    attemptId per §10.1 SUBMITTED + Cloud Run thin front door."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, storage = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC", "seed": 12345},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "SUBMITTED", (
+            "LAHC + valid operatorEmail MUST return SUBMITTED; got "
+            + repr(data.get("state"))
+        )
+        assert data["writebackEnvelope"] is None
+        assert data["error"] is None
+        sub = data["submission"]
+        assert sub["batchJobName"].startswith(
+            "projects/rostermonsterv2/locations/asia-southeast1/jobs/"
+        )
+        assert sub["jobId"]
+        assert sub["runId"]
+        assert sub["attemptId"]
+        # One Batch job submitted
+        assert len(inmem_client.submitted_jobs) == 1
+        # Snapshot written to GCS
+        snapshot_uris = [u for u in storage if u.endswith("/snapshot.json")]
+        assert len(snapshot_uris) == 1
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_missing_operator_email(monkeypatch) -> None:
+    """§9.3: operatorEmail REQUIRED on LAHC path → INPUT_ERROR with
+    code OPERATOR_EMAIL_REQUIRED when missing."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            # operatorEmail omitted
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "OPERATOR_EMAIL_REQUIRED"
+        # No Batch job submitted on missing operatorEmail
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_concurrent_run(monkeypatch) -> None:
+    """§8.7 sub-decision 8: concurrent-rejection via batch.jobs.list
+    filter. If an in-flight job matches the spreadsheet's label,
+    reject with INPUT_ERROR/CONCURRENT_RUN_REJECTED + include the
+    existing job's createTime + operator email in the message."""
+    saved = _t2d_env_setup()
+    try:
+        # Pre-seed an "existing in-flight job"
+        inmem_client, _ = _t2d_patch_clients(
+            monkeypatch,
+            list_jobs_response=[{
+                "name": "projects/rostermonsterv2/locations/asia-southeast1/jobs/existing-job",
+                "createTime": "2026-05-12T10:00:00Z",
+                "operatorEmail": "someone-else@example.com",
+            }],
+        )
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "CONCURRENT_RUN_REJECTED"
+        assert "someone-else@example.com" in data["error"]["message"]
+        assert "2026-05-12T10:00:00Z" in data["error"]["message"]
+        # No new Batch job submitted
+        assert len(inmem_client.submitted_jobs) == 0
+        # list_jobs WAS called with the expected filter
+        assert len(inmem_client.list_jobs_calls) == 1
+        filter_str = inmem_client.list_jobs_calls[0]["filter_str"]
+        assert "labels.spreadsheet_id=" in filter_str
+        assert "status.state=QUEUED" in filter_str
+        assert "status.state=SCHEDULED" in filter_str
+        assert "status.state=RUNNING" in filter_str
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_parser_failure(monkeypatch) -> None:
+    """Pre-Batch validation: snapshot that deserializes but is parser-
+    NON_CONSUMABLE → INPUT_ERROR/PARSER_REJECTED. Saves the Cloud
+    Batch round-trip cost on snapshots that can't produce a valid
+    envelope per the M7 C2 T2F orchestrator discipline (Codex P2
+    bad297f) — now duplicated on the new front door."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        # Mutate the real fixture to break parser consumability (empty
+        # doctorRecords → structural rejection without breaking shallow
+        # snapshotId / metadata deserialization).
+        bad_snapshot = _load_snapshot_dict()
+        bad_snapshot["doctorRecords"] = []
+        resp = client.post("/compute", json={
+            "snapshot": bad_snapshot,
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "PARSER_REJECTED"
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_missing_callback_url(monkeypatch) -> None:
+    """Deploy-time `RM_LAUNCHER_CALLBACK_URL` MUST be set for the LAHC
+    async path. Missing → COMPUTE_ERROR/SERVICE_MISCONFIGURED so the
+    maintainer's logs surface the misconfig immediately."""
+    saved = _t2d_env_setup()
+    # Clear the callback URL after setup
+    os.environ.pop("RM_LAUNCHER_CALLBACK_URL", None)
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "COMPUTE_ERROR"
+        assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+        assert "RM_LAUNCHER_CALLBACK_URL" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_srb_path_stays_synchronous() -> None:
+    """Back-compat: omitting `solverStrategy` (or passing
+    "SEEDED_RANDOM_BLIND") keeps the existing sync /compute path —
+    returns OK / UNSATISFIED / etc. with a wrapper envelope, not
+    SUBMITTED. M7 C4 T2D's async dispatch only fires on
+    solverStrategy=LAHC."""
+    client = _client()
+    resp = client.post("/compute", json={
+        "snapshot": _load_snapshot_dict(),
+        "optionalConfig": {"maxCandidates": 2, "seed": 99},
+    })
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["state"] in ("OK", "UNSATISFIED")
+    assert data["state"] != "SUBMITTED"
+    # SRB sync path carries the writebackEnvelope inline.
+    assert data["writebackEnvelope"] is not None
+
+
 # Minimal pytest-equivalent runner.
 def _run() -> int:
     tests = [

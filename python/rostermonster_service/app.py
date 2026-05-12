@@ -27,8 +27,11 @@ import logging
 import os
 from typing import Any
 
-from flask import Flask, Response, jsonify, request
+import time
 
+from flask import Flask, Response, g, jsonify, request
+
+from rostermonster.parser import Consumability, parse
 from rostermonster.pipeline import (
     _assemble_writeback_wrapper,
     _snapshot_from_dict,
@@ -42,6 +45,18 @@ _LAHC_K_APPROVED_ENV = "LAHC_K_APPROVED"
 _LAHC_DEFAULT_K_APPROVED = 88  # M7 C4 T2A.1 single-VM Pool(K) on c3-highcpu-88 (was 104 under the M7 C1 13-VM dense-pack design — Codex P1.7 single-VM amendment in PR #147 dropped K to 88 to fit the c3-highcpu-88 vCPU count); future quota bump to C3_CPUS≥176 unlocks K=176 via FW-0040.
 _CONTAINER_IMAGE_URI_ENV = "CONTAINER_IMAGE_URI"
 _GCP_PROJECT_ENV = "GCP_PROJECT"
+# M7 C4 T2D deploy-time env: URL of the launcher's SECOND Web App
+# deployment (USER_DEPLOYING, version-pinned per §10A.5) where the
+# Cloud Batch worker's inline finalize step POSTs the callback per
+# §10A. Set at Cloud Run deploy time via
+# `--set-env-vars RM_LAUNCHER_CALLBACK_URL=<url>`.
+_LAUNCHER_CALLBACK_URL_ENV = "RM_LAUNCHER_CALLBACK_URL"
+# §8.7 single-task Batch job region.
+_LAHC_BATCH_REGION_ENV = "LAHC_BATCH_REGION"
+_LAHC_DEFAULT_BATCH_REGION = "asia-southeast1"
+# §8.7 GCS bucket holding all M7 LAHC run artifacts.
+_LAHC_BUCKET_ENV = "LAHC_BUCKET"
+_LAHC_DEFAULT_BUCKET = "rostermonsterv2-lahc"
 
 
 log = logging.getLogger("rostermonster_service")
@@ -120,6 +135,11 @@ def _check_operator_allowlist() -> Response | None:
     `docs/decision_log.md` D-0054. Returns a 200 INPUT_ERROR-shaped
     response on auth failure; returns None on success."""
     if _is_truthy_env(_DISABLE_AUTH_ENV):
+        # Tests + local dev — no token to extract email from. Set to
+        # empty string so LAHC dispatcher's operatorEmail match has a
+        # sentinel to compare against (tests inject the empty match
+        # explicitly via the request body's `operatorEmail: ""`).
+        g.operator_email = ""
         return None
 
     allowed = os.environ.get(_ALLOWED_EMAILS_ENV, "").strip()
@@ -218,6 +238,13 @@ def _check_operator_allowlist() -> Response | None:
         )
 
     log.info("Authorized request from %s", email)
+    # M7 C4 T2D: stash the validated operator email on Flask's
+    # request-local `g` so the LAHC async dispatcher can match it
+    # against the request body's `operatorEmail` field per §9.3
+    # (LAHC requires operatorEmail to match the OIDC `email` claim
+    # to prevent a maintainer spoofing the operator address on a
+    # behalf-of-someone-else solve).
+    g.operator_email = email
     return None
 
 
@@ -233,8 +260,11 @@ def _auth_error(code: str, message: str) -> Response:
 
 
 def _compute_endpoint() -> Response:
-    """POST /compute handler. Always returns HTTP 200 with a 4-state
-    structured response per `docs/cloud_compute_contract.md` §10.1."""
+    """POST /compute handler. Always returns HTTP 200 with a 5-state
+    structured response per `docs/cloud_compute_contract.md` §10.1 —
+    `SUBMITTED` was added at M7 C3 + wired in T2D for the LAHC async
+    path; the existing 4-state surface (OK / UNSATISFIED /
+    INPUT_ERROR / COMPUTE_ERROR) continues on the SRB sync path."""
     # --- Stage 1: parse request body --------------------------------------
     try:
         raw = request.get_json(silent=False)
@@ -263,6 +293,18 @@ def _compute_endpoint() -> Response:
             "INVALID_SNAPSHOT_SHAPE",
             "`snapshot` must be a JSON object.",
         )
+
+    # --- Solver-strategy dispatch (M7 C4 T2D) -----------------------------
+    # Read solverStrategy from optionalConfig per §9.3. LAHC routes
+    # through the async front-door (validate + submit Batch + return
+    # SUBMITTED ~3-5s); SRB stays on the existing sync compute path.
+    optional_block = raw.get("optionalConfig")
+    if isinstance(optional_block, dict):
+        solver_strategy = optional_block.get("solverStrategy", "")
+    else:
+        solver_strategy = ""
+    if isinstance(solver_strategy, str) and solver_strategy.upper() == "LAHC":
+        return _compute_lahc_async_endpoint(raw=raw, snapshot_raw=snapshot_raw)
 
     # --- Stage 2: deserialize snapshot ------------------------------------
     try:
@@ -409,6 +451,301 @@ def _coerce_optional_int(value: Any, field_name: str, *,
             f"`{field_name}` must be >= {min_val}; got {value!r}."
         )
     return value
+
+
+def _compute_lahc_async_endpoint(
+    *, raw: dict, snapshot_raw: dict,
+) -> Response:
+    """M7 C4 T2D async LAHC front door. Validate input + concurrent-
+    rejection + submit Cloud Batch job + return SUBMITTED in ~3-5s.
+    The actual compute runs in the Cloud Batch task's inline finalize
+    step (per `worker.py` `_inline_finalize` at T2A.2 PR-A); the
+    launcher Web App callback per §10A delivers the writeback +
+    analyzer tabs + operator email asynchronously.
+
+    Per `docs/cloud_compute_contract.md` §9.3:
+    - `operatorEmail` REQUIRED top-level field (vs optional for SRB).
+    - Must match OIDC `email` claim (`g.operator_email` set by
+      `_check_operator_allowlist`) — prevents a maintainer-token spoof
+      of an operator's address on a behalf-of-someone-else solve.
+
+    Per §8.7 sub-decision 8 + D-0071 sub-decision 8: concurrent-
+    rejection via `batch.jobs.list --filter='labels.spreadsheet_id=<x>
+    AND (status.state=QUEUED OR status.state=SCHEDULED OR
+    status.state=RUNNING)'` BEFORE submitting; reject with
+    INPUT_ERROR/CONCURRENT_RUN_REJECTED if any matching in-flight
+    job exists.
+    """
+    # --- operatorEmail validation -----------------------------------------
+    operator_email_raw = raw.get("operatorEmail")
+    if (not isinstance(operator_email_raw, str)
+            or not operator_email_raw.strip()):
+        return _input_error(
+            "OPERATOR_EMAIL_REQUIRED",
+            "`operatorEmail` is required on the LAHC strategy path per "
+            "`docs/cloud_compute_contract.md` §9.3 (the Cloud Batch "
+            "finalizer needs it for the always-email-on-every-outcome "
+            "per §10A.7). Missing on this request.",
+        )
+    operator_email = operator_email_raw.strip().lower()
+    # Match against the OIDC token's `email` claim — empty string when
+    # DISABLE_AUTH_FOR_LOCAL_TESTING is set (tests inject the empty
+    # match explicitly via the request body's `operatorEmail: ""`).
+    token_email = getattr(g, "operator_email", "")
+    if token_email and operator_email != token_email:
+        return _input_error(
+            "OPERATOR_EMAIL_MISMATCH",
+            "`operatorEmail` field ('" + operator_email + "') does not "
+            "match the OIDC token's `email` claim ('" + token_email
+            + "'). The LAHC async path requires these to match per "
+            "§9.3 (prevents a maintainer-token spoof of an operator's "
+            "email address).",
+        )
+
+    # --- Snapshot deserializability + parser consumability ---------------
+    # Pre-Batch validation — saves the Cloud Batch round-trip cost on
+    # a snapshot that can't produce a valid envelope per the orchestrator
+    # discipline locked at M7 C2 T2F Codex P2 findings 80e0ceb + bad297f
+    # (now duplicated here for the new front door).
+    try:
+        snapshot_obj = _snapshot_from_dict(snapshot_raw)
+    except (KeyError, TypeError, ValueError) as e:
+        return _input_error(
+            "INVALID_SNAPSHOT_SHAPE",
+            "Snapshot deserialization failed: "
+            + type(e).__name__ + ": " + str(e),
+        )
+    template = icu_hd_template_artifact()
+    parser_result = parse(snapshot_obj, template)
+    if parser_result.consumability is not Consumability.CONSUMABLE:
+        issue_summary = "; ".join(
+            "[" + getattr(i.severity, "name", str(i.severity)) + "] "
+            + i.code + ": " + i.message
+            for i in parser_result.issues[:5]
+        )
+        if len(parser_result.issues) > 5:
+            issue_summary += (
+                " (+" + str(len(parser_result.issues) - 5) + " more "
+                "issues — truncated for response brevity)"
+            )
+        return _input_error(
+            "PARSER_REJECTED",
+            "Parser rejected the snapshot at admission with "
+            + str(len(parser_result.issues)) + " issue(s): "
+            + issue_summary,
+        )
+
+    # --- Snapshot metadata for runId derivation + labels -----------------
+    metadata = snapshot_raw.get("metadata") if isinstance(snapshot_raw, dict) else None
+    if not isinstance(metadata, dict) or not metadata.get("snapshotId"):
+        return _input_error(
+            "INVALID_SNAPSHOT_SHAPE",
+            "`snapshot.metadata.snapshotId` is required for the LAHC "
+            "async path (used to derive the deterministic runId per "
+            "§8.7). Got snapshot.metadata=" + repr(metadata),
+        )
+    snapshot_id = metadata["snapshotId"]
+    source_spreadsheet_id = (
+        metadata.get("sourceSpreadsheetId") or snapshot_id
+    )
+
+    # --- optionalConfig.seed (master seed) -------------------------------
+    optional_block = raw.get("optionalConfig") or {}
+    if not isinstance(optional_block, dict):
+        return _input_error(
+            "INVALID_OPTIONAL_CONFIG",
+            "`optionalConfig` must be a JSON object when present.",
+        )
+    try:
+        master_seed = _coerce_optional_int(
+            optional_block.get("seed"), "seed",
+        )
+    except _ConfigValidationError as e:
+        return _input_error("INVALID_OPTIONAL_CONFIG", str(e))
+    if master_seed is None:
+        # Per D-0053 — pick a fresh random seed when omitted so each
+        # operator click explores a fresh point in the search space.
+        import random
+        master_seed = random.randint(0, 2**31 - 1)
+
+    # --- Deploy-time env vars + dependency wiring ------------------------
+    container_image_uri = os.environ.get(_CONTAINER_IMAGE_URI_ENV, "").strip()
+    if not container_image_uri:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has no " + _CONTAINER_IMAGE_URI_ENV
+            + " env var set. Maintainer must redeploy with "
+            "--set-env-vars " + _CONTAINER_IMAGE_URI_ENV + "=<image-uri>.",
+        )
+    project = os.environ.get(_GCP_PROJECT_ENV, "").strip()
+    if not project:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has no " + _GCP_PROJECT_ENV
+            + " env var set. Maintainer must redeploy with "
+            "--set-env-vars " + _GCP_PROJECT_ENV + "=<project-id>.",
+        )
+    launcher_callback_url = os.environ.get(
+        _LAUNCHER_CALLBACK_URL_ENV, "",
+    ).strip()
+    if not launcher_callback_url:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has no " + _LAUNCHER_CALLBACK_URL_ENV
+            + " env var set. Maintainer must redeploy with "
+            "--set-env-vars " + _LAUNCHER_CALLBACK_URL_ENV
+            + "=<launcher callback URL>. Required for the M7 C4 T2D "
+            "async LAHC path so the Cloud Batch finalizer can POST "
+            "to the launcher per §10A.5.",
+        )
+    region = os.environ.get(
+        _LAHC_BATCH_REGION_ENV, _LAHC_DEFAULT_BATCH_REGION,
+    ).strip()
+    bucket = os.environ.get(
+        _LAHC_BUCKET_ENV, _LAHC_DEFAULT_BUCKET,
+    ).strip()
+    K_approved_str = os.environ.get(_LAHC_K_APPROVED_ENV)
+    if K_approved_str:
+        try:
+            K_approved = int(K_approved_str)
+        except ValueError:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
+                + repr(K_approved_str) + " which is not a valid integer. "
+                "Maintainer must redeploy with --set-env-vars "
+                + _LAHC_K_APPROVED_ENV + "=<positive integer>.",
+            )
+    else:
+        K_approved = _LAHC_DEFAULT_K_APPROVED
+
+    # --- Wire SDK deps + concurrent-rejection ----------------------------
+    try:
+        from rostermonster_service.batch_client import BatchClient
+        from rostermonster_service.batch_job_spec import (
+            build_lahc_batch_job_spec,
+            normalize_label_value,
+        )
+        from rostermonster_service.lahc_orchestrator import derive_run_id
+        batch_client = BatchClient()
+    except ImportError as e:
+        return _compute_error(
+            "ORCHESTRATOR_DEPS_UNAVAILABLE",
+            "Cloud Batch SDK missing on the service. Maintainer should "
+            "redeploy. (" + str(e) + ")",
+        )
+
+    # Concurrent-rejection query per §8.7 sub-decision 8 + Codex P2
+    # round 11 fix (Cloud Batch filter syntax doesn't support SQL `IN`;
+    # explicit OR-joined disjunction).
+    spreadsheet_id_label = normalize_label_value(source_spreadsheet_id)
+    concurrent_filter = (
+        "labels.spreadsheet_id=" + spreadsheet_id_label
+        + " AND (status.state=QUEUED OR status.state=SCHEDULED"
+        " OR status.state=RUNNING)"
+    )
+    try:
+        in_flight_jobs = batch_client.list_jobs(
+            project=project, region=region,
+            filter_str=concurrent_filter,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.exception("Concurrent-rejection list_jobs raised")
+        return _compute_error(
+            "CONCURRENT_CHECK_FAILED",
+            "Cloud Batch concurrent-rejection query failed: "
+            + type(e).__name__ + ": " + str(e),
+        )
+    if in_flight_jobs:
+        existing = in_flight_jobs[0]
+        return _input_error(
+            "CONCURRENT_RUN_REJECTED",
+            "A solve is already running for this spreadsheet "
+            "(started at " + existing.get("createTime", "<unknown>")
+            + " by " + (existing.get("operatorEmail") or "<unknown>")
+            + "). Wait for completion (you'll receive an email when "
+            "done) before submitting again.",
+        )
+
+    # --- Build + submit Batch job ----------------------------------------
+    run_id = derive_run_id(snapshot_id, master_seed)
+    import uuid
+    attempt_id = uuid.uuid4().hex
+    submit_timestamp_ms = int(time.time() * 1000)
+    job_spec = build_lahc_batch_job_spec(
+        run_id=run_id,
+        container_image_uri=container_image_uri,
+        master_seed=master_seed,
+        source_spreadsheet_id=source_spreadsheet_id,
+        attempt_id=attempt_id,
+        submit_timestamp_ms=submit_timestamp_ms,
+        K_approved=K_approved,
+        bucket=bucket,
+        region=region,
+        operator_email=operator_email,
+        launcher_callback_url=launcher_callback_url,
+    )
+    # Write the snapshot to GCS so the worker can read it (the §8.7
+    # input contract: worker reads `gs://bucket/runId/snapshot.json`).
+    try:
+        from rostermonster_service.gcs import make_gcs_adapter
+        _, write_json = make_gcs_adapter(bucket)
+        snapshot_uri = (
+            "gs://" + bucket + "/" + run_id + "/snapshot.json"
+        )
+        write_json(snapshot_uri, snapshot_raw)
+    except Exception as e:  # noqa: BLE001
+        log.exception("Snapshot GCS write failed")
+        return _compute_error(
+            "SNAPSHOT_WRITE_FAILED",
+            "Could not write snapshot to GCS: "
+            + type(e).__name__ + ": " + str(e),
+        )
+
+    try:
+        job_name = batch_client.submit_job(
+            project=project, region=region,
+            run_id=run_id, job_spec=job_spec,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.exception("Cloud Batch submit_job raised")
+        return _compute_error(
+            "BATCH_SUBMIT_FAILED",
+            "Cloud Batch submit_job failed: "
+            + type(e).__name__ + ": " + str(e),
+        )
+    log.info(
+        "LAHC Batch job submitted: %s (run_id=%s, operator=%s)",
+        job_name, run_id, operator_email,
+    )
+
+    return _submitted_response(
+        batch_job_name=job_name,
+        run_id=run_id,
+        attempt_id=attempt_id,
+    )
+
+
+def _submitted_response(
+    *, batch_job_name: str, run_id: str, attempt_id: str,
+) -> Response:
+    """§10.1 SUBMITTED-state envelope. `submission.batchJobName`
+    surfaces the full resource name; `runId` + `attemptId` are
+    diagnostic IDs the operator's email body references."""
+    # `submission.jobId` is the trailing segment of the batch job name
+    # for convenience (operators rarely paste the full resource path).
+    job_id = batch_job_name.rsplit("/", 1)[-1] if "/" in batch_job_name else batch_job_name
+    return jsonify({
+        "state": "SUBMITTED",
+        "writebackEnvelope": None,
+        "error": None,
+        "submission": {
+            "batchJobName": batch_job_name,
+            "jobId": job_id,
+            "runId": run_id,
+            "attemptId": attempt_id,
+        },
+    })
 
 
 def _compute_lahc_test_endpoint() -> Response:

@@ -143,6 +143,60 @@ class BatchClient:
         contributing 0 candidates."""
         self._client.cancel_job(name=job_name)
 
+    def list_jobs(
+        self, *,
+        project: str,
+        region: str,
+        filter_str: str,
+    ) -> list[dict[str, Any]]:
+        """List Cloud Batch jobs matching `filter_str` under
+        `projects/<project>/locations/<region>`. Used by M7 C4 T2D's
+        Cloud Run thin front-door for concurrent-rejection per
+        `docs/cloud_compute_contract.md` §8.7 sub-decision 8 +
+        D-0071 sub-decision 8 — query by `labels.spreadsheet_id=...`
+        AND any in-flight state, reject the new request if a match
+        exists.
+
+        Returns a list of dicts with the fields the front door needs
+        for the rejection message: `name` (full resource), `createTime`
+        (ISO-ish timestamp), `operatorEmail` (read off the existing
+        job's task env per §8.7 — emails can't be labels, label
+        validation only allows `[a-z0-9_-]{1,63}`). Lists are best-
+        effort under Cloud Batch's eventual consistency — race window
+        for concurrent submits is tight but non-zero, per the
+        accepted-gap-for-v1 stance in D-0071 sub-decision 8."""
+        parent = "projects/" + project + "/locations/" + region
+        request = self._batch_v1.ListJobsRequest(
+            parent=parent, filter=filter_str,
+        )
+        pager = self._client.list_jobs(request=request)
+        out: list[dict[str, Any]] = []
+        for job in pager:
+            create_time_iso = ""
+            try:
+                # `create_time` is a proto Timestamp; `.isoformat()`
+                # gives an ISO-8601 string per the proto-plus surface.
+                create_time_iso = job.create_time.isoformat()
+            except Exception:  # noqa: BLE001
+                # Fall back to repr if the timestamp surface
+                # changes; production logs the actual job.create_time
+                # via Cloud Logging anyway.
+                create_time_iso = str(job.create_time)
+            operator_email = ""
+            try:
+                env = (
+                    job.task_groups[0].task_spec.environment.variables
+                )
+                operator_email = env.get("RM_OPERATOR_EMAIL", "")
+            except Exception:  # noqa: BLE001
+                operator_email = ""
+            out.append({
+                "name": job.name,
+                "createTime": create_time_iso,
+                "operatorEmail": operator_email,
+            })
+        return out
+
 
 class InMemoryBatchClient:
     """Test-only Batch client. Mirrors the `BatchClient` surface with
@@ -167,12 +221,20 @@ class InMemoryBatchClient:
     def __init__(
         self,
         state_sequence: list[str] | None = None,
+        list_jobs_response: list[dict[str, Any]] | None = None,
     ) -> None:
         self._state_sequence = state_sequence or [JOB_STATE_SUCCEEDED]
         self._poll_count = 0
         self._submit_count = 0
         self.submitted_jobs: list[dict[str, Any]] = []
         self.cancelled_jobs: list[str] = []
+        # M7 C4 T2D concurrent-rejection support. `list_jobs_response`
+        # is what `list_jobs(...)` returns regardless of filter — tests
+        # set it to simulate "in-flight job exists" vs "no in-flight"
+        # without needing to model Cloud Batch's filter syntax. Calls
+        # are captured in `list_jobs_calls` for assertion.
+        self._list_jobs_response = list_jobs_response or []
+        self.list_jobs_calls: list[dict[str, Any]] = []
 
     def submit_job(
         self, *,
@@ -206,3 +268,22 @@ class InMemoryBatchClient:
 
     def cancel_job(self, *, job_name: str) -> None:
         self.cancelled_jobs.append(job_name)
+
+    def list_jobs(
+        self, *,
+        project: str,
+        region: str,
+        filter_str: str,
+    ) -> list[dict[str, Any]]:
+        """Test-only Cloud Batch list_jobs. Records the call for
+        assertion, returns the pre-seeded `list_jobs_response` (default
+        empty list — "no in-flight jobs" → concurrent-rejection
+        passes)."""
+        self.list_jobs_calls.append({
+            "project": project,
+            "region": region,
+            "filter_str": filter_str,
+        })
+        # Defensive copy so caller mutation doesn't bleed into the
+        # next call's fixture data.
+        return [dict(j) for j in self._list_jobs_response]
