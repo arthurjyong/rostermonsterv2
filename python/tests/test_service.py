@@ -909,6 +909,67 @@ def test_compute_lahc_async_rejects_unsanitizable_snapshot_id(monkeypatch) -> No
             _t2d_env_teardown(saved)
 
 
+def test_compute_lahc_async_rejects_explicit_null_source_spreadsheet_id(monkeypatch) -> None:
+    """Codex P2 round 5 finding on PR #157 commit 918e6a3685: pre-fix,
+    explicit `metadata.sourceSpreadsheetId: null` silently fell back
+    to `snapshotId` for the Cloud Batch `labels.spreadsheet_id` label.
+    The front door would SUBMIT a Batch job for a malformed snapshot
+    whose finalizer/writeback would later target an unusable
+    spreadsheet ID — operator-facing failure landed downstream rather
+    than at admission. Tighten: explicit `null` is a client defect."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        snap = _load_snapshot_dict()
+        snap["metadata"]["sourceSpreadsheetId"] = None
+        resp = client.post("/compute", json={
+            "snapshot": snap,
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR", (
+            "explicit null sourceSpreadsheetId MUST surface as "
+            "INPUT_ERROR, not silently fall back to snapshotId"
+        )
+        assert data["error"]["code"] == "INVALID_SNAPSHOT_SHAPE"
+        assert "sourceSpreadsheetId" in data["error"]["message"]
+        assert "null" in data["error"]["message"].lower()
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_omitted_source_spreadsheet_id(monkeypatch) -> None:
+    """Counter-test to confirm the snapshot contract: removing
+    `sourceSpreadsheetId` from `metadata` causes `_snapshot_from_dict()`
+    to raise `KeyError` upstream → INVALID_SNAPSHOT_SHAPE (via the
+    pre-existing snapshot-deserializability guard). The Codex P2
+    round 5 fix's tighter validation only handles EXPLICIT
+    `null`/non-string/empty cases; OMITTED is already caught upstream."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        snap = _load_snapshot_dict()
+        snap["metadata"].pop("sourceSpreadsheetId", None)
+        resp = client.post("/compute", json={
+            "snapshot": snap,
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "INVALID_SNAPSHOT_SHAPE"
+        assert "sourceSpreadsheetId" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
 def test_compute_srb_path_stays_synchronous() -> None:
     """Back-compat: omitting `solverStrategy` (or passing
     "SEEDED_RANDOM_BLIND") keeps the existing sync /compute path —

@@ -609,26 +609,38 @@ def _compute_lahc_async_endpoint(
             + type(raw_snapshot_id).__name__ + "=" + repr(raw_snapshot_id),
         )
     snapshot_id = raw_snapshot_id.strip()
+    # Codex P2 round 5 finding on PR #157 commit 918e6a3685: pre-fix,
+    # explicit `sourceSpreadsheetId: null` was treated as absent +
+    # silently fell back to snapshotId. That let the front door
+    # SUBMIT a Batch job for a malformed snapshot whose finalizer
+    # would later target an unusable spreadsheet ID — operator-
+    # facing failure landed downstream rather than failing fast at
+    # admission. Tighten: explicit `null` / non-string / empty-string
+    # are all client defects. Field-absent never reaches this code
+    # because `_snapshot_from_dict()` raises `KeyError` upstream on
+    # missing `sourceSpreadsheetId` (snapshot contract requires it),
+    # so we don't need a fall-back branch here.
     raw_source_spreadsheet_id = metadata.get("sourceSpreadsheetId")
-    if raw_source_spreadsheet_id is not None and (
-            not isinstance(raw_source_spreadsheet_id, str)
+    if raw_source_spreadsheet_id is None:
+        return _input_error(
+            "INVALID_SNAPSHOT_SHAPE",
+            "`snapshot.metadata.sourceSpreadsheetId` is explicitly null "
+            "or absent. The field is required per "
+            "`docs/snapshot_contract.md` + used for the Cloud Batch "
+            "`labels.spreadsheet_id` label per §8.7 sub-decision 8 + "
+            "the concurrent-rejection query.",
+        )
+    if (not isinstance(raw_source_spreadsheet_id, str)
             or not raw_source_spreadsheet_id.strip()):
-        # Present but invalid — non-string OR empty/whitespace string.
         return _input_error(
             "INVALID_SNAPSHOT_SHAPE",
             "`snapshot.metadata.sourceSpreadsheetId` must be a non-empty "
-            "string when present (used for the Cloud Batch "
-            "`labels.spreadsheet_id` label per §8.7 sub-decision 8 + "
-            "concurrent-rejection query). Got "
-            + type(raw_source_spreadsheet_id).__name__ + "="
-            + repr(raw_source_spreadsheet_id),
+            "string (used for the Cloud Batch `labels.spreadsheet_id` "
+            "label per §8.7 sub-decision 8 + concurrent-rejection "
+            "query). Got " + type(raw_source_spreadsheet_id).__name__
+            + "=" + repr(raw_source_spreadsheet_id),
         )
-    source_spreadsheet_id = (
-        raw_source_spreadsheet_id.strip()
-        if isinstance(raw_source_spreadsheet_id, str)
-        and raw_source_spreadsheet_id.strip()
-        else snapshot_id
-    )
+    source_spreadsheet_id = raw_source_spreadsheet_id.strip()
 
     # --- optionalConfig.seed (master seed) -------------------------------
     optional_block = raw.get("optionalConfig") or {}
