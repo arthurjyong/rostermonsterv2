@@ -760,6 +760,120 @@ def test_compute_lahc_async_accepts_omitted_lahc_params(monkeypatch) -> None:
         _t2d_env_teardown(saved)
 
 
+def test_compute_lahc_async_rejects_non_string_snapshot_id(monkeypatch) -> None:
+    """Codex P2 round 3 finding on PR #157 commit ae14294339: pre-fix,
+    `metadata.snapshotId` was checked truthy-only — a numeric value
+    would slip through + `derive_run_id()` would raise an uncaught
+    ValueError → Flask 500. Tighten to require non-empty string."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        snap = _load_snapshot_dict()
+        # Corrupt: numeric snapshotId
+        snap["metadata"]["snapshotId"] = 12345
+        resp = client.post("/compute", json={
+            "snapshot": snap,
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200, (
+            "expected HTTP 200 always per §10; got "
+            + str(resp.status_code)
+        )
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "INVALID_SNAPSHOT_SHAPE"
+        assert "snapshotId" in data["error"]["message"]
+        assert "non-empty string" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_non_string_source_spreadsheet_id(monkeypatch) -> None:
+    """Same boundary as `snapshotId` — `metadata.sourceSpreadsheetId`
+    feeds into `normalize_label_value` for the Batch label, which
+    would raise an uncaught error on a non-string. Codex P2 round 3
+    finding on PR #157 commit ae14294339."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        snap = _load_snapshot_dict()
+        snap["metadata"]["sourceSpreadsheetId"] = ["not", "a", "string"]
+        resp = client.post("/compute", json={
+            "snapshot": snap,
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "INVALID_SNAPSHOT_SHAPE"
+        assert "sourceSpreadsheetId" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_empty_lahc_bucket_env(monkeypatch) -> None:
+    """Codex P2 round 3 finding on PR #157 commit ae14294339: pre-fix,
+    `LAHC_BUCKET=""` survived `.strip()` + propagated into
+    `build_lahc_batch_job_spec()` which raises ValueError outside any
+    structured-error path → Flask 500. Fix: guard for empty bucket
+    + return SERVICE_MISCONFIGURED."""
+    for bad_value in ("", "   ", "\t\n"):
+        saved = _t2d_env_setup()
+        os.environ["LAHC_BUCKET"] = bad_value
+        try:
+            inmem_client, _ = _t2d_patch_clients(monkeypatch)
+            client = _client()
+            resp = client.post("/compute", json={
+                "snapshot": _load_snapshot_dict(),
+                "operatorEmail": "operator@example.com",
+                "optionalConfig": {"solverStrategy": "LAHC"},
+            })
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["state"] == "COMPUTE_ERROR", (
+                "empty LAHC_BUCKET MUST surface as COMPUTE_ERROR / "
+                "SERVICE_MISCONFIGURED; got " + repr(data.get("state"))
+                + " on value=" + repr(bad_value)
+            )
+            assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+            assert "LAHC_BUCKET" in data["error"]["message"]
+            assert len(inmem_client.submitted_jobs) == 0
+        finally:
+            _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_empty_lahc_batch_region_env(monkeypatch) -> None:
+    """Same pattern as `LAHC_BUCKET=""` — `LAHC_BATCH_REGION=""` would
+    survive `.strip()` + propagate into `submit_job` as empty region
+    → Cloud Batch error → Flask 500. Mirror the bucket-guard treatment
+    for symmetry. Caught by Codex P2 round 3 finding analysis on
+    PR #157 commit ae14294339."""
+    saved = _t2d_env_setup()
+    os.environ["LAHC_BATCH_REGION"] = "   "
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LAHC"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "COMPUTE_ERROR"
+        assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+        assert "LAHC_BATCH_REGION" in data["error"]["message"]
+        assert len(inmem_client.submitted_jobs) == 0
+    finally:
+        _t2d_env_teardown(saved)
+
+
 def test_compute_srb_path_stays_synchronous() -> None:
     """Back-compat: omitting `solverStrategy` (or passing
     "SEEDED_RANDOM_BLIND") keeps the existing sync /compute path —

@@ -592,9 +592,42 @@ def _compute_lahc_async_endpoint(
             "async path (used to derive the deterministic runId per "
             "§8.7). Got snapshot.metadata=" + repr(metadata),
         )
-    snapshot_id = metadata["snapshotId"]
+    # Codex P2 round 3 finding on PR #157 commit ae14294339: pre-fix
+    # `metadata.snapshotId` was checked truthy-only — a numeric or
+    # boolean-ish value would slip through + `derive_run_id()` would
+    # raise an uncaught ValueError (Flask 500). Tighten to require
+    # non-empty STRING for both snapshotId + sourceSpreadsheetId
+    # before they feed runId derivation + Batch label normalization.
+    raw_snapshot_id = metadata["snapshotId"]
+    if not isinstance(raw_snapshot_id, str) or not raw_snapshot_id.strip():
+        return _input_error(
+            "INVALID_SNAPSHOT_SHAPE",
+            "`snapshot.metadata.snapshotId` must be a non-empty string "
+            "for the LAHC async path (used to derive runId via "
+            "`derive_run_id()` + the Cloud Batch `labels.spreadsheet_id` "
+            "label per §8.7 sub-decision 8). Got "
+            + type(raw_snapshot_id).__name__ + "=" + repr(raw_snapshot_id),
+        )
+    snapshot_id = raw_snapshot_id.strip()
+    raw_source_spreadsheet_id = metadata.get("sourceSpreadsheetId")
+    if raw_source_spreadsheet_id is not None and (
+            not isinstance(raw_source_spreadsheet_id, str)
+            or not raw_source_spreadsheet_id.strip()):
+        # Present but invalid — non-string OR empty/whitespace string.
+        return _input_error(
+            "INVALID_SNAPSHOT_SHAPE",
+            "`snapshot.metadata.sourceSpreadsheetId` must be a non-empty "
+            "string when present (used for the Cloud Batch "
+            "`labels.spreadsheet_id` label per §8.7 sub-decision 8 + "
+            "concurrent-rejection query). Got "
+            + type(raw_source_spreadsheet_id).__name__ + "="
+            + repr(raw_source_spreadsheet_id),
+        )
     source_spreadsheet_id = (
-        metadata.get("sourceSpreadsheetId") or snapshot_id
+        raw_source_spreadsheet_id.strip()
+        if isinstance(raw_source_spreadsheet_id, str)
+        and raw_source_spreadsheet_id.strip()
+        else snapshot_id
     )
 
     # --- optionalConfig.seed (master seed) -------------------------------
@@ -677,9 +710,39 @@ def _compute_lahc_async_endpoint(
     region = os.environ.get(
         _LAHC_BATCH_REGION_ENV, _LAHC_DEFAULT_BATCH_REGION,
     ).strip()
+    if not region:
+        # `LAHC_BATCH_REGION=""` (or whitespace-only) would survive
+        # the `.strip()` + propagate into `submit_job` as an empty
+        # region → Cloud Batch raises an uncaught error → Flask 500.
+        # Mirror the bucket-guard treatment below for symmetry.
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has " + _LAHC_BATCH_REGION_ENV
+            + " set to an empty/whitespace value. Maintainer must "
+            "redeploy with --set-env-vars " + _LAHC_BATCH_REGION_ENV
+            + "=<region-id> (or unset to use the default "
+            + _LAHC_DEFAULT_BATCH_REGION + ").",
+        )
     bucket = os.environ.get(
         _LAHC_BUCKET_ENV, _LAHC_DEFAULT_BUCKET,
     ).strip()
+    if not bucket:
+        # Codex P2 round 3 finding on PR #157 commit ae14294339:
+        # pre-fix `LAHC_BUCKET=""` (or whitespace-only) survived
+        # `.strip()` + `build_lahc_batch_job_spec()` raised an
+        # uncaught ValueError → Flask 500 instead of the documented
+        # SERVICE_MISCONFIGURED envelope. The other deploy-time env
+        # checks above (CONTAINER_IMAGE_URI, GCP_PROJECT,
+        # RM_LAUNCHER_CALLBACK_URL) already follow this pattern;
+        # extending it to LAHC_BUCKET for symmetry.
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has " + _LAHC_BUCKET_ENV
+            + " set to an empty/whitespace value. Maintainer must "
+            "redeploy with --set-env-vars " + _LAHC_BUCKET_ENV
+            + "=<bucket-name> (or unset to use the default "
+            + _LAHC_DEFAULT_BUCKET + ").",
+        )
     K_approved_str = os.environ.get(_LAHC_K_APPROVED_ENV)
     if K_approved_str:
         try:
