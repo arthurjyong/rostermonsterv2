@@ -58,6 +58,13 @@ _LAHC_DEFAULT_BATCH_REGION = "asia-southeast1"
 _LAHC_BUCKET_ENV = "LAHC_BUCKET"
 _LAHC_DEFAULT_BUCKET = "rostermonsterv2-lahc"
 
+# Solver-strategy enum per `docs/solver_contract.md` §11.2. Front door
+# routes LAHC to the new async path (M7 C4 T2D); SRB stays on the
+# existing sync run_pipeline path. Anything else surfaces as
+# INVALID_SOLVER_STRATEGY per Codex P2 finding on PR #157 commit
+# bb50582899.
+_VALID_SOLVER_STRATEGIES = frozenset({"SEEDED_RANDOM_BLIND", "LAHC"})
+
 
 log = logging.getLogger("rostermonster_service")
 
@@ -298,12 +305,35 @@ def _compute_endpoint() -> Response:
     # Read solverStrategy from optionalConfig per §9.3. LAHC routes
     # through the async front-door (validate + submit Batch + return
     # SUBMITTED ~3-5s); SRB stays on the existing sync compute path.
+    # Unknown / non-string values → INPUT_ERROR (Codex P2 finding on
+    # PR #157 commit bb50582899 — pre-fix a typo like `"LACH"` would
+    # silently fall through to SRB and write back a synchronous SRB
+    # result instead of surfacing the contract violation).
     optional_block = raw.get("optionalConfig")
-    if isinstance(optional_block, dict):
-        solver_strategy = optional_block.get("solverStrategy", "")
+    if isinstance(optional_block, dict) and "solverStrategy" in optional_block:
+        solver_strategy_raw = optional_block["solverStrategy"]
+        if solver_strategy_raw is None or solver_strategy_raw == "":
+            solver_strategy = ""
+        elif not isinstance(solver_strategy_raw, str):
+            return _input_error(
+                "INVALID_SOLVER_STRATEGY",
+                "`optionalConfig.solverStrategy` must be a string when "
+                "present per `docs/cloud_compute_contract.md` §9.3; got "
+                + type(solver_strategy_raw).__name__,
+            )
+        else:
+            solver_strategy = solver_strategy_raw.strip().upper()
+            if solver_strategy not in _VALID_SOLVER_STRATEGIES:
+                return _input_error(
+                    "INVALID_SOLVER_STRATEGY",
+                    "`optionalConfig.solverStrategy=" + repr(solver_strategy_raw)
+                    + "` is not a known strategy. Valid values per "
+                    "`docs/solver_contract.md` §11.2: "
+                    + ", ".join(sorted(_VALID_SOLVER_STRATEGIES)) + ".",
+                )
     else:
         solver_strategy = ""
-    if isinstance(solver_strategy, str) and solver_strategy.upper() == "LAHC":
+    if solver_strategy == "LAHC":
         return _compute_lahc_async_endpoint(raw=raw, snapshot_raw=snapshot_raw)
 
     # --- Stage 2: deserialize snapshot ------------------------------------
@@ -613,6 +643,23 @@ def _compute_lahc_async_endpoint(
                 "SERVICE_MISCONFIGURED",
                 "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
                 + repr(K_approved_str) + " which is not a valid integer. "
+                "Maintainer must redeploy with --set-env-vars "
+                + _LAHC_K_APPROVED_ENV + "=<positive integer>.",
+            )
+        # Codex P2 finding on PR #157 commit bb50582899: pre-fix,
+        # `LAHC_K_APPROVED=0` or a negative integer slipped through
+        # the int() guard + propagated into `build_lahc_batch_job_spec`
+        # which raises ValueError outside any structured-error path
+        # → Flask 500 instead of the documented SERVICE_MISCONFIGURED
+        # envelope. Guard here too.
+        if K_approved <= 0:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
+                + repr(K_approved_str) + " which is not a positive "
+                "integer (parsed to " + str(K_approved) + "). "
+                "K_approved must be > 0 per `docs/cloud_compute_contract.md` "
+                "§8.7 single-VM dense-pack (Pool size must be positive). "
                 "Maintainer must redeploy with --set-env-vars "
                 + _LAHC_K_APPROVED_ENV + "=<positive integer>.",
             )

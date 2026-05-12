@@ -557,6 +557,99 @@ def test_compute_lahc_async_rejects_missing_callback_url(monkeypatch) -> None:
         _t2d_env_teardown(saved)
 
 
+def test_compute_lahc_async_rejects_unknown_solver_strategy(monkeypatch) -> None:
+    """Codex P2 finding on PR #157 commit bb50582899: a typo'd
+    `solverStrategy` (e.g., `"LACH"`) used to silently fall through
+    to the SRB sync path, writing back a synchronous result instead
+    of surfacing the contract violation. Fix validates against the
+    `_VALID_SOLVER_STRATEGIES` enum + returns INPUT_ERROR /
+    INVALID_SOLVER_STRATEGY."""
+    saved = _t2d_env_setup()
+    try:
+        inmem_client, _ = _t2d_patch_clients(monkeypatch)
+        client = _client()
+        # Typo: LACH instead of LAHC
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": "LACH"},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR", (
+            "typo'd solverStrategy MUST surface as INPUT_ERROR, not "
+            "silently fall through to SRB"
+        )
+        assert data["error"]["code"] == "INVALID_SOLVER_STRATEGY"
+        # No Batch job submitted, no sync compute either
+        assert len(inmem_client.submitted_jobs) == 0
+        assert data["writebackEnvelope"] is None
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_non_string_solver_strategy(monkeypatch) -> None:
+    """Non-string `solverStrategy` (e.g., a number or null-but-explicit
+    bool) MUST surface as INPUT_ERROR / INVALID_SOLVER_STRATEGY rather
+    than silently route somewhere. Tests the type-coercion guard."""
+    saved = _t2d_env_setup()
+    try:
+        _t2d_patch_clients(monkeypatch)
+        client = _client()
+        resp = client.post("/compute", json={
+            "snapshot": _load_snapshot_dict(),
+            "operatorEmail": "operator@example.com",
+            "optionalConfig": {"solverStrategy": 42},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "INPUT_ERROR"
+        assert data["error"]["code"] == "INVALID_SOLVER_STRATEGY"
+        assert "int" in data["error"]["message"]
+    finally:
+        _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_rejects_non_positive_K_approved_env(monkeypatch) -> None:
+    """Codex P2 finding on PR #157 commit bb50582899: pre-fix
+    `LAHC_K_APPROVED=0` (or a negative integer) slipped through the
+    `int()` guard + propagated into `build_lahc_batch_job_spec` which
+    raises ValueError outside any error-handling block → Flask 500
+    instead of the documented SERVICE_MISCONFIGURED envelope.
+
+    Verifies both `LAHC_K_APPROVED=0` and `LAHC_K_APPROVED=-1` surface
+    as structured COMPUTE_ERROR/SERVICE_MISCONFIGURED at HTTP 200."""
+    for bad_value in ("0", "-1", "-88"):
+        saved = _t2d_env_setup()
+        os.environ["LAHC_K_APPROVED"] = bad_value
+        try:
+            inmem_client, _ = _t2d_patch_clients(monkeypatch)
+            client = _client()
+            resp = client.post("/compute", json={
+                "snapshot": _load_snapshot_dict(),
+                "operatorEmail": "operator@example.com",
+                "optionalConfig": {"solverStrategy": "LAHC"},
+            })
+            assert resp.status_code == 200, (
+                "expected HTTP 200 always per §10; got "
+                + str(resp.status_code) + " on LAHC_K_APPROVED="
+                + bad_value
+            )
+            data = resp.get_json()
+            assert data["state"] == "COMPUTE_ERROR", (
+                "non-positive LAHC_K_APPROVED MUST surface as "
+                "COMPUTE_ERROR/SERVICE_MISCONFIGURED; got "
+                + repr(data.get("state")) + " for value=" + bad_value
+            )
+            assert data["error"]["code"] == "SERVICE_MISCONFIGURED"
+            assert "LAHC_K_APPROVED" in data["error"]["message"]
+            assert "positive" in data["error"]["message"]
+            # No Batch job submitted
+            assert len(inmem_client.submitted_jobs) == 0
+        finally:
+            _t2d_env_teardown(saved)
+
+
 def test_compute_srb_path_stays_synchronous() -> None:
     """Back-compat: omitting `solverStrategy` (or passing
     "SEEDED_RANDOM_BLIND") keeps the existing sync /compute path —
