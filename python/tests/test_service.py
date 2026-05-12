@@ -376,9 +376,10 @@ def _t2d_env_teardown(saved: dict[str, str | None]) -> None:
 
 
 def _t2d_patch_clients(monkeypatch, *, list_jobs_response=None):
-    """Patch `BatchClient` → `InMemoryBatchClient`; patch GCS adapter
-    so the snapshot write is in-memory. Returns the in-memory batch
-    client + the GCS storage dict for assertion."""
+    """Patch `BatchClient` → `InMemoryBatchClient`; patch both GCS
+    factories so they don't construct a real storage.Client (which
+    requires Google ADC and would 500 in CI). Returns the in-memory
+    batch client + the GCS storage dict for assertion."""
     from rostermonster_service import batch_client as bc_mod
     from rostermonster_service import gcs as gcs_mod
 
@@ -395,12 +396,24 @@ def _t2d_patch_clients(monkeypatch, *, list_jobs_response=None):
 
         return read_json, write_json
 
+    def fake_make_gcs_delete_prefix_fn(bucket):
+        def delete_prefix(uri):
+            keys = [k for k in storage if k.startswith(uri)]
+            for k in keys:
+                del storage[k]
+            return len(keys)
+
+        return delete_prefix
+
     inmem_client = bc_mod.InMemoryBatchClient(
         list_jobs_response=list_jobs_response,
     )
 
     monkeypatch.setattr(bc_mod, "BatchClient", lambda: inmem_client)
     monkeypatch.setattr(gcs_mod, "make_gcs_adapter", fake_make_gcs_adapter)
+    monkeypatch.setattr(
+        gcs_mod, "make_gcs_delete_prefix_fn", fake_make_gcs_delete_prefix_fn,
+    )
     return inmem_client, storage
 
 
