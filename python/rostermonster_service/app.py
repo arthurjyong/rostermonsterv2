@@ -65,6 +65,17 @@ _LAHC_DEFAULT_BUCKET = "rostermonsterv2-lahc"
 # bb50582899.
 _VALID_SOLVER_STRATEGIES = frozenset({"SEEDED_RANDOM_BLIND", "LAHC"})
 
+# Signed 64-bit integer bounds for `optionalConfig.seed` per
+# `docs/solver_contract.md` §9. The Cloud Batch worker's
+# `derive_K_seeds(masterSeed, K)` enforces this bound on the
+# compute side; pre-validating it at the front door surfaces bad
+# seed values at admission as INPUT_ERROR (without this guard, an
+# out-of-range seed slips through SUBMITTED + the worker errors
+# out without emailing the operator per FW-0039). Codex P2 round
+# 6 finding on PR #157 commit a504e377ea.
+_INT64_SIGNED_MIN = -(2 ** 63)
+_INT64_SIGNED_MAX = (2 ** 63) - 1
+
 
 log = logging.getLogger("rostermonster_service")
 
@@ -683,6 +694,29 @@ def _compute_lahc_async_endpoint(
         )
     except _ConfigValidationError as e:
         return _input_error("INVALID_OPTIONAL_CONFIG", str(e))
+    # Codex P2 round 6 finding on PR #157 commit a504e377ea: pre-fix,
+    # an explicit `optionalConfig.seed` outside the signed 64-bit
+    # range passed the front door (`_coerce_optional_int` only
+    # rejected bool/float/non-int) but failed inside `derive_K_seeds`
+    # on the Cloud Batch worker → task error-result write → operator
+    # gets NO email (silent-outcome gap per FW-0039). Validate the
+    # int64 bound here per `docs/solver_contract.md` §9 so a bad
+    # seed value surfaces at admission with the structured
+    # INPUT_ERROR envelope.
+    if master_seed is not None and not (
+            _INT64_SIGNED_MIN <= master_seed <= _INT64_SIGNED_MAX):
+        return _input_error(
+            "INVALID_OPTIONAL_CONFIG",
+            "`optionalConfig.seed=" + repr(master_seed) + "` is outside "
+            "the 64-bit signed integer range required by "
+            "`docs/solver_contract.md` §9 (master seed bound). Valid "
+            "range: [" + str(_INT64_SIGNED_MIN) + ", "
+            + str(_INT64_SIGNED_MAX) + "]. Out-of-range seeds would "
+            "fail inside `derive_K_seeds` on the Cloud Batch worker "
+            "AFTER the front door returned SUBMITTED, leaving the "
+            "operator without a completion email (FW-0039 silent-"
+            "outcome gap).",
+        )
     if master_seed is None:
         # Per D-0053 — pick a fresh random seed when omitted so each
         # operator click explores a fresh point in the search space.

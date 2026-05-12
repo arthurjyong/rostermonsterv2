@@ -970,6 +970,75 @@ def test_compute_lahc_async_rejects_omitted_source_spreadsheet_id(monkeypatch) -
         _t2d_env_teardown(saved)
 
 
+def test_compute_lahc_async_rejects_out_of_int64_seed(monkeypatch) -> None:
+    """Codex P2 round 6 finding on PR #157 commit a504e377ea: pre-fix,
+    an explicit `optionalConfig.seed` outside the signed 64-bit range
+    passed `_coerce_optional_int` (which only rejected bool/float/non-
+    int) and slipped through SUBMITTED, then failed inside
+    `derive_K_seeds` on the Cloud Batch worker → task error-result
+    write → operator silently got no email (FW-0039 territory).
+    Front door now validates the int64 bound per
+    `docs/solver_contract.md` §9 + returns INPUT_ERROR /
+    INVALID_OPTIONAL_CONFIG at admission."""
+    int64_max = (2 ** 63) - 1
+    int64_min = -(2 ** 63)
+    # Out-of-range values: max+1, min-1, +/- 2^70
+    for bad_seed in (int64_max + 1, int64_min - 1, 2 ** 70, -(2 ** 70)):
+        saved = _t2d_env_setup()
+        try:
+            inmem_client, _ = _t2d_patch_clients(monkeypatch)
+            client = _client()
+            resp = client.post("/compute", json={
+                "snapshot": _load_snapshot_dict(),
+                "operatorEmail": "operator@example.com",
+                "optionalConfig": {"solverStrategy": "LAHC", "seed": bad_seed},
+            })
+            assert resp.status_code == 200, (
+                "expected HTTP 200 always per §10; got "
+                + str(resp.status_code) + " on seed=" + str(bad_seed)
+            )
+            data = resp.get_json()
+            assert data["state"] == "INPUT_ERROR", (
+                "out-of-int64 seed MUST surface as INPUT_ERROR; got "
+                + repr(data.get("state")) + " on seed=" + str(bad_seed)
+            )
+            assert data["error"]["code"] == "INVALID_OPTIONAL_CONFIG"
+            assert "64-bit" in data["error"]["message"]
+            # No Batch job submitted
+            assert len(inmem_client.submitted_jobs) == 0
+        finally:
+            _t2d_env_teardown(saved)
+
+
+def test_compute_lahc_async_accepts_int64_boundary_seeds(monkeypatch) -> None:
+    """Counter-test: seeds AT the int64 boundary (`int64_min`,
+    `int64_max`, 0) MUST pass + reach SUBMITTED. Locks the inclusive-
+    bound invariant — strict-less-than would silently reject valid
+    seeds. Boundary test pairs with `..._rejects_out_of_int64_seed`."""
+    int64_max = (2 ** 63) - 1
+    int64_min = -(2 ** 63)
+    for good_seed in (int64_max, int64_min, 0, 12345, -42):
+        saved = _t2d_env_setup()
+        try:
+            inmem_client, _ = _t2d_patch_clients(monkeypatch)
+            client = _client()
+            resp = client.post("/compute", json={
+                "snapshot": _load_snapshot_dict(),
+                "operatorEmail": "operator@example.com",
+                "optionalConfig": {"solverStrategy": "LAHC", "seed": good_seed},
+            })
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["state"] == "SUBMITTED", (
+                "boundary seed " + str(good_seed) + " MUST pass; got "
+                + repr(data.get("state")) + " / "
+                + repr(data.get("error"))
+            )
+            assert len(inmem_client.submitted_jobs) == 1
+        finally:
+            _t2d_env_teardown(saved)
+
+
 def test_compute_srb_path_stays_synchronous() -> None:
     """Back-compat: omitting `solverStrategy` (or passing
     "SEEDED_RANDOM_BLIND") keeps the existing sync /compute path —
