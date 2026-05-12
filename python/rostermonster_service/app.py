@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 import time
@@ -103,6 +104,9 @@ _LAHC_VM_VCPU_COUNT_ENV = "LAHC_VM_VCPU_COUNT"
 _LAHC_DEFAULT_VM_VCPU_COUNT = 88
 _LAHC_MACHINE_TYPE_ENV = "LAHC_MACHINE_TYPE"
 _LAHC_DEFAULT_MACHINE_TYPE = "c3-highcpu-88"
+# c3-highcpu-N has N vCPUs; used to derive vm_vcpu_count from
+# machine_type so the two env vars can't silently disagree.
+_C3_HIGHCPU_PATTERN = re.compile(r"^c3-highcpu-(\d+)$")
 
 
 log = logging.getLogger("rostermonster_service")
@@ -878,6 +882,36 @@ def _compute_lahc_async_endpoint(
             "(e.g., c3-highcpu-88 for K=88, c3-highcpu-22 for the M7 "
             "C4 quota-workaround deploy).",
         )
+
+    # Codex P2 round 2 on PR #161/#162: when LAHC_MACHINE_TYPE is set
+    # but LAHC_VM_VCPU_COUNT is omitted (or mistyped), the env reader
+    # above defaults vm_vcpu_count to 88 while machine_type may say
+    # c3-highcpu-22 — Cloud Batch then receives `Pool(88)` on a 22-
+    # vCPU VM. Derive vm_vcpu_count from the c3-highcpu-N suffix when
+    # we can, and reject explicit env mismatches before the job spec
+    # is built. Unknown machine families (non-c3-highcpu) fall through
+    # to the env value with no derivation — future families can add
+    # their own patterns or callers can keep both envs in sync.
+    parsed_vcpu = _C3_HIGHCPU_PATTERN.match(machine_type)
+    if parsed_vcpu is not None:
+        machine_type_vcpu = int(parsed_vcpu.group(1))
+        if vm_vcpu_count_str and vm_vcpu_count != machine_type_vcpu:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                _LAHC_MACHINE_TYPE_ENV + "=" + machine_type + " implies "
+                + str(machine_type_vcpu) + " vCPUs, but "
+                + _LAHC_VM_VCPU_COUNT_ENV + "=" + str(vm_vcpu_count)
+                + ". These two env vars MUST describe the same VM. "
+                "Maintainer must redeploy with matching values "
+                "(or unset one to derive from the other).",
+            )
+        if not vm_vcpu_count_str:
+            # Env unset → derive from machine_type rather than using
+            # the static 88 default. Means deploying with just
+            # LAHC_MACHINE_TYPE=c3-highcpu-22 yields a correct
+            # vm_vcpu_count=22 without operators needing to set both
+            # envs.
+            vm_vcpu_count = machine_type_vcpu
 
     K_approved_str = os.environ.get(_LAHC_K_APPROVED_ENV)
     if K_approved_str:
