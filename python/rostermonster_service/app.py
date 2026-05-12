@@ -88,14 +88,21 @@ _BATCH_IN_FLIGHT_STATES = frozenset({"QUEUED", "SCHEDULED", "RUNNING"})
 # Single-VM dense-pack vCPU count per `docs/cloud_compute_contract.md`
 # §8.7 — the worker's `Pool(K)` size MUST NOT exceed this or
 # multiprocessing oversubscribes the VM + blows the 10-min cap. The
-# `build_lahc_batch_job_spec` job spec hardcodes c3-highcpu-88 (88
-# vCPUs); K_approved must match. Codex P2 round 10 finding on PR
-# #157 commit 65108e42a3 — pre-fix the LAHC_K_APPROVED env had no
-# upper bound check + a maintainer setting `LAHC_K_APPROVED=176`
-# would silently over-subscribe the VM. Future quota bump to
-# C3_CPUS≥176 unlocks `c3-highcpu-176` for K=176 via FW-0040; until
-# then this cap is the load-bearing safety net.
-_LAHC_VM_VCPU_COUNT = 88
+# `build_lahc_batch_job_spec` job spec uses this to pin cpuMilli +
+# memoryMib to claim the whole VM. Defaults to the M7 production
+# c3-highcpu-88 (88 vCPUs) but is overridable via the deploy-time
+# `LAHC_VM_VCPU_COUNT` + `LAHC_MACHINE_TYPE` env vars per the M7 C4
+# quota-workaround amendment 2026-05-12 — when GCP global
+# CPUS_ALL_REGIONS quota blocks the 88-vCPU VM, the maintainer can
+# drop both env vars (e.g., to `LAHC_VM_VCPU_COUNT=22 +
+# LAHC_MACHINE_TYPE=c3-highcpu-22`) for a sub-quota deploy. Future
+# quota bump to ≥176 enables c3-highcpu-176 via FW-0040; once
+# CPUS_ALL_REGIONS lands, redeploy with `LAHC_VM_VCPU_COUNT=176 +
+# LAHC_MACHINE_TYPE=c3-highcpu-176`.
+_LAHC_VM_VCPU_COUNT_ENV = "LAHC_VM_VCPU_COUNT"
+_LAHC_DEFAULT_VM_VCPU_COUNT = 88
+_LAHC_MACHINE_TYPE_ENV = "LAHC_MACHINE_TYPE"
+_LAHC_DEFAULT_MACHINE_TYPE = "c3-highcpu-88"
 
 
 log = logging.getLogger("rostermonster_service")
@@ -872,19 +879,62 @@ def _compute_lahc_async_endpoint(
     # deploy-time env. Future quota bump to C3_CPUS≥176 unlocks
     # `c3-highcpu-176` for K=176 via FW-0040; until then the cap is
     # the load-bearing safety net.
-    if K_approved > _LAHC_VM_VCPU_COUNT:
+    # M7 C4 quota-workaround amendment 2026-05-12: VM size is now
+    # parametric via the deploy-time `LAHC_VM_VCPU_COUNT` +
+    # `LAHC_MACHINE_TYPE` env vars (defaults preserve M7 production
+    # c3-highcpu-88). Read here so the K_approved cap matches the
+    # actual deployed VM, NOT a hardcoded 88. When GCP global
+    # `CPUS_ALL_REGIONS` quota blocks c3-highcpu-88, maintainer drops
+    # both env vars to a smaller VM (e.g., c3-highcpu-22) for a sub-
+    # quota deploy; the K_approved cap auto-adjusts.
+    vm_vcpu_count_str = os.environ.get(_LAHC_VM_VCPU_COUNT_ENV)
+    if vm_vcpu_count_str:
+        try:
+            vm_vcpu_count = int(vm_vcpu_count_str)
+        except ValueError:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                "Cloud Run service has " + _LAHC_VM_VCPU_COUNT_ENV + "="
+                + repr(vm_vcpu_count_str) + " which is not a valid "
+                "integer. Maintainer must redeploy with --set-env-vars "
+                + _LAHC_VM_VCPU_COUNT_ENV + "=<positive integer>.",
+            )
+        if vm_vcpu_count <= 0:
+            return _compute_error(
+                "SERVICE_MISCONFIGURED",
+                "Cloud Run service has " + _LAHC_VM_VCPU_COUNT_ENV + "="
+                + repr(vm_vcpu_count_str) + " which is not a positive "
+                "integer (parsed to " + str(vm_vcpu_count) + ").",
+            )
+    else:
+        vm_vcpu_count = _LAHC_DEFAULT_VM_VCPU_COUNT
+    machine_type = os.environ.get(
+        _LAHC_MACHINE_TYPE_ENV, _LAHC_DEFAULT_MACHINE_TYPE,
+    ).strip()
+    if not machine_type:
+        return _compute_error(
+            "SERVICE_MISCONFIGURED",
+            "Cloud Run service has " + _LAHC_MACHINE_TYPE_ENV + " set "
+            "to an empty value. Maintainer must redeploy with "
+            "--set-env-vars " + _LAHC_MACHINE_TYPE_ENV + "=<machine-type> "
+            "(e.g., c3-highcpu-88 for K=88, c3-highcpu-22 for the M7 "
+            "C4 quota-workaround deploy).",
+        )
+
+    if K_approved > vm_vcpu_count:
         return _compute_error(
             "SERVICE_MISCONFIGURED",
             "Cloud Run service has " + _LAHC_K_APPROVED_ENV + "="
-            + str(K_approved) + " which exceeds the fixed VM vCPU "
-            "count (" + str(_LAHC_VM_VCPU_COUNT) + " on `c3-highcpu-88`"
-            " per §8.7). The job spec hardcodes c3-highcpu-88 +"
-            " `Pool(K)` matches K to vCPU count — K above 88 would "
-            "over-subscribe the VM + blow the 10-min cap. Future "
-            "quota bump to `C3_CPUS≥176` unlocks `c3-highcpu-176` "
-            "for K=176 via FW-0040; until then, redeploy with "
-            "--set-env-vars " + _LAHC_K_APPROVED_ENV + "=<≤"
-            + str(_LAHC_VM_VCPU_COUNT) + ">.",
+            + str(K_approved) + " which exceeds the deploy-time VM "
+            "vCPU count (" + str(vm_vcpu_count) + " on `"
+            + machine_type + "` per " + _LAHC_VM_VCPU_COUNT_ENV
+            + "/" + _LAHC_MACHINE_TYPE_ENV + " env vars). The job spec "
+            "uses `" + machine_type + "` + `Pool(K)` matches K to vCPU "
+            "count — K above " + str(vm_vcpu_count) + " would "
+            "over-subscribe the VM + blow the 10-min cap. Either drop "
+            + _LAHC_K_APPROVED_ENV + " to ≤" + str(vm_vcpu_count) + ", or "
+            "redeploy with a larger VM ( + matching `" + _LAHC_VM_VCPU_COUNT_ENV
+            + "` + `" + _LAHC_MACHINE_TYPE_ENV + "` env vars).",
         )
 
     # Codex P2 round 8 finding on PR #157 commit d1fdbf4ac6: pre-fix,
@@ -1026,6 +1076,17 @@ def _compute_lahc_async_endpoint(
     import uuid
     attempt_id = uuid.uuid4().hex
     submit_timestamp_ms = int(time.time() * 1000)
+    # cpuMilli + memoryMib derived from vm_vcpu_count to claim the
+    # whole VM per the §8.7 single-task pattern. cpuMilli = N * 1000;
+    # memoryMib uses the c3-highcpu family's ~2 GB/vCPU spec minus
+    # 1 GB OS headroom (gives 7168 MiB at N=4, 178176 MiB at N=88).
+    # The M7 C2 lock pinned 160000 MiB for c3-highcpu-88 — slightly
+    # smaller than the formula's 178176 (= more conservative); use
+    # the formula here so other VM sizes (c3-highcpu-22 = 43008
+    # MiB) auto-scale. Cloud Batch validates against the live VM's
+    # actual capacity at submitJob time so under-claiming is safe.
+    cpu_milli = vm_vcpu_count * 1000
+    memory_mib = max(vm_vcpu_count * 2 * 1024 - 1024, 1024)
     job_spec = build_lahc_batch_job_spec(
         run_id=run_id,
         container_image_uri=container_image_uri,
@@ -1036,6 +1097,9 @@ def _compute_lahc_async_endpoint(
         K_approved=K_approved,
         bucket=bucket,
         region=region,
+        machine_type=machine_type,
+        cpu_milli=cpu_milli,
+        memory_mib=memory_mib,
         operator_email=operator_email,
         launcher_callback_url=launcher_callback_url,
     )
