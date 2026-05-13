@@ -445,7 +445,19 @@ def worker_main(
         (model, scoring_config, lahc_params, master_seed, int(s))
         for s in candidate_seeds
     ]
+    _pool_start_ts = time.time()
+    log.info(
+        "[timing] worker_pool_start ts_ms=%d K=%d",
+        int(_pool_start_ts * 1000), K_approved,
+    )
     per_trajectory = pool_executor(_run_one_trajectory, args_list)
+    _pool_done_ts = time.time()
+    log.info(
+        "[timing] worker_pool_done ts_ms=%d duration_ms=%d K=%d",
+        int(_pool_done_ts * 1000),
+        int((_pool_done_ts - _pool_start_ts) * 1000),
+        K_approved,
+    )
 
     # --- Aggregate result ----------------------------------------------
     candidates: list[dict] = []
@@ -578,6 +590,10 @@ def _inline_finalize(
     10-min cap.
     """
     finalize_started_at = wall_time_fn()
+    log.info(
+        "[timing] finalize_start ts_ms=%d",
+        int(finalize_started_at * 1000),
+    )
 
     # Default I/O fns (production callers don't need to inject).
     http_post = http_post_fn or _default_http_post_fn
@@ -646,6 +662,10 @@ def _inline_finalize(
             K_approved=K_approved,
             run_id=run_id,
         )
+        log.info(
+            "[timing] finalize_post_aggregation_done elapsed_ms=%d",
+            int((wall_time_fn() - finalize_started_at) * 1000),
+        )
     except Exception as e:  # noqa: BLE001 — best-effort finalize discipline
         log.exception("Aggregation raised; surfacing as COMPUTE_ERROR callback")
         wall_time_seconds = wall_time_fn() - finalize_started_at
@@ -691,6 +711,11 @@ def _inline_finalize(
                 run_id=run_id,
                 top_k=analyzer_top_k,
                 generated_at=generated_at_fn(),
+            )
+            log.info(
+                "[timing] finalize_analyzer_done elapsed_ms=%d k_prime=%d",
+                int((wall_time_fn() - finalize_started_at) * 1000),
+                k_prime,
             )
         except Exception as e:  # noqa: BLE001
             log.exception("Analyzer raised; surfacing as COMPUTE_ERROR callback")
@@ -805,6 +830,10 @@ def _inline_finalize(
         batch_job_name=batch_job_name,
     )
 
+    log.info(
+        "[timing] finalize_callback_start elapsed_ms=%d state=%s",
+        int((wall_time_fn() - finalize_started_at) * 1000), state,
+    )
     try:
         _post_callback_with_retry(
             callback_url=callback_url,
@@ -820,6 +849,10 @@ def _inline_finalize(
         # surprise exception inside it never raises out of the
         # finalize step (worker.py contract: finalize MUST NOT raise).
         log.exception("Callback POST raised unexpectedly outside the retry loop")
+    log.info(
+        "[timing] finalize_callback_done elapsed_ms=%d state=%s",
+        int((wall_time_fn() - finalize_started_at) * 1000), state,
+    )
 
 
 def _agg_to_post_aggregation_shape(agg_result: dict) -> dict:
@@ -1211,6 +1244,13 @@ def main(argv: list[str] | None = None) -> int:
 
     Returns POSIX-shell exit codes (0 on success; 2 on worker-level failure).
     """
+    # Timing instrumentation per the M7 closure UX-improvement thread.
+    # First log line emitted from Python — combined with Cloud Batch's
+    # job-state-change-to-RUNNING timestamp this gives the VM cold-start +
+    # container-init duration. Subsequent phase logs in worker_main + the
+    # inline finalize step combine into the dry-run waterfall.
+    log.info("[timing] worker_container_init ts_ms=%d", int(time.time() * 1000))
+
     parser = argparse.ArgumentParser(
         description="Cloud Batch LAHC worker (M7 C4 T2A.1 single-VM)"
     )
