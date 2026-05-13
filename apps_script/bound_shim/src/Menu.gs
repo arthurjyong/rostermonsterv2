@@ -41,10 +41,15 @@ function menuExtractSnapshot_() {
 // uncaught exception. The TTL is a safety net for the Apps-Script-crashed-
 // mid-flow case where the finally block doesn't run (process killed); a
 // fresh click after the TTL clears the stale lock and proceeds. TTL is
-// set to 60s — comfortably longer than the worst observed click-to-prompt
-// waterfall (~19s cold path + headroom for cloud RTT variance).
+// set to 7 min — must exceed any plausible live `_solveRoster_` duration
+// (per Codex P2 round 2 finding: a too-short TTL would let a slow live
+// run be misidentified as stale by a racing second click). Apps Script
+// caps per-execution runtime at 6 min on consumer accounts, so 7 min
+// covers any live run with a 60s buffer for kill-timing edge cases. Cost
+// of a long TTL: after a rare Apps-Script-killed crash, the operator
+// must wait up to 7 min before a retry can clear the stale lock.
 var _RM_INFLIGHT_LOCK_KEY = 'rm_solve_inflight_ts_ms';
-var _RM_INFLIGHT_LOCK_TTL_MS = 60 * 1000;
+var _RM_INFLIGHT_LOCK_TTL_MS = 7 * 60 * 1000;
 // `LockService.getDocumentLock().tryLock(N)` waits up to N ms to acquire
 // the doc-scoped concurrency lock. The lock spans only the check-and-set
 // window inside `_quickValidate_` (typical ~50-200ms total — one metadata
