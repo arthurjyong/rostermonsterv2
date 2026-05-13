@@ -57,9 +57,15 @@ function _renderAnalysisInner_(output) {
     return _ar_failed_('INVALID_INPUT_VERSION',
       'AnalyzerOutput is not a JSON object.');
   }
-  if (output.contractVersion !== 1) {
+  // v1 → v2 admission bump per D-0073: renderer's per-doctor block now
+  // expects the v2 PerDoctorAggregates shape (group + totalCallPoints +
+  // averageCallPointsPerCall + gap fields + CR counts; weekendCallCount
+  // + maxConsecutiveDaysOff dropped). Accepting v1 here would render
+  // empty/undefined cells for the new columns and miss the dropped
+  // fields the v1 layout expected. Hard cut: v2 only.
+  if (output.contractVersion !== 2) {
     return _ar_failed_('INVALID_INPUT_VERSION',
-      'AnalyzerOutput.contractVersion must be 1; got ' +
+      'AnalyzerOutput.contractVersion must be 2; got ' +
       JSON.stringify(output.contractVersion) + '.');
   }
   if (!output.source || !output.source.sourceSpreadsheetId) {
@@ -694,7 +700,7 @@ function _ar_attachRendererFooter_(sheet, output, kind, rank) {
     ['sourceSpreadsheetId', String(output.source.sourceSpreadsheetId || '')],
     ['sourceTabName', String(output.source.sourceTabName || '')],
     ['analysis_contract.contractVersion', String(output.contractVersion)],
-    ['analysis_renderer_contract.contractVersion', '1'],
+    ['analysis_renderer_contract.contractVersion', '2'],
   ];
   for (var i = 0; i < fields.length; i++) {
     sheet.getRange(footerRow + i, 1).setValue(fields[i][0])
@@ -717,7 +723,7 @@ function _ar_attachRendererMetadata_(sheet, output, kind, candidateId) {
   sheet.addDeveloperMetadata(
     'analysis_contract.contractVersion', String(output.contractVersion));
   sheet.addDeveloperMetadata(
-    'analysis_renderer_contract.contractVersion', '1');
+    'analysis_renderer_contract.contractVersion', '2');
 }
 
 // --- protection (mirrors writeback's _protectWritebackTab_) ----------------
