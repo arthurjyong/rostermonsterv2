@@ -82,6 +82,14 @@ function handleAsyncRenderCallback_(e) {
   // finalizer should retry; bad-request shapes return 4xx via an
   // explicit `_buildJsonResponse_(status=...)` helper below.
 
+  // Timing instrumentation per the M7 closure UX-improvement thread.
+  // Captures the launcher-side leg of the async path: callback POST
+  // received → token validated → writeback done → renderAnalysis done →
+  // email sent. console.log() flows to Cloud Logging when this Apps
+  // Script project is linked to the GCP project.
+  var _timing_t0 = Date.now();
+  console.log('[timing] callback_received ts_ms=' + _timing_t0);
+
   if (!e || !e.postData) {
     return _buildJsonResponse_(400, {
       state: 'INVALID_CALLBACK',
@@ -138,6 +146,10 @@ function handleAsyncRenderCallback_(e) {
   // §10A.5 — the token grants access for ~1h and shouldn't survive
   // in Cloud Logging or Properties Service.
   delete body.idToken;
+  console.log(
+    '[timing] callback_token_validated delta_ms=' + (Date.now() - _timing_t0) +
+    ' run_id=' + (body.runId || 'unknown')
+  );
 
   // Validate required body fields per §10A.6.
   var validationError = _validateCallbackBody_(body);
@@ -327,6 +339,11 @@ function _dispatchOk_(body) {
   // exception bubbles up. `RMLib.renderAnalysis` returns
   // `state: 'OK'` on success, `state: 'FAILED'` on any failure
   // (validation rejection or render-time exception).
+  var _dispatch_t0 = Date.now();
+  console.log(
+    '[timing] dispatch_ok_start ts_ms=' + _dispatch_t0 +
+    ' run_id=' + (body.runId || 'unknown')
+  );
   var writebackResult, analysisResult;
   try {
     // RMLib.applyWriteback takes a JSON STRING per §10A.1 + the
@@ -358,6 +375,10 @@ function _dispatchOk_(body) {
       runId: body.runId,
     });
   }
+  console.log(
+    '[timing] dispatch_writeback_done delta_ms=' + (Date.now() - _dispatch_t0) +
+    ' run_id=' + (body.runId || 'unknown')
+  );
 
   try {
     // RMLib.renderAnalysis takes a single AnalyzerOutput arg per
@@ -381,9 +402,17 @@ function _dispatchOk_(body) {
       runId: body.runId,
     });
   }
+  console.log(
+    '[timing] dispatch_analysis_done delta_ms=' + (Date.now() - _dispatch_t0) +
+    ' run_id=' + (body.runId || 'unknown')
+  );
 
   // Both succeeded — operator-facing success email + 2xx to finalizer.
   _sendSuccessEmail_(body);
+  console.log(
+    '[timing] dispatch_email_sent delta_ms=' + (Date.now() - _dispatch_t0) +
+    ' run_id=' + (body.runId || 'unknown')
+  );
   return _buildJsonResponse_(200, {
     state: 'OK',
     runId: body.runId,
