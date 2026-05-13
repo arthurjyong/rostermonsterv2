@@ -33,24 +33,72 @@ function menuExtractSnapshot_() {
   SpreadsheetApp.getUi().showModalDialog(html, 'Snapshot ready');
 }
 
+// Multi-click guard: per-spreadsheet in-flight lock stored as a timestamp
+// (ms since epoch) on DocumentProperties. Set just before we commit to the
+// slow extract+POST path; cleared in `menuSolveRoster_`'s try/finally so
+// the lock auto-releases on success, cloud-error, AND uncaught exception.
+// The TTL is a safety net for the Apps-Script-crashed-mid-flow case where
+// the finally block doesn't run (process killed); a fresh click after the
+// TTL clears the stale lock and proceeds. TTL is set to 60s — comfortably
+// longer than the worst observed click-to-prompt waterfall (~19s cold path
+// + headroom for cloud RTT variance).
+var _RM_INFLIGHT_LOCK_KEY = 'rm_solve_inflight_ts_ms';
+var _RM_INFLIGHT_LOCK_TTL_MS = 60 * 1000;
+
 // "Solve Roster" menu handler per `docs/decision_log.md` D-0049 +
 // `docs/cloud_compute_contract.md`. Synchronously orchestrates the
 // three pipeline stages and surfaces a single result dialog at the end:
 //
-//   1. Extract snapshot in-memory via RMLib (no file boundary).
-//   2. POST snapshot to Cloud Run /compute endpoint with an OIDC token
+//   1. Pre-flight validation (`_quickValidate_`) — cheap click-time
+//      checks that catch the most common operator mistakes (wrong tab,
+//      missing config, in-flight re-click) BEFORE the ~14s extract.
+//   2. Show "Initializing snapshot" toast — narrates the slow extract
+//      so the operator knows the click registered and roughly how long
+//      to expect. Toast stays visible until the terminal modal replaces
+//      it; the in-flight lock is set at the same time.
+//   3. Extract snapshot in-memory via RMLib (no file boundary).
+//   4. POST snapshot to Cloud Run /compute endpoint with an OIDC token
 //      from `ScriptApp.getIdentityToken()` per D-0051 sub-decision 2.
-//   3. Pass the returned writebackEnvelope to RMLib.applyWriteback()
-//      per D-0052 to render the new writeback tab.
+//   5. Pass the returned writebackEnvelope to RMLib.applyWriteback()
+//      per D-0052 to render the new writeback tab (sync path; the LAHC
+//      async path returns SUBMITTED at step 4 and the actual writeback
+//      lands via the launcher's `async-render-callback` route).
 //
-// Wall-clock budget: extract (~1s) + cloud (~30-90s with cold start)
-// + writeback (~3-5s). Comfortably within Apps Script's 6 min
-// per-execution limit per `docs/cloud_compute_contract.md` §8.4.
+// Wall-clock budget: preflight (<1s) + extract (~14s) + cloud (~1-2s) +
+// writeback (~3-5s on the deprecated sync path). Comfortably within
+// Apps Script's 6 min per-execution limit per
+// `docs/cloud_compute_contract.md` §8.4.
 function menuSolveRoster_() {
   var ui = SpreadsheetApp.getUi();
+  var t0 = Date.now();
+  console.log('[timing] solve_roster_start ts_ms=' + t0);
+
+  // Step 1: cheap preflight. Returns `{ok, error}` — `ok=false` aborts
+  // immediately with a click-time alert (no toast, no lock acquired,
+  // no slow extract).
+  var pre = _quickValidate_();
+  var tPreflight = Date.now();
+  console.log('[timing] preflight_done delta_ms=' + (tPreflight - t0) +
+    ' elapsed_ms=' + (tPreflight - t0));
+  if (!pre.ok) {
+    ui.alert('Solve Roster — cannot start', pre.error, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Step 2: acquire the in-flight lock + show the "Initializing" toast.
+  // From here on we're committed to the slow path; lock release happens
+  // in the finally block below.
+  PropertiesService.getDocumentProperties().setProperty(
+    _RM_INFLIGHT_LOCK_KEY, String(Date.now()));
+  SpreadsheetApp.getActiveSpreadsheet().toast(
+    'Initializing snapshot — please wait up to 1 minute for the next prompt.',
+    'Roster Monster',
+    -1
+  );
+
   var result;
   try {
-    result = _solveRoster_();
+    result = _solveRoster_(t0, tPreflight);
   } catch (e) {
     ui.alert(
       'Solve Roster failed',
@@ -58,14 +106,104 @@ function menuSolveRoster_() {
       ui.ButtonSet.OK
     );
     return;
+  } finally {
+    PropertiesService.getDocumentProperties().deleteProperty(
+      _RM_INFLIGHT_LOCK_KEY);
   }
   _showSolveRosterResult_(result);
 }
 
+// Cheap click-time validation. Returns `{ok: true}` on pass; `{ok: false,
+// error: <operator-facing message>}` on fail. Target latency: <1 second
+// total (one DeveloperMetadata finder call dominates at ~50-200ms; the
+// other checks are O(1) property reads). Intentionally does NOT duplicate
+// the snapshot extractor's structural validation — the extractor is the
+// authoritative validator for sheet structure, and we'd need the full
+// 14s metadata sweep to replicate it. This function only catches the
+// click-time mistakes that don't need the slow path:
+//   1. In-flight re-click (multi-click guard).
+//   2. Cloud Run URL not configured.
+//   3. Operator email unavailable (OAuth scope issue).
+//   4. Active tab is not a request-entry tab (the most common operator
+//      mistake; currently surfaces ~14s late as `EXTRACTION_ERROR`).
+// Anything more semantic (weird prefill names, malformed request cells,
+// scorer-config drift) requires the slow path's full sweep — the toast
+// covers the wait so the operator knows we're working.
+function _quickValidate_() {
+  // Check 1: in-flight lock. If a previous click is still mid-flow on
+  // this spreadsheet (within the TTL), reject immediately so the
+  // operator doesn't kick off a duplicate extract.
+  var props = PropertiesService.getDocumentProperties();
+  var inFlightTsStr = props.getProperty(_RM_INFLIGHT_LOCK_KEY);
+  if (inFlightTsStr) {
+    var elapsed = Date.now() - parseInt(inFlightTsStr, 10);
+    if (elapsed >= 0 && elapsed < _RM_INFLIGHT_LOCK_TTL_MS) {
+      return { ok: false, error:
+        'A previous Solve Roster click is still in progress on this ' +
+        'spreadsheet (started ' + Math.ceil(elapsed / 1000) + 's ago). ' +
+        'Wait for the prompt — or, if you already saw the "Initializing ' +
+        'snapshot" toast and dismissed the result, wait for the email.' };
+    }
+    // Stale lock (>TTL or clock-skew negative) — clear and proceed.
+    // Crash-recovery path: covers the case where a prior `menuSolveRoster_`
+    // was killed before its finally block ran.
+    props.deleteProperty(_RM_INFLIGHT_LOCK_KEY);
+  }
+
+  // Check 2: Cloud Run URL configured on the central library. Same check
+  // _solveRoster_ does internally — surfacing it here means the operator
+  // gets a clear CONFIG_ERROR alert at click time instead of waiting ~14s
+  // for the extract before the same error fires.
+  var cloudUrl = RMLib.getCloudRunUrl();
+  if (!cloudUrl) {
+    return { ok: false, error:
+      'CONFIG_ERROR: Cloud Run URL not configured. The maintainer needs ' +
+      'to set the CLOUD_RUN_URL Script Property on the Roster Monster ' +
+      'Central Library Apps Script project.' };
+  }
+
+  // Check 3: operator email available. Required for the LAHC async path's
+  // operatorEmail field per `docs/cloud_compute_contract.md` §9.3 (the
+  // Cloud Batch finalizer needs it for the always-email-on-every-outcome
+  // path per §10A.7). Same defense as inside _solveRoster_; pulled forward
+  // to click time.
+  var operatorEmail = Session.getActiveUser().getEmail();
+  if (!operatorEmail) {
+    return { ok: false, error:
+      'OPERATOR_EMAIL_UNAVAILABLE: Could not read your email address. ' +
+      'Re-open the spreadsheet and re-authorize when prompted (verify ' +
+      'the userinfo.email OAuth scope).' };
+  }
+
+  // Check 4: active tab is a request-entry tab. The single most common
+  // operator mistake is clicking Solve Roster from a different tab (e.g.,
+  // a writeback tab from a prior run, or a Scorer Config tab). Without
+  // this preflight, the operator waits ~14s for the extract to fail with
+  // "EXTRACTION_ERROR: not a request-entry tab". One `withKey()` finder
+  // on the active sheet only — does NOT trigger the workbook-wide sweep
+  // that the full extractor does.
+  var activeSheet = SpreadsheetApp.getActiveSheet();
+  var tabTypeMatches = activeSheet.createDeveloperMetadataFinder()
+    .withKey('rosterMonster:tabType').find();
+  if (tabTypeMatches.length !== 1 ||
+      tabTypeMatches[0].getValue() !== 'requestEntry') {
+    return { ok: false, error:
+      'This tab ("' + activeSheet.getName() + '") is not a request-entry ' +
+      'tab. Open the period\'s request-entry tab (usually named like ' +
+      '"<Section> Requests <month>") and click Solve Roster from there.' };
+  }
+
+  return { ok: true };
+}
+
 // Internal orchestrator. Throws Error on any unrecoverable failure;
 // caller (`menuSolveRoster_`) catches and renders the message into the
-// error dialog.
-function _solveRoster_() {
+// error dialog. `_timing_t0` and `_timing_t_preflight` are passed in
+// from the caller so the timing waterfall stays continuous from the
+// click instant — `_timing_t0` is the menu-click anchor (used for
+// `elapsed_ms`); `_timing_t_preflight` is the previous marker (used
+// for `config_resolved`'s `delta_ms`).
+function _solveRoster_(_timing_t0, _timing_t_preflight) {
   // Timing instrumentation per the M7 closure UX-improvement thread —
   // captures click → first-prompt latency so we can identify the
   // dominant bottleneck (extract vs Cloud Run cold-start vs Batch
@@ -73,13 +211,15 @@ function _solveRoster_() {
   // project is linked to a GCP project (verify via Apps Script editor →
   // Project Settings → Google Cloud Platform). Format: `[timing] stage
   // delta_ms=N elapsed_ms=N` so the dry-run analysis script can parse it.
-  var _timing_t0 = Date.now();
-  console.log('[timing] solve_roster_start ts_ms=' + _timing_t0);
+  // The `solve_roster_start` and `preflight_done` markers are emitted
+  // by the caller (`menuSolveRoster_`) before this function runs.
 
   // Stage 0: resolve Cloud Run URL from the central library's script
   // properties. Library-level properties are shared across all consumers
   // (one source of truth) and don't get nulled-out by makeCopy() of
-  // operator spreadsheets.
+  // operator spreadsheets. Note this duplicates the preflight check —
+  // intentional: keeps `_solveRoster_` self-contained for testing /
+  // direct invocation paths that bypass the menu handler.
   var cloudUrl = RMLib.getCloudRunUrl();
   if (!cloudUrl) {
     throw new Error(
@@ -95,7 +235,7 @@ function _solveRoster_() {
   // Stage 1: extract snapshot in-memory via the central library.
   var _timing_t1 = Date.now();
   console.log(
-    '[timing] config_resolved delta_ms=' + (_timing_t1 - _timing_t0) +
+    '[timing] config_resolved delta_ms=' + (_timing_t1 - _timing_t_preflight) +
     ' elapsed_ms=' + (_timing_t1 - _timing_t0)
   );
   var snapshot;
