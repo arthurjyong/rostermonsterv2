@@ -83,7 +83,7 @@ def test_analyzer_runs_end_to_end_on_real_fixture() -> None:
         topK=3,
         generatedAt="2026-05-04T10:00:00Z",
     )
-    assert output.contractVersion == 1
+    assert output.contractVersion == 2
     assert output.topK.requested == 3
     assert output.topK.returned <= 3
     assert output.topK.returned >= 1
@@ -189,7 +189,7 @@ def test_analyzer_consumes_lahc_full_envelope() -> None:
         raw, wrapper_dict, sidecar_dict, topK=3,
         generatedAt="2026-05-08T10:00:00Z",
     )
-    assert output.contractVersion == 1
+    assert output.contractVersion == 2
     assert output.topK.returned >= 1
     assert output.topK.candidates[0].rankByTotalScore == 1
     assert output.topK.candidates[0].recommended is True

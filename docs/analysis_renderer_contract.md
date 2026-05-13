@@ -18,14 +18,15 @@ The renderer is a **sibling consumer** of the wrapper envelope per `docs/decisio
 ## 2) Contract identity and versioning
 Contract identity/version for binding:
 - `contractId: ANALYSIS_RENDERER`
-- `contractVersion: 1`
+- `contractVersion: 2`
 
 Version bump rule (normative):
 - bump `contractVersion` only when renderer input shape, tab-emission shape, target-spreadsheet behavior, naming convention in a way that breaks v1-targeted readers, or determinism guarantees change.
 - do **not** bump for wording cleanup, formatting tweaks, additive optional tab-content fields that v1 readers can ignore, or clarification that does not change behavior.
 
 ### 2.1 Version history
-- **v1 (2026-05-05, this PR):** initial analysis-renderer contract closure per `docs/decision_log.md` D-0060..D-0063. Tab-shape, target-spreadsheet behavior, tab naming, collision policy, atomicity discipline.
+- **v1 (2026-05-05):** initial analysis-renderer contract closure per `docs/decision_log.md` D-0060..D-0063. Tab-shape, target-spreadsheet behavior, tab naming, collision policy, atomicity discipline.
+- **v2 (2026-05-13, this PR — per `docs/decision_log.md` D-0073):** input shape changed in lockstep with `analysis_contract.md` v2 — renderer consumes the new `PerDoctorAggregates` v2 fields (`group`, `totalCallPoints` renamed from `cumulativeCallPoints`, `averageCallPointsPerCall`, three new gap fields, CR fulfilled/unfulfilled counts) and drops the v1 `weekendCallCount` + `maxConsecutiveDaysOff` fields. §13.1 item 3 (per-doctor summary block) and §13.2 item 3 (equity scalars block) restated to the v2 column set; null-not-zero discipline added (§13.1 item 3 renders unavailable fields as `—`). Tab-naming, collision policy, target-spreadsheet behavior, and atomicity discipline carry through unchanged.
 
 ## 3) Status discipline used in this document
 Each normative statement is classified as one of:
@@ -86,7 +87,7 @@ This contract does **not** govern:
 Renderer invocations are evaluated against the following inputs:
 
 1. **`output`** — an `AnalyzerOutput` object per `docs/analysis_contract.md` §10. Required top-level fields the renderer consumes:
-   - `contractVersion` — MUST equal `1`; future versions that change `AnalyzerOutput` shape MAY require a renderer bump per §18.
+   - `contractVersion` — MUST equal `2` (v2 hard cut per D-0073; pre-D-0073 v1 outputs are not accepted — see §9.1 admission + §16 `INVALID_INPUT_VERSION`); future versions that change `AnalyzerOutput` shape MAY require a renderer bump per §18.
    - `source.sourceSpreadsheetId` — the target spreadsheet ID the renderer opens via `SpreadsheetApp.openById(...)` per §11.
    - `source.runId` — embedded into tab traceability footers per §13.
    - `topK.requested`, `topK.returned`, `topK.candidates[]` — drives the K roster tabs (one per candidate, in `rankByTotalScore` order). Empty `candidates[]` is fail-loud per §16.
@@ -98,7 +99,7 @@ The renderer MUST NOT consume any field outside `AnalyzerOutput`. No environment
 
 ### 9.1 Admission checks (fail-loud)
 Mirroring the parser/normalizer + analyzer admission discipline (`docs/decision_log.md` D-0038, `docs/analysis_contract.md` §9.5), the renderer MUST fail-loud on:
-- `output.contractVersion != 1` — version mismatch; renderer cannot consume future shapes without an update.
+- `output.contractVersion != 2` — version mismatch; renderer cannot consume v1 (pre-D-0073) or future shapes without an update.
 - Missing `output.source.sourceSpreadsheetId` — cannot open target spreadsheet.
 - `output.topK.candidates` empty or missing — nothing to render; signals upstream defect.
 - `SpreadsheetApp.openById(...)` raises (missing spreadsheet, permissions denied, or operator's launcher OAuth scope insufficient — though manifest scope per `docs/decision_log.md` D-0051 sub-3a should cover this) — surface the error verbatim in the structured failure return.
@@ -180,7 +181,7 @@ Each roster tab renders ONE candidate's full assignment matrix using the same vi
 Per-tab content (top-to-bottom):
 1. **Header block** — `Analysis Tab — Rank <N> of <K>` plus the candidate's `totalScore`, `recommended` flag (visually distinct if `recommended: true`), and a one-line "best on" summary derived from `scoreComponents[*].rankAcrossTopK == 1` per `docs/analysis_contract.md` §10.9 (renderer-derivable Tier 7 tags).
 2. **Per-day assignment grid** — same shape as writeback's roster tab: rows = days, columns = slot types, cells = doctor display names (resolved via `output.doctorIdMap`). Multi-unit slots (per `docs/analysis_contract.md` §10.5 `unitIndex`) get sub-rows or comma-separated cell content per the writeback contract's existing convention.
-3. **Per-doctor summary block** — surfaces `output.topK.candidates[*].perDoctor`: per-doctor CALL count, STANDBY count, weekend-CALL count, `cumulativeCallPoints`, `maxConsecutiveDaysOff` (Tier 2 per `docs/analysis_contract.md` §10.6).
+3. **Per-doctor summary block** — surfaces `output.topK.candidates[*].perDoctor` (Tier 2 per `docs/analysis_contract.md` §10.6 v2). Single wide row per doctor with these columns in order: Doctor (resolved display name) | Group | CALL | STANDBY | Total call points | Avg points / call | Shortest gap | 2nd shortest gap | Longest gap | CRs fulfilled | CRs unfulfilled. Gap fields use the scorer-stride convention (Mon→Wed = 2) per §10.6 v2 — operators can cross-reference the per-component score block's `spacingPenalty` breakdown directly. Null-valued fields (averageCallPointsPerCall when callCount=0; gap fields when callCount<2 or <3 for second-shortest) render as `—` (em-dash) per §10.6's null-not-zero discipline so undefined is visually distinct from zero.
 4. **Per-component score block** — surfaces `output.topK.candidates[*].scoreComponents`: per-component `weighted` value, `raw` value, `rankAcrossTopK`, `gapToNextRanked` (Tier 1 per `docs/analysis_contract.md` §10.3). Rendered as a small table with one row per scorer component.
 5. **Traceability footer** — `runId`, `seed`, `generatedAt`, `sourceSpreadsheetId`, `sourceTabName`, `analysis_contract.contractVersion`, `analysis_renderer_contract.contractVersion`. Read-only via Sheets cell protection (matching writeback's footer discipline per `docs/writeback_contract.md` §16).
 
@@ -190,7 +191,7 @@ The comparison tab is the operator's primary cross-candidate decision-support su
 Per-tab content (top-to-bottom):
 1. **Header block** — `Analysis Tab — Comparison` plus K, `requested` vs `returned`, `runId` short, `recommended` candidate's rank (always rank 1 per `docs/analysis_contract.md` §11.1).
 2. **Score-decomposition matrix** — rows = candidates, columns = scorer components (every first-release component per `docs/domain_model.md` §11.2). Each cell shows the candidate's `weighted` value for that component. A "totals" column shows `totalScore`. Column-best is bolded (rank 1 within column), column-worst is italicized — this is the renderer's Tier 7 derivation per `docs/analysis_contract.md` §10.9.
-3. **Equity scalars block** — rows = candidates, columns = (callCount stdev / minMaxGap / Gini, weekendCallCount stdev / minMaxGap / Gini, cumulativeCallPoints stdev / minMaxGap / Gini). Tier 3 from `output.comparison.perCandidateEquity`.
+3. **Equity scalars block** — rows = candidates, columns = (callCount stdev / minMaxGap / Gini, totalCallPoints stdev / minMaxGap / Gini). Tier 3 from `output.comparison.perCandidateEquity` per `docs/analysis_contract.md` §10.8 v2 (weekendCallCount equity block dropped per D-0073 in lockstep with §10.6).
 4. **Day-level disagreement** — one row per `output.comparison.hotDays[*]` (or per `output.comparison.lockedDays[*]` listing under a separate sub-block). Tier 4.
 5. **Pairwise Hamming matrix** — K × K table; cell `[a][b]` shows `output.comparison.pairwiseHammingDistance[a][b]`. Diagonal is zero. Tier 5 — the load-bearing operator diagnostic for "are my K candidates actually different?" per `docs/decision_log.md` D-0056.
 6. **Per-doctor cross-candidate block** (optional, surface in detail-view sub-block) — for each doctor: a small table showing how their CALL count varies across the K candidates. Drives "this candidate is worse for Dr X but better for Dr Y" comparisons. v1 implementations MAY ship this collapsed-by-default and require operator click-to-expand if Sheets's row-grouping feature is used; otherwise just rendered statically below the rest of the content.
@@ -228,7 +229,7 @@ On any admission failure (§9.1) or render-time exception, the renderer returns:
 `newTabIds` + `newTabNames` carry the tabs that WERE successfully written before failure (best-effort partial-state surface per §14). `spreadsheetUrl` follows §10.2 presence rules — present on `RENDER_EXCEPTION` failures (the spreadsheet was opened before mid-render failure, so the URL is reachable for partial-state inspection); absent or `null` on early-admission failures (`INVALID_INPUT_VERSION` / `MISSING_SOURCE_SPREADSHEET_ID` / `EMPTY_TOPK` / `OPEN_BY_ID_FAILED`).
 
 `error.code` enumerates known failure modes:
-- `INVALID_INPUT_VERSION` — `output.contractVersion != 1`.
+- `INVALID_INPUT_VERSION` — `output.contractVersion != 2` (v2 hard cut per D-0073; pre-D-0073 v1 outputs are NOT accepted because the v2 per-doctor block expects fields not present in v1 and the v1 fields `weekendCallCount` + `maxConsecutiveDaysOff` were dropped).
 - `MISSING_SOURCE_SPREADSHEET_ID` — admission §9.1.
 - `EMPTY_TOPK` — admission §9.1.
 - `OPEN_BY_ID_FAILED` — `SpreadsheetApp.openById()` raised; message carries the underlying reason (permissions, missing, etc.).
@@ -246,15 +247,15 @@ Proposed in this checkpoint (normative):
 ## 18) Schema versioning
 Proposed in this checkpoint (normative):
 
-`contractVersion: 1` per §2.
+`contractVersion: 2` per §2 (bumped from v1 per D-0073 — see §2.1 v2 history entry).
 
 Bump rule:
-- bump `contractVersion` only when tab shape, tab-naming convention, target-spreadsheet behavior, or `AnalysisRendererResult` shape change in a way that breaks v1-targeted callers (i.e., the launcher's Web App route).
-- additive changes a v1 caller can tolerate (additional optional fields on `AnalysisRendererResult`, additional sub-blocks within tab content that don't shift positional cells) do NOT require a bump.
+- bump `contractVersion` only when tab shape, tab-naming convention, target-spreadsheet behavior, or `AnalysisRendererResult` shape change in a way that breaks targeted callers (i.e., the launcher's Web App route).
+- additive changes a caller can tolerate (additional optional fields on `AnalysisRendererResult`, additional sub-blocks within tab content that don't shift positional cells) do NOT require a bump.
 - removing or renaming fields, changing tab-naming convention, or changing target-spreadsheet behavior (e.g., switching to a separate Drive-created spreadsheet) does require a bump.
 
 ## 19) Consistency with adjacent contracts
-- **Upstream analyzer** (`docs/analysis_contract.md`): the renderer reads `AnalyzerOutput` per §10. v1 of this contract is compatible with `analysis_contract.md` `contractVersion: 1`. Future analyzer bumps that alter `AnalyzerOutput` shape MAY trigger renderer bumps.
+- **Upstream analyzer** (`docs/analysis_contract.md`): the renderer reads `AnalyzerOutput` per §10. v2 of this contract is compatible with `analysis_contract.md` `contractVersion: 2` (hard cut per D-0073 — see §2.1 v2 history). Future analyzer bumps that alter `AnalyzerOutput` shape MAY trigger renderer bumps in lockstep.
 - **Sibling writeback** (`docs/writeback_contract.md`): the renderer co-exists with writeback's tab in the source spreadsheet (§11.1) and reuses writeback's formatting helpers (§13.1). Both libraries live in the central library per `docs/decision_log.md` D-0052.
 - **Upstream selector** (`docs/selector_contract.md`): unaffected; renderer does not consume the FULL sidecar or `FinalResultEnvelope` directly.
 - **Upstream snapshot** (`docs/snapshot_contract.md`): unaffected; renderer does not consume the snapshot.
