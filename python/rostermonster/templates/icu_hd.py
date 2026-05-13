@@ -123,15 +123,29 @@ def icu_hd_template_artifact() -> TemplateArtifact:
                 ),
             ),
         ),
+        # Magnitudes updated 2026-05-13 from M2-era placeholders to the
+        # operator-tuned values from a live ICU/HD cycle post-M7 closure
+        # (operator's `Scorer Config v0513050214` tab). Targeted defaults
+        # bump driven by accumulated operator feedback, NOT the full
+        # FW-0014 "v1 reference pass" NOR FW-0033 "systematic weight
+        # elicitation" (which stays parked). MUST-NEVER-HAPPEN hard-rule
+        # penalties (unfilledPenalty, preLeavePenalty) get the -10000
+        # floor so any candidate that violates them craters below all
+        # soft-penalty gradients; point-balance + spacing + standby-count
+        # amplitudes strengthen to reflect post-M6 LAHC operator-visible
+        # scoring-gradient calibration. Operators retain override
+        # authority via the Scorer Config tab per D-0037 + the parser
+        # overlay in `docs/parser_normalizer_contract.md` §9. MUST stay
+        # in sync with `apps_script/launcher/src/TemplateArtifact.gs`.
         componentWeights={
-            "unfilledPenalty": -100.0,
+            "unfilledPenalty": -10000.0,
             "pointBalanceWithinSection": -1.0,
-            "pointBalanceGlobal": -1.0,
-            "spacingPenalty": -2.0,
-            "preLeavePenalty": -10.0,
+            "pointBalanceGlobal": -25.0,
+            "spacingPenalty": -10.0,
+            "preLeavePenalty": -10000.0,
             "crReward": 5.0,
-            "dualEligibleIcuBonus": 0.5,
+            "dualEligibleIcuBonus": 1.0,
             "standbyAdjacencyPenalty": -3.0,
-            "standbyCountFairnessPenalty": -1.0,
+            "standbyCountFairnessPenalty": -10.0,
         },
     )
