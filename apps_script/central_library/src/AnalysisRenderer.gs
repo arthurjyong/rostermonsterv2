@@ -57,9 +57,15 @@ function _renderAnalysisInner_(output) {
     return _ar_failed_('INVALID_INPUT_VERSION',
       'AnalyzerOutput is not a JSON object.');
   }
-  if (output.contractVersion !== 1) {
+  // v1 → v2 admission bump per D-0073: renderer's per-doctor block now
+  // expects the v2 PerDoctorAggregates shape (group + totalCallPoints +
+  // averageCallPointsPerCall + gap fields + CR counts; weekendCallCount
+  // + maxConsecutiveDaysOff dropped). Accepting v1 here would render
+  // empty/undefined cells for the new columns and miss the dropped
+  // fields the v1 layout expected. Hard cut: v2 only.
+  if (output.contractVersion !== 2) {
     return _ar_failed_('INVALID_INPUT_VERSION',
-      'AnalyzerOutput.contractVersion must be 1; got ' +
+      'AnalyzerOutput.contractVersion must be 2; got ' +
       JSON.stringify(output.contractVersion) + '.');
   }
   if (!output.source || !output.source.sourceSpreadsheetId) {
@@ -351,23 +357,33 @@ function _ar_writeAssignmentGrid_(sheet, output, cand, startRow, resolvedDoctorI
   return startRow + dateKeys.length;
 }
 
-// §13.1 item 3 — per-doctor summary block: doctor → callCount, standby,
-// weekendCall, cumulativeCallPoints, maxConsecutiveDaysOff. Doctor names
-// disambiguated via `resolvedDoctorIdMap` per §10.0.
+// §13.1 item 3 — per-doctor summary block (v2 per D-0073): doctor →
+// group, CALL, STANDBY, total call points, average call points per call,
+// shortest/2nd-shortest/longest call gap (scorer-stride convention:
+// Mon→Wed = 2), CRs fulfilled / unfulfilled. Doctor names disambiguated
+// via `resolvedDoctorIdMap` per §10.0. Null fields render as "—" so
+// "undefined" is distinguishable from "zero" (gap fields are null when
+// callCount < 2 / < 3; averageCallPointsPerCall is null when callCount
+// == 0).
 function _ar_writePerDoctorSummary_(sheet, output, cand, startRow, resolvedDoctorIdMap) {
   var perDoctor = cand.perDoctor || {};
   var doctorIds = Object.keys(perDoctor).sort();
   if (doctorIds.length === 0) return startRow;
 
-  var titleRange = sheet.getRange(startRow, 1, 1, 6);
+  var headers = [
+    'Doctor', 'Group', 'CALL', 'STANDBY',
+    'Total call points', 'Avg points / call',
+    'Shortest gap', '2nd shortest gap', 'Longest gap',
+    'CRs fulfilled', 'CRs unfulfilled',
+  ];
+
+  var titleRange = sheet.getRange(startRow, 1, 1, headers.length);
   titleRange.merge()
     .setValue('Per-doctor summary (Tier 2)')
     .setFontWeight('bold')
     .setBackground(_AR_COLORS_.sectionBg);
   startRow++;
 
-  var headers = ['Doctor', 'CALL', 'STANDBY', 'Weekend CALL',
-                 'Cumulative call points', 'Max consecutive days off'];
   sheet.getRange(startRow, 1, 1, headers.length).setValues([headers])
     .setFontWeight('bold').setBackground(_AR_COLORS_.headerRowBg);
   startRow++;
@@ -378,14 +394,28 @@ function _ar_writePerDoctorSummary_(sheet, output, cand, startRow, resolvedDocto
     var displayName = resolvedDoctorIdMap[id] || id;
     sheet.getRange(startRow + i, 1, 1, headers.length).setValues([[
       displayName,
+      d.group || '',
       d.callCount,
       d.standbyCount,
-      d.weekendCallCount,
-      _ar_fmtNumber_(d.cumulativeCallPoints),
-      d.maxConsecutiveDaysOff,
+      _ar_fmtNumber_(d.totalCallPoints),
+      _ar_fmtNullable_(d.averageCallPointsPerCall),
+      _ar_fmtNullable_(d.shortestCallGap),
+      _ar_fmtNullable_(d.secondShortestCallGap),
+      _ar_fmtNullable_(d.longestCallGap),
+      d.callRequestsFulfilled,
+      d.callRequestsUnfulfilled,
     ]]);
   }
   return startRow + doctorIds.length;
+}
+
+// Renders null/undefined fields as "—" (em-dash) per §10.6 v2 null
+// discipline. Numeric values pass through `_ar_fmtNumber_` so floats
+// like averageCallPointsPerCall display with consistent precision.
+function _ar_fmtNullable_(v) {
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'number' && !Number.isInteger(v)) return _ar_fmtNumber_(v);
+  return v;
 }
 
 // §13.1 item 4 — per-component score block: component → weighted, raw,
@@ -532,18 +562,20 @@ function _ar_writeEquityScalars_(sheet, output, startRow) {
   var candidates = output.topK.candidates;
   if (candidates.length === 0) return startRow;
 
-  sheet.getRange(startRow, 1, 1, 11).merge()
+  // v2 per D-0073: equity scalars dropped weekendCallCount block;
+  // renamed cumulativeCallPoints → totalCallPoints. 7 columns now (was 10).
+  var headers = [
+    'Candidate',
+    'callCount stdev', 'callCount minMaxGap', 'callCount Gini',
+    'totalCallPoints stdev', 'totalCallPoints minMaxGap', 'totalCallPoints Gini',
+  ];
+
+  sheet.getRange(startRow, 1, 1, headers.length).merge()
     .setValue('Equity scalars (Tier 3; lower stdev / minMaxGap / Gini = more equitable)')
     .setFontWeight('bold')
     .setBackground(_AR_COLORS_.sectionBg);
   startRow++;
 
-  var headers = [
-    'Candidate',
-    'callCount stdev', 'callCount minMaxGap', 'callCount Gini',
-    'weekendCallCount stdev', 'weekendCallCount minMaxGap', 'weekendCallCount Gini',
-    'cumulativeCallPoints stdev', 'cumulativeCallPoints minMaxGap', 'cumulativeCallPoints Gini',
-  ];
   sheet.getRange(startRow, 1, 1, headers.length).setValues([headers])
     .setFontWeight('bold').setBackground(_AR_COLORS_.headerRowBg);
   startRow++;
@@ -552,12 +584,10 @@ function _ar_writeEquityScalars_(sheet, output, startRow) {
     var cand = candidates[i];
     var eq = perCandEquity[cand.candidateId] || perCandEquity[String(cand.candidateId)] || {};
     var cc = eq.callCount || {};
-    var wc = eq.weekendCallCount || {};
-    var cp = eq.cumulativeCallPoints || {};
+    var cp = eq.totalCallPoints || {};
     var rowVals = [
       'Candidate ' + cand.candidateId + (cand.recommended ? ' ★' : ''),
       _ar_fmtNumber_(cc.stdev), _ar_fmtNumber_(cc.minMaxGap), _ar_fmtNumber_(cc.gini),
-      _ar_fmtNumber_(wc.stdev), _ar_fmtNumber_(wc.minMaxGap), _ar_fmtNumber_(wc.gini),
       _ar_fmtNumber_(cp.stdev), _ar_fmtNumber_(cp.minMaxGap), _ar_fmtNumber_(cp.gini),
     ];
     sheet.getRange(startRow + i, 1, 1, rowVals.length).setValues([rowVals]);
@@ -670,7 +700,7 @@ function _ar_attachRendererFooter_(sheet, output, kind, rank) {
     ['sourceSpreadsheetId', String(output.source.sourceSpreadsheetId || '')],
     ['sourceTabName', String(output.source.sourceTabName || '')],
     ['analysis_contract.contractVersion', String(output.contractVersion)],
-    ['analysis_renderer_contract.contractVersion', '1'],
+    ['analysis_renderer_contract.contractVersion', '2'],
   ];
   for (var i = 0; i < fields.length; i++) {
     sheet.getRange(footerRow + i, 1).setValue(fields[i][0])
@@ -693,7 +723,7 @@ function _ar_attachRendererMetadata_(sheet, output, kind, candidateId) {
   sheet.addDeveloperMetadata(
     'analysis_contract.contractVersion', String(output.contractVersion));
   sheet.addDeveloperMetadata(
-    'analysis_renderer_contract.contractVersion', '1');
+    'analysis_renderer_contract.contractVersion', '2');
 }
 
 // --- protection (mirrors writeback's _protectWritebackTab_) ----------------

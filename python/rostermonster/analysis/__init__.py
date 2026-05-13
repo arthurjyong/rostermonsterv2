@@ -6,7 +6,7 @@ generatedAt, analysisConfig=None) → AnalyzerOutput`.
 Pure-function reference implementation per §6 + §15. Reads three input
 files (full Snapshot JSON + wrapper envelope + `candidates_full.json`),
 emits one `AnalyzerOutput` JSON. Solver-agnostic by contract per §12;
-parser-overlay reuse for `cumulativeCallPoints` per §10.6 + §17.
+parser-overlay reuse for `totalCallPoints` per §10.6 v2 + §17.
 """
 
 from __future__ import annotations
@@ -173,6 +173,7 @@ def analyze(
     component_breakdowns = build_component_breakdowns(selected, scoring_config)
 
     # Tiers 2 + 5: per-doctor aggregates per candidate.
+    # `normalized_model` passed for v2 group + CR lookups per D-0073.
     per_doctor_aggregates_list: list[dict[str, Any]] = []
     for cand in selected:
         per_doctor_aggregates_list.append(
@@ -182,6 +183,7 @@ def analyze(
                 slot_kind,
                 sorted_date_keys,
                 doctor_ids,
+                normalized_model,
             )
         )
 

@@ -2,12 +2,14 @@
 + §13.
 
 Tier 1: per-component score decomposition (`ComponentBreakdown`).
-Tier 2: per-doctor equity (`PerDoctorAggregates`) — call/standby/weekend
-counts, `cumulativeCallPoints` via parser-overlay reuse, max consecutive
-days off.
-Tier 3: equity scalars (`EquityScalars`) — stdev, min-max gap, Gini
-across the doctor population for callCount/weekendCallCount/
-cumulativeCallPoints.
+Tier 2 (v2 per D-0073): per-doctor equity (`PerDoctorAggregates`) —
+group classification, CALL/STANDBY counts, `totalCallPoints` via
+parser-overlay reuse, average call points per call, three call-gap
+metrics (shortest/second-shortest/longest, scorer-stride convention),
+CR fulfilled/unfulfilled counts.
+Tier 3 (v2 per D-0073): equity scalars (`EquityScalars`) — stdev,
+min-max gap, Gini across the doctor population for callCount and
+totalCallPoints (dropped weekendCallCount in v2).
 Tier 4: hot/locked days (per-day disagreement count + locked-day
 inverse).
 Tier 5: pairwise Hamming distance over `(dateKey, slotType, unitIndex)`
@@ -32,24 +34,13 @@ from rostermonster.analysis.output import (
     LockedDayEntry,
     PerDoctorAggregates,
 )
-from rostermonster.domain import NormalizedModel
+from rostermonster.domain import CanonicalRequestClass, NormalizedModel
 from rostermonster.scorer.result import ScoringConfig
 
 # `slotKind` values per `docs/template_artifact_contract.md` / domain
 # §7.6.
 SLOT_KIND_CALL = "CALL"
 SLOT_KIND_STANDBY = "STANDBY"
-
-
-def _is_weekend(date_key: str) -> bool:
-    """Saturday + Sunday classification per §10.6 weekend-day source.
-
-    Mirrors `parser/scoring_overlay._is_weekend` — Singapore-cultural
-    Saturday/Sunday weekend, no public-holiday calendar wired in v1.
-    `date_key` is ISO-format per `docs/decision_log.md` D-0033 + the
-    pipeline-side `date.fromisoformat` consumers.
-    """
-    return date.fromisoformat(date_key).weekday() in (5, 6)
 
 
 def _slot_kind_map(model: NormalizedModel) -> dict[str, str]:
@@ -170,28 +161,63 @@ def build_component_breakdowns(
     return out
 
 
-def _max_consecutive_days_off(
-    candidate_assignments: list[dict[str, Any]],
-    doctor_id: str,
-    sorted_date_keys: list[str],
-) -> int:
-    """Longest run of consecutive `dayRecords` with no assignment to
-    `doctor_id`. Per §10.6 `maxConsecutiveDaysOff`.
+def _call_date_gaps(call_dates: list[str]) -> tuple[int | None, int | None, int | None]:
+    """Return (shortest, second-shortest, longest) stride-day gap between
+    consecutive CALL dates for one doctor, per §10.6 (v2).
+
+    Gap definition matches the scorer's `spacingPenalty` semantics
+    (`scorer/components.py:189`): `(date_next - date_prev).days`. Mon→Wed
+    = 2 (NOT 1) so an operator can cross-reference the scorer's
+    `weight / 2^(gap-2)` curve directly.
+
+    Returns `(None, None, None)` when callCount < 2 (no gap defined).
+    Second-shortest is `None` when callCount < 3 (only one gap exists).
     """
-    days_with_doctor: set[str] = {
-        a["dateKey"] for a in candidate_assignments
-        if a.get("doctorId") == doctor_id
+    if len(call_dates) < 2:
+        return None, None, None
+    sorted_dates = sorted(date.fromisoformat(dk) for dk in call_dates)
+    strides = [
+        (sorted_dates[i + 1] - sorted_dates[i]).days
+        for i in range(len(sorted_dates) - 1)
+    ]
+    shortest = min(strides)
+    longest = max(strides)
+    if len(strides) < 2:
+        second_shortest: int | None = None
+    else:
+        second_shortest = sorted(strides)[1]
+    return shortest, second_shortest, longest
+
+
+def _per_doctor_cr_counts(
+    candidate_assignments: list[dict[str, Any]],
+    slot_kind: dict[str, str],
+    model: NormalizedModel,
+) -> dict[str, tuple[int, int]]:
+    """Return `{doctorId: (fulfilled, unfulfilled)}` per §10.6 (v2).
+
+    A CR is "fulfilled" when the candidate assigns the requesting doctor
+    to ANY call-kind slot on the request's `dateKey`. Mirrors the scorer
+    `cr_reward` definition (`scorer/components.py:240-261`) so the
+    analyzer's per-doctor count is bit-identical to the rationale behind
+    the scorer's `crReward` component contribution.
+    """
+    on_call: set[tuple[str, str]] = {
+        (a["doctorId"], a["dateKey"])
+        for a in candidate_assignments
+        if a.get("doctorId") is not None
+        and slot_kind.get(a["slotType"]) == SLOT_KIND_CALL
     }
-    longest = 0
-    running = 0
-    for dk in sorted_date_keys:
-        if dk in days_with_doctor:
-            running = 0
+    out: dict[str, list[int]] = {}
+    for req in model.requests:
+        if CanonicalRequestClass.CR not in req.canonicalClasses:
+            continue
+        bucket = out.setdefault(req.doctorId, [0, 0])
+        if (req.doctorId, req.dateKey) in on_call:
+            bucket[0] += 1
         else:
-            running += 1
-            if running > longest:
-                longest = running
-    return longest
+            bucket[1] += 1
+    return {k: (v[0], v[1]) for k, v in out.items()}
 
 
 def build_per_doctor_aggregates(
@@ -200,11 +226,22 @@ def build_per_doctor_aggregates(
     slot_kind: dict[str, str],
     sorted_date_keys: list[str],
     doctor_ids: list[str],
+    model: NormalizedModel,
 ) -> dict[str, PerDoctorAggregates]:
-    """Tier 2 per-doctor equity per §10.6 for one candidate."""
+    """Tier 2 per-doctor equity per §10.6 (v2) for one candidate.
+
+    v2 signature adds `model: NormalizedModel` (required for groupId
+    classification + CR record traversal). `sorted_date_keys` kept for
+    compatibility with caller's signature; not used in v2 (max-
+    consecutive-days-off was dropped per D-0073).
+    """
+    _ = sorted_date_keys  # retained for callsite back-compat (unused in v2)
     assignments = candidate.get("assignments", [])
+    # Pre-resolve doctor group from the normalized model; admission per
+    # §10.0 guarantees every doctor in the snapshot is in `model.doctors`.
+    group_by_doctor: dict[str, str] = {d.doctorId: d.groupId for d in model.doctors}
     by_doctor: dict[str, dict[str, Any]] = {
-        d: {"call": 0, "standby": 0, "weekend_call": 0, "points": 0.0}
+        d: {"call": 0, "standby": 0, "points": 0.0, "call_dates": []}
         for d in doctor_ids
     }
     for a in assignments:
@@ -223,8 +260,7 @@ def build_per_doctor_aggregates(
         date_key = a["dateKey"]
         if kind == SLOT_KIND_CALL:
             by_doctor[doctor_id]["call"] += 1
-            if _is_weekend(date_key):
-                by_doctor[doctor_id]["weekend_call"] += 1
+            by_doctor[doctor_id]["call_dates"].append(date_key)
             point_weight = scoring_config.pointRules.get(
                 (slot_type, date_key)
             )
@@ -241,17 +277,31 @@ def build_per_doctor_aggregates(
             by_doctor[doctor_id]["standby"] += 1
         # Other slot kinds (none in first release) are ignored.
 
+    cr_counts = _per_doctor_cr_counts(assignments, slot_kind, model)
+
     out: dict[str, PerDoctorAggregates] = {}
     for d in doctor_ids:
         stats = by_doctor[d]
+        call_count = int(stats["call"])
+        total_points = float(stats["points"])
+        shortest_gap, second_shortest_gap, longest_gap = _call_date_gaps(
+            stats["call_dates"]
+        )
+        avg_points: float | None = (
+            total_points / call_count if call_count > 0 else None
+        )
+        cr_fulfilled, cr_unfulfilled = cr_counts.get(d, (0, 0))
         out[d] = PerDoctorAggregates(
-            callCount=int(stats["call"]),
+            group=group_by_doctor[d],
+            callCount=call_count,
             standbyCount=int(stats["standby"]),
-            weekendCallCount=int(stats["weekend_call"]),
-            cumulativeCallPoints=float(stats["points"]),
-            maxConsecutiveDaysOff=_max_consecutive_days_off(
-                assignments, d, sorted_date_keys
-            ),
+            totalCallPoints=total_points,
+            averageCallPointsPerCall=avg_points,
+            shortestCallGap=shortest_gap,
+            secondShortestCallGap=second_shortest_gap,
+            longestCallGap=longest_gap,
+            callRequestsFulfilled=cr_fulfilled,
+            callRequestsUnfulfilled=cr_unfulfilled,
         )
     return out
 
@@ -259,14 +309,16 @@ def build_per_doctor_aggregates(
 def build_equity_scalars(
     per_doctor: dict[str, PerDoctorAggregates],
 ) -> EquityScalars:
-    """Tier 3 per-candidate equity scalars per §10.8."""
+    """Tier 3 per-candidate equity scalars per §10.8 (v2).
+
+    v2 drops `weekendCallCount` block (PerDoctorAggregates field dropped)
+    and renames `cumulativeCallPoints` → `totalCallPoints` per D-0073.
+    """
     call_counts = [float(a.callCount) for a in per_doctor.values()]
-    weekend_counts = [float(a.weekendCallCount) for a in per_doctor.values()]
-    cumulative_points = [float(a.cumulativeCallPoints) for a in per_doctor.values()]
+    total_points = [float(a.totalCallPoints) for a in per_doctor.values()]
     return EquityScalars(
         callCount=_stat_block(call_counts),
-        weekendCallCount=_stat_block(weekend_counts),
-        cumulativeCallPoints=_stat_block(cumulative_points),
+        totalCallPoints=_stat_block(total_points),
     )
 
 

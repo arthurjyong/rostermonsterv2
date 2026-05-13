@@ -14,7 +14,14 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 # Contract version per `docs/analysis_contract.md` §2.
-ANALYSIS_CONTRACT_VERSION = 1
+# v1 → v2 bump per D-0073: §10.6 PerDoctorAggregates v2 (dropped
+# `weekendCallCount` + `maxConsecutiveDaysOff`; renamed
+# `cumulativeCallPoints` → `totalCallPoints`; added 7 new fields)
+# + §10.8 EquityScalars v2 in lockstep (dropped `weekendCallCount`,
+# renamed `cumulativeCallPoints` → `totalCallPoints`). v1-targeted
+# readers WILL NOT parse v2 output correctly because field removals
+# are not tolerance-additive per §14 — hence the version bump.
+ANALYSIS_CONTRACT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -37,19 +44,45 @@ class ComponentBreakdown:
 
 @dataclass(frozen=True)
 class PerDoctorAggregates:
-    """Tier 2 per-doctor equity per §10.6.
+    """Tier 2 per-doctor equity per §10.6 (v2).
 
-    `cumulativeCallPoints` is computed against the post-overlay scoring
+    v2 changes vs v1 (per D-0073):
+    - DROPPED `weekendCallCount` (Sat+Sun only with no PH support was
+      operator-misleading; defer holistic weekend/PH parity to FW-0031).
+    - DROPPED `maxConsecutiveDaysOff` (counted any day without
+      CALL/STANDBY as "off", but doctors still round on non-call days —
+      operator-misleading).
+    - RENAMED `cumulativeCallPoints` → `totalCallPoints` for label clarity.
+    - ADDED `group`: parser-canonical group classification.
+    - ADDED `averageCallPointsPerCall`: totalCallPoints / callCount;
+      null when callCount == 0.
+    - ADDED `shortestCallGap`, `secondShortestCallGap`, `longestCallGap`:
+      stride-day gaps between consecutive CALL dates (aligned with the
+      scorer's `spacingPenalty` gap definition: `(date_next -
+      date_prev).days`, so Mon→Wed = 2). Null when undefined (gap fields
+      require ≥2 calls; second-shortest requires ≥3 calls).
+    - ADDED `callRequestsFulfilled` / `callRequestsUnfulfilled`: per-
+      doctor counts of CR records (from snapshot.requestRecords →
+      normalizedModel.requests with `CanonicalRequestClass.CR`) where
+      the candidate assigned this doctor to any call slot on the request
+      date (= "honored" per scorer/components.py:240).
+
+    `totalCallPoints` is computed against the post-overlay scoring
     config per §10.6 call-point source note (parser overlay reuse).
-    Public-holiday metrics omitted in v1 per §10.6 PH-deferral note —
-    parked as FW-0031.
+    Public-holiday metrics still omitted in v1 + v2 per §10.6 PH-
+    deferral note — parked as FW-0031.
     """
 
+    group: str
     callCount: int
     standbyCount: int
-    weekendCallCount: int
-    cumulativeCallPoints: float
-    maxConsecutiveDaysOff: int
+    totalCallPoints: float
+    averageCallPointsPerCall: float | None
+    shortestCallGap: int | None
+    secondShortestCallGap: int | None
+    longestCallGap: int | None
+    callRequestsFulfilled: int
+    callRequestsUnfulfilled: int
 
 
 @dataclass(frozen=True)
@@ -106,15 +139,19 @@ class TopKResult:
 
 @dataclass(frozen=True)
 class EquityScalars:
-    """Tier 3 per-candidate fairness rollups per §10.8.
+    """Tier 3 per-candidate fairness rollups per §10.8 (v2).
 
-    Public-holiday equity scalars omitted in v1 in lockstep with the
-    Tier 2 PH-field deferral.
+    v2 changes (per D-0073, in lockstep with §10.6 PerDoctorAggregates):
+    - DROPPED `weekendCallCount` (corresponding `PerDoctorAggregates`
+      field dropped).
+    - RENAMED `cumulativeCallPoints` → `totalCallPoints`.
+
+    Public-holiday equity scalars still omitted in v1 + v2 in lockstep
+    with the Tier 2 PH-field deferral.
     """
 
     callCount: dict[str, float]
-    weekendCallCount: dict[str, float]
-    cumulativeCallPoints: dict[str, float]
+    totalCallPoints: dict[str, float]
 
 
 @dataclass(frozen=True)
@@ -168,11 +205,11 @@ class AnalyzerSource:
 class AnalyzerOutput:
     """Top-level analyzer output per §10.
 
-    `contractVersion` is pinned at v1 per §2. `generatedAt` is ride-
-    through from the §9 input #5 caller-supplied timestamp; analyzer
-    MUST NOT call `datetime.now()` per §15. `doctorIdMap` is analyzer-
-    constructed per §10.0 mapping rule (NOT a passthrough of
-    `envelope.doctorIdMap` which is a list-of-records).
+    `contractVersion` is pinned at v2 per §2 (bumped 1 → 2 per D-0073).
+    `generatedAt` is ride-through from the §9 input #5 caller-supplied
+    timestamp; analyzer MUST NOT call `datetime.now()` per §15.
+    `doctorIdMap` is analyzer-constructed per §10.0 mapping rule (NOT a
+    passthrough of `envelope.doctorIdMap` which is a list-of-records).
     """
 
     contractVersion: int

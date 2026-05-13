@@ -31,8 +31,8 @@ from rostermonster.analysis.admission import (  # noqa: E402
     validate_top_k,
 )
 from rostermonster.analysis.aggregates import (  # noqa: E402
+    _call_date_gaps,
     _gini,
-    _is_weekend,
     build_hot_and_locked_days,
     build_pairwise_hamming,
 )
@@ -487,13 +487,39 @@ def test_select_top_k_rejects_missing_pbg_component() -> None:
                    match="pointBalanceGlobal")
 
 
-# -- aggregates: weekend classification --
+# -- aggregates: call-date gaps (D-0073 v2) --
 
-def test_is_weekend_saturday_sunday() -> None:
-    assert _is_weekend("2026-05-02")  # Saturday
-    assert _is_weekend("2026-05-03")  # Sunday
-    assert not _is_weekend("2026-05-04")  # Monday
-    assert not _is_weekend("2026-05-08")  # Friday
+def test_call_date_gaps_none_when_under_two_calls() -> None:
+    assert _call_date_gaps([]) == (None, None, None)
+    assert _call_date_gaps(["2026-05-02"]) == (None, None, None)
+
+
+def test_call_date_gaps_two_calls_only_shortest_and_longest() -> None:
+    # Mon → Wed = stride 2 (scorer-aligned gap definition per §10.6 v2).
+    shortest, second, longest = _call_date_gaps(["2026-05-04", "2026-05-06"])
+    assert shortest == 2
+    assert second is None  # only one gap exists
+    assert longest == 2
+
+
+def test_call_date_gaps_three_calls_all_three_defined() -> None:
+    # Mon → Wed (gap 2) → Sun (gap 4). Mon→Wed gap=2, Wed→Sun gap=4.
+    shortest, second, longest = _call_date_gaps(
+        ["2026-05-04", "2026-05-06", "2026-05-10"]
+    )
+    assert shortest == 2
+    assert second == 4
+    assert longest == 4
+
+
+def test_call_date_gaps_unsorted_input_normalized() -> None:
+    # Input order shouldn't matter — helper sorts internally.
+    shortest, second, longest = _call_date_gaps(
+        ["2026-05-10", "2026-05-04", "2026-05-06"]
+    )
+    assert shortest == 2
+    assert second == 4
+    assert longest == 4
 
 
 # -- aggregates: gini --
@@ -629,7 +655,9 @@ def test_render_analyzer_output_emits_trailing_newline() -> None:
     text = render_analyzer_output_json(output)
     assert text.endswith("\n")
     payload = json.loads(text)
-    assert payload["contractVersion"] == 1
+    # contractVersion bumped 1 → 2 per D-0073 (§10.6 PerDoctorAggregates
+    # v2 + §10.8 EquityScalars v2).
+    assert payload["contractVersion"] == 2
     assert payload["generatedAt"] == "2026-05-04T10:00:00Z"
 
 
