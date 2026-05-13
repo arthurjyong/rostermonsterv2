@@ -87,7 +87,7 @@ This contract does **not** govern:
 Renderer invocations are evaluated against the following inputs:
 
 1. **`output`** — an `AnalyzerOutput` object per `docs/analysis_contract.md` §10. Required top-level fields the renderer consumes:
-   - `contractVersion` — MUST equal `1`; future versions that change `AnalyzerOutput` shape MAY require a renderer bump per §18.
+   - `contractVersion` — MUST equal `2` (v2 hard cut per D-0073; pre-D-0073 v1 outputs are not accepted — see §9.1 admission + §16 `INVALID_INPUT_VERSION`); future versions that change `AnalyzerOutput` shape MAY require a renderer bump per §18.
    - `source.sourceSpreadsheetId` — the target spreadsheet ID the renderer opens via `SpreadsheetApp.openById(...)` per §11.
    - `source.runId` — embedded into tab traceability footers per §13.
    - `topK.requested`, `topK.returned`, `topK.candidates[]` — drives the K roster tabs (one per candidate, in `rankByTotalScore` order). Empty `candidates[]` is fail-loud per §16.
@@ -99,7 +99,7 @@ The renderer MUST NOT consume any field outside `AnalyzerOutput`. No environment
 
 ### 9.1 Admission checks (fail-loud)
 Mirroring the parser/normalizer + analyzer admission discipline (`docs/decision_log.md` D-0038, `docs/analysis_contract.md` §9.5), the renderer MUST fail-loud on:
-- `output.contractVersion != 1` — version mismatch; renderer cannot consume future shapes without an update.
+- `output.contractVersion != 2` — version mismatch; renderer cannot consume v1 (pre-D-0073) or future shapes without an update.
 - Missing `output.source.sourceSpreadsheetId` — cannot open target spreadsheet.
 - `output.topK.candidates` empty or missing — nothing to render; signals upstream defect.
 - `SpreadsheetApp.openById(...)` raises (missing spreadsheet, permissions denied, or operator's launcher OAuth scope insufficient — though manifest scope per `docs/decision_log.md` D-0051 sub-3a should cover this) — surface the error verbatim in the structured failure return.
@@ -229,7 +229,7 @@ On any admission failure (§9.1) or render-time exception, the renderer returns:
 `newTabIds` + `newTabNames` carry the tabs that WERE successfully written before failure (best-effort partial-state surface per §14). `spreadsheetUrl` follows §10.2 presence rules — present on `RENDER_EXCEPTION` failures (the spreadsheet was opened before mid-render failure, so the URL is reachable for partial-state inspection); absent or `null` on early-admission failures (`INVALID_INPUT_VERSION` / `MISSING_SOURCE_SPREADSHEET_ID` / `EMPTY_TOPK` / `OPEN_BY_ID_FAILED`).
 
 `error.code` enumerates known failure modes:
-- `INVALID_INPUT_VERSION` — `output.contractVersion != 1`.
+- `INVALID_INPUT_VERSION` — `output.contractVersion != 2` (v2 hard cut per D-0073; pre-D-0073 v1 outputs are NOT accepted because the v2 per-doctor block expects fields not present in v1 and the v1 fields `weekendCallCount` + `maxConsecutiveDaysOff` were dropped).
 - `MISSING_SOURCE_SPREADSHEET_ID` — admission §9.1.
 - `EMPTY_TOPK` — admission §9.1.
 - `OPEN_BY_ID_FAILED` — `SpreadsheetApp.openById()` raised; message carries the underlying reason (permissions, missing, etc.).
@@ -247,15 +247,15 @@ Proposed in this checkpoint (normative):
 ## 18) Schema versioning
 Proposed in this checkpoint (normative):
 
-`contractVersion: 1` per §2.
+`contractVersion: 2` per §2 (bumped from v1 per D-0073 — see §2.1 v2 history entry).
 
 Bump rule:
-- bump `contractVersion` only when tab shape, tab-naming convention, target-spreadsheet behavior, or `AnalysisRendererResult` shape change in a way that breaks v1-targeted callers (i.e., the launcher's Web App route).
-- additive changes a v1 caller can tolerate (additional optional fields on `AnalysisRendererResult`, additional sub-blocks within tab content that don't shift positional cells) do NOT require a bump.
+- bump `contractVersion` only when tab shape, tab-naming convention, target-spreadsheet behavior, or `AnalysisRendererResult` shape change in a way that breaks targeted callers (i.e., the launcher's Web App route).
+- additive changes a caller can tolerate (additional optional fields on `AnalysisRendererResult`, additional sub-blocks within tab content that don't shift positional cells) do NOT require a bump.
 - removing or renaming fields, changing tab-naming convention, or changing target-spreadsheet behavior (e.g., switching to a separate Drive-created spreadsheet) does require a bump.
 
 ## 19) Consistency with adjacent contracts
-- **Upstream analyzer** (`docs/analysis_contract.md`): the renderer reads `AnalyzerOutput` per §10. v1 of this contract is compatible with `analysis_contract.md` `contractVersion: 1`. Future analyzer bumps that alter `AnalyzerOutput` shape MAY trigger renderer bumps.
+- **Upstream analyzer** (`docs/analysis_contract.md`): the renderer reads `AnalyzerOutput` per §10. v2 of this contract is compatible with `analysis_contract.md` `contractVersion: 2` (hard cut per D-0073 — see §2.1 v2 history). Future analyzer bumps that alter `AnalyzerOutput` shape MAY trigger renderer bumps in lockstep.
 - **Sibling writeback** (`docs/writeback_contract.md`): the renderer co-exists with writeback's tab in the source spreadsheet (§11.1) and reuses writeback's formatting helpers (§13.1). Both libraries live in the central library per `docs/decision_log.md` D-0052.
 - **Upstream selector** (`docs/selector_contract.md`): unaffected; renderer does not consume the FULL sidecar or `FinalResultEnvelope` directly.
 - **Upstream snapshot** (`docs/snapshot_contract.md`): unaffected; renderer does not consume the snapshot.
