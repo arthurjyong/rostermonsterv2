@@ -34,16 +34,26 @@ function menuExtractSnapshot_() {
 }
 
 // Multi-click guard: per-spreadsheet in-flight lock stored as a timestamp
-// (ms since epoch) on DocumentProperties. Set just before we commit to the
-// slow extract+POST path; cleared in `menuSolveRoster_`'s try/finally so
-// the lock auto-releases on success, cloud-error, AND uncaught exception.
-// The TTL is a safety net for the Apps-Script-crashed-mid-flow case where
-// the finally block doesn't run (process killed); a fresh click after the
-// TTL clears the stale lock and proceeds. TTL is set to 60s — comfortably
-// longer than the worst observed click-to-prompt waterfall (~19s cold path
-// + headroom for cloud RTT variance).
+// (ms since epoch) on DocumentProperties. Set inside `_quickValidate_`
+// (under a LockService doc lock so check-and-set is atomic across racing
+// executions per Codex P2 round 1 finding); cleared in `menuSolveRoster_`'s
+// try/finally so the lock auto-releases on success, cloud-error, AND
+// uncaught exception. The TTL is a safety net for the Apps-Script-crashed-
+// mid-flow case where the finally block doesn't run (process killed); a
+// fresh click after the TTL clears the stale lock and proceeds. TTL is
+// set to 60s — comfortably longer than the worst observed click-to-prompt
+// waterfall (~19s cold path + headroom for cloud RTT variance).
 var _RM_INFLIGHT_LOCK_KEY = 'rm_solve_inflight_ts_ms';
 var _RM_INFLIGHT_LOCK_TTL_MS = 60 * 1000;
+// `LockService.getDocumentLock().tryLock(N)` waits up to N ms to acquire
+// the doc-scoped concurrency lock. The lock spans only the check-and-set
+// window inside `_quickValidate_` (typical ~50-200ms total — one metadata
+// finder + a few property reads), so 500ms is comfortably above the
+// expected hold time but below the threshold where a racing user would
+// notice the wait. If acquisition fails, the racing click gets a clear
+// "another execution is racing this one" alert — fail fast rather than
+// stack arbitrary numbers of waiting executions.
+var _RM_DOC_LOCK_ACQUIRE_TIMEOUT_MS = 500;
 
 // "Solve Roster" menu handler per `docs/decision_log.md` D-0049 +
 // `docs/cloud_compute_contract.md`. Synchronously orchestrates the
@@ -52,10 +62,13 @@ var _RM_INFLIGHT_LOCK_TTL_MS = 60 * 1000;
 //   1. Pre-flight validation (`_quickValidate_`) — cheap click-time
 //      checks that catch the most common operator mistakes (wrong tab,
 //      missing config, in-flight re-click) BEFORE the ~14s extract.
+//      On success, atomically sets the in-flight timestamp guard
+//      under a LockService doc lock; that guard stays set for the
+//      duration of the slow path and is cleared in the finally block.
 //   2. Show "Initializing snapshot" toast — narrates the slow extract
 //      so the operator knows the click registered and roughly how long
 //      to expect. Toast stays visible until the terminal modal replaces
-//      it; the in-flight lock is set at the same time.
+//      it.
 //   3. Extract snapshot in-memory via RMLib (no file boundary).
 //   4. POST snapshot to Cloud Run /compute endpoint with an OIDC token
 //      from `ScriptApp.getIdentityToken()` per D-0051 sub-decision 2.
@@ -85,11 +98,10 @@ function menuSolveRoster_() {
     return;
   }
 
-  // Step 2: acquire the in-flight lock + show the "Initializing" toast.
-  // From here on we're committed to the slow path; lock release happens
-  // in the finally block below.
-  PropertiesService.getDocumentProperties().setProperty(
-    _RM_INFLIGHT_LOCK_KEY, String(Date.now()));
+  // Step 2: show the "Initializing" toast. The in-flight lock has already
+  // been set inside `_quickValidate_` (atomically with the check, under a
+  // LockService doc lock per Codex P2 round 1 finding); lock release
+  // happens in the finally block below.
   SpreadsheetApp.getActiveSpreadsheet().toast(
     'Initializing snapshot — please wait up to 1 minute for the next prompt.',
     'Roster Monster',
@@ -130,70 +142,96 @@ function menuSolveRoster_() {
 // scorer-config drift) requires the slow path's full sweep — the toast
 // covers the wait so the operator knows we're working.
 function _quickValidate_() {
-  // Check 1: in-flight lock. If a previous click is still mid-flow on
-  // this spreadsheet (within the TTL), reject immediately so the
-  // operator doesn't kick off a duplicate extract.
-  var props = PropertiesService.getDocumentProperties();
-  var inFlightTsStr = props.getProperty(_RM_INFLIGHT_LOCK_KEY);
-  if (inFlightTsStr) {
-    var elapsed = Date.now() - parseInt(inFlightTsStr, 10);
-    if (elapsed >= 0 && elapsed < _RM_INFLIGHT_LOCK_TTL_MS) {
-      return { ok: false, error:
-        'A previous Solve Roster click is still in progress on this ' +
-        'spreadsheet (started ' + Math.ceil(elapsed / 1000) + 's ago). ' +
-        'Wait for the prompt — or, if you already saw the "Initializing ' +
-        'snapshot" toast and dismissed the result, wait for the email.' };
+  // Acquire the doc-scoped LockService lock so the in-flight timestamp
+  // check-and-set is atomic across racing executions (two operators on
+  // the same sheet, or two rapid Apps Script invocations from the same
+  // operator). Without this, the original implementation had a TOCTOU
+  // window between getProperty and setProperty during which a second
+  // execution could pass the check + both would set the timestamp +
+  // both would race into Cloud Run submission. Per Codex P2 round 1
+  // finding on PR #170. Lock spans only the check-and-set window inside
+  // this function (typical ~50-200ms — one metadata finder dominates);
+  // released via try/finally before this function returns. The much
+  // longer in-flight TIMESTAMP guard (held for the whole 14s extract)
+  // is the actual multi-click block; the LockService lock just makes
+  // its acquisition atomic.
+  var docLock = LockService.getDocumentLock();
+  if (!docLock.tryLock(_RM_DOC_LOCK_ACQUIRE_TIMEOUT_MS)) {
+    return { ok: false, error:
+      'Could not acquire the document lock to start Solve Roster — ' +
+      'another execution is racing this one. Wait a moment and try again.' };
+  }
+  try {
+    // Check 1: in-flight lock. If a previous click is still mid-flow on
+    // this spreadsheet (within the TTL), reject immediately so the
+    // operator doesn't kick off a duplicate extract.
+    var props = PropertiesService.getDocumentProperties();
+    var inFlightTsStr = props.getProperty(_RM_INFLIGHT_LOCK_KEY);
+    if (inFlightTsStr) {
+      var elapsed = Date.now() - parseInt(inFlightTsStr, 10);
+      if (elapsed >= 0 && elapsed < _RM_INFLIGHT_LOCK_TTL_MS) {
+        return { ok: false, error:
+          'A previous Solve Roster click is still in progress on this ' +
+          'spreadsheet (started ' + Math.ceil(elapsed / 1000) + 's ago). ' +
+          'Wait for the prompt — or, if you already saw the "Initializing ' +
+          'snapshot" toast and dismissed the result, wait for the email.' };
+      }
+      // Stale lock (>TTL or clock-skew negative) — clear and proceed.
+      // Crash-recovery path: covers the case where a prior `menuSolveRoster_`
+      // was killed before its finally block ran.
+      props.deleteProperty(_RM_INFLIGHT_LOCK_KEY);
     }
-    // Stale lock (>TTL or clock-skew negative) — clear and proceed.
-    // Crash-recovery path: covers the case where a prior `menuSolveRoster_`
-    // was killed before its finally block ran.
-    props.deleteProperty(_RM_INFLIGHT_LOCK_KEY);
-  }
 
-  // Check 2: Cloud Run URL configured on the central library. Same check
-  // _solveRoster_ does internally — surfacing it here means the operator
-  // gets a clear CONFIG_ERROR alert at click time instead of waiting ~14s
-  // for the extract before the same error fires.
-  var cloudUrl = RMLib.getCloudRunUrl();
-  if (!cloudUrl) {
-    return { ok: false, error:
-      'CONFIG_ERROR: Cloud Run URL not configured. The maintainer needs ' +
-      'to set the CLOUD_RUN_URL Script Property on the Roster Monster ' +
-      'Central Library Apps Script project.' };
-  }
+    // Check 2: Cloud Run URL configured on the central library. Same check
+    // _solveRoster_ does internally — surfacing it here means the operator
+    // gets a clear CONFIG_ERROR alert at click time instead of waiting ~14s
+    // for the extract before the same error fires.
+    var cloudUrl = RMLib.getCloudRunUrl();
+    if (!cloudUrl) {
+      return { ok: false, error:
+        'CONFIG_ERROR: Cloud Run URL not configured. The maintainer needs ' +
+        'to set the CLOUD_RUN_URL Script Property on the Roster Monster ' +
+        'Central Library Apps Script project.' };
+    }
 
-  // Check 3: operator email available. Required for the LAHC async path's
-  // operatorEmail field per `docs/cloud_compute_contract.md` §9.3 (the
-  // Cloud Batch finalizer needs it for the always-email-on-every-outcome
-  // path per §10A.7). Same defense as inside _solveRoster_; pulled forward
-  // to click time.
-  var operatorEmail = Session.getActiveUser().getEmail();
-  if (!operatorEmail) {
-    return { ok: false, error:
-      'OPERATOR_EMAIL_UNAVAILABLE: Could not read your email address. ' +
-      'Re-open the spreadsheet and re-authorize when prompted (verify ' +
-      'the userinfo.email OAuth scope).' };
-  }
+    // Check 3: operator email available. Required for the LAHC async path's
+    // operatorEmail field per `docs/cloud_compute_contract.md` §9.3 (the
+    // Cloud Batch finalizer needs it for the always-email-on-every-outcome
+    // path per §10A.7). Same defense as inside _solveRoster_; pulled forward
+    // to click time.
+    var operatorEmail = Session.getActiveUser().getEmail();
+    if (!operatorEmail) {
+      return { ok: false, error:
+        'OPERATOR_EMAIL_UNAVAILABLE: Could not read your email address. ' +
+        'Re-open the spreadsheet and re-authorize when prompted (verify ' +
+        'the userinfo.email OAuth scope).' };
+    }
 
-  // Check 4: active tab is a request-entry tab. The single most common
-  // operator mistake is clicking Solve Roster from a different tab (e.g.,
-  // a writeback tab from a prior run, or a Scorer Config tab). Without
-  // this preflight, the operator waits ~14s for the extract to fail with
-  // "EXTRACTION_ERROR: not a request-entry tab". One `withKey()` finder
-  // on the active sheet only — does NOT trigger the workbook-wide sweep
-  // that the full extractor does.
-  var activeSheet = SpreadsheetApp.getActiveSheet();
-  var tabTypeMatches = activeSheet.createDeveloperMetadataFinder()
-    .withKey('rosterMonster:tabType').find();
-  if (tabTypeMatches.length !== 1 ||
-      tabTypeMatches[0].getValue() !== 'requestEntry') {
-    return { ok: false, error:
-      'This tab ("' + activeSheet.getName() + '") is not a request-entry ' +
-      'tab. Open the period\'s request-entry tab (usually named like ' +
-      '"<Section> Requests <month>") and click Solve Roster from there.' };
-  }
+    // Check 4: active tab is a request-entry tab. The single most common
+    // operator mistake is clicking Solve Roster from a different tab (e.g.,
+    // a writeback tab from a prior run, or a Scorer Config tab). Without
+    // this preflight, the operator waits ~14s for the extract to fail with
+    // "EXTRACTION_ERROR: not a request-entry tab". One `withKey()` finder
+    // on the active sheet only — does NOT trigger the workbook-wide sweep
+    // that the full extractor does.
+    var activeSheet = SpreadsheetApp.getActiveSheet();
+    var tabTypeMatches = activeSheet.createDeveloperMetadataFinder()
+      .withKey('rosterMonster:tabType').find();
+    if (tabTypeMatches.length !== 1 ||
+        tabTypeMatches[0].getValue() !== 'requestEntry') {
+      return { ok: false, error:
+        'This tab ("' + activeSheet.getName() + '") is not a request-entry ' +
+        'tab. Open the period\'s request-entry tab (usually named like ' +
+        '"<Section> Requests <month>") and click Solve Roster from there.' };
+    }
 
-  return { ok: true };
+    // All checks passed — atomically set the in-flight timestamp under
+    // the doc lock so a racing second click sees it on its check.
+    props.setProperty(_RM_INFLIGHT_LOCK_KEY, String(Date.now()));
+    return { ok: true };
+  } finally {
+    docLock.releaseLock();
+  }
 }
 
 // Internal orchestrator. Throws Error on any unrecoverable failure;
