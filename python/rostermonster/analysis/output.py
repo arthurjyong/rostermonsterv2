@@ -62,7 +62,7 @@ class PerDoctorAggregates:
       date_prev).days`, so Mon→Wed = 2). Null when undefined (gap fields
       require ≥2 calls; second-shortest requires ≥3 calls).
     - ADDED `callRequestsFulfilled` / `callRequestsUnfulfilled`: per-
-      doctor counts of CR records (from snapshot.callRequestRecords →
+      doctor counts of CR records (from snapshot.requestRecords →
       normalizedModel.requests with `CanonicalRequestClass.CR`) where
       the candidate assigned this doctor to any call slot on the request
       date (= "honored" per scorer/components.py:240).
@@ -205,11 +205,11 @@ class AnalyzerSource:
 class AnalyzerOutput:
     """Top-level analyzer output per §10.
 
-    `contractVersion` is pinned at v1 per §2. `generatedAt` is ride-
-    through from the §9 input #5 caller-supplied timestamp; analyzer
-    MUST NOT call `datetime.now()` per §15. `doctorIdMap` is analyzer-
-    constructed per §10.0 mapping rule (NOT a passthrough of
-    `envelope.doctorIdMap` which is a list-of-records).
+    `contractVersion` is pinned at v2 per §2 (bumped 1 → 2 per D-0073).
+    `generatedAt` is ride-through from the §9 input #5 caller-supplied
+    timestamp; analyzer MUST NOT call `datetime.now()` per §15.
+    `doctorIdMap` is analyzer-constructed per §10.0 mapping rule (NOT a
+    passthrough of `envelope.doctorIdMap` which is a list-of-records).
     """
 
     contractVersion: int

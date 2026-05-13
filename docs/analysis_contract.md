@@ -97,12 +97,13 @@ This contract does **not** govern:
 Analyzer invocations are evaluated against the following inputs:
 
 1. **`snapshot`** — the full Snapshot JSON the CLI was given as `--snapshot`, conforming to `docs/snapshot_contract.md`. Required top-level fields the analyzer consumes:
-   - `doctorRecords` — for `displayName` resolution and per-doctor iteration.
-   - `dayRecords` — for date iteration; the analyzer derives weekend classification from `rawDateText` per §10.6.
+   - `doctorRecords` — for `displayName` resolution and per-doctor iteration; v2 also reads `Doctor.groupId` (parser-canonical per `docs/domain_model.md` §7.3) for the new §10.6 `group` field.
+   - `dayRecords` — for date iteration.
    - `scoringConfigRecords.callPointRecords` — operator-overridden per-day call-point cells, fed into the parser overlay function (alongside the template — see `metadata.templateId` below) to produce the post-overlay scoring config used in `totalCallPoints` per §10.6 + §13.
+   - **`requestRecords`** (v2 per D-0073) — operator-entered request cells; flow through the parser into `normalizedModel.requests` (each tagged with `canonicalClasses`), and the analyzer iterates the subset with `CanonicalRequestClass.CR` to compute `callRequestsFulfilled` / `callRequestsUnfulfilled` per §10.6 v2. Matches the scorer's `cr_reward` consumption surface in `scorer/components.py:258`. An implementation that ignores `requestRecords` would silently emit zero CR counts for every doctor — fail-loud at parser admission per `docs/parser_normalizer_contract.md` §14 makes this hard to do accidentally, but the field is now load-bearing for v2 analyzer output.
    - `metadata.templateId` and `metadata.templateVersion` — required so the analyzer's parser-overlay reuse (§6 + §10.6) resolves call-point defaults against the **same** template the pipeline used. Without these, a Phase 2 implementation could satisfy §9 while resolving against the wrong template (e.g., a hardcoded default), producing incorrect per-doctor call-point totals whenever blank call-point cells rely on template defaults.
    - `metadata.snapshotId` — consumed at admission only per §9.5 coherence check.
-   Other top-level snapshot fields (`requestRecords`, `prefilledAssignmentRecords`, `metadata.sourceSpreadsheetId`, etc.) are not consumed by the analyzer in v1.
+   Other top-level snapshot fields (`prefilledAssignmentRecords`, `metadata.sourceSpreadsheetId`, etc.) are not consumed by the analyzer in v2.
 2. **`envelope`** — the wrapper envelope produced by the local CLI's `--writeback-ready` flow per `docs/decision_log.md` D-0045. Required top-level fields the analyzer consumes:
    - `finalResultEnvelope` — a `FinalResultEnvelope` per `docs/selector_contract.md` §10 with `retentionMode == "FULL"` (§9.1 below). The analyzer reads `runEnvelope` (for `runId`, `seed`, `sourceSpreadsheetId`, `sourceTabName` ride-through into `AnalyzerOutput.source`) and `result.winnerAssignment` (only as a sanity check; the BEST_ONLY winner is also identifiable as the highest-`totalScore` candidate in the FULL sidecar — see §11.1 for the `recommended` flag derivation that does NOT require parsing `winnerAssignment`).
    - The wrapper envelope's nested `snapshot` sub-object (the writeback-only narrow subset per `docs/writeback_contract.md` §9 — `columnADoctorNames` / `requestCells` / `callPointCells` / `prefilledFixedAssignmentCells` / `outputAssignmentRows` / `shellParameters`) is NOT analyzer input. The analyzer reads the full snapshot (§9 input #1) for the data writeback's narrow subset does not project.
@@ -141,7 +142,7 @@ The analyzer returns a single `AnalyzerOutput` JSON object. Concrete shape:
 
 ```
 AnalyzerOutput {
-  contractVersion: 1
+  contractVersion: 2                           // v1 → v2 per D-0073 (§2.1 history)
   generatedAt: ISO-8601 string                 // ride-through from §9 input #5; caller-supplied
   source: {
     runId: string                              // from envelope.finalResultEnvelope.runEnvelope.runId
@@ -229,7 +230,7 @@ PerDoctorAggregates {
   shortestCallGap: int | null                    // smallest stride-day gap between consecutive CALL dates (Mon→Wed = 2, aligned with scorer/components.py:189 spacingPenalty gap); null when callCount < 2
   secondShortestCallGap: int | null              // second-smallest stride-day gap; null when callCount < 3 (only one gap exists)
   longestCallGap: int | null                     // largest stride-day gap; null when callCount < 2
-  callRequestsFulfilled: int                     // count of CR records (snapshot.callRequestRecords → normalizedModel.requests with CanonicalRequestClass.CR) where the candidate assigned this doctor to any call slot on the request's dateKey (= "honored" per scorer/components.py:240 cr_reward semantics)
+  callRequestsFulfilled: int                     // count of CR records (snapshot.requestRecords → normalizedModel.requests filtered to CanonicalRequestClass.CR) where the candidate assigned this doctor to any call slot on the request's dateKey (= "honored" per scorer/components.py:240 cr_reward semantics)
   callRequestsUnfulfilled: int                   // count of CR records for this doctor NOT honored by the candidate
 }
 ```
@@ -371,7 +372,7 @@ Concrete file-emission decisions live in the M5 C1 implementation slice: the pla
 - **Upstream parser/normalizer** (`docs/parser_normalizer_contract.md`): the analyzer **reuses the parser overlay function** (`python/rostermonster/parser/scoring_overlay.py`, per `docs/parser_normalizer_contract.md` §9 + `docs/decision_log.md` D-0037) to compute the post-overlay scoring config from `snapshot.scoringConfigRecords` + the template; this is module reuse, not contract coupling. The post-overlay `pointRules` weights are the per-day call-point weights `totalCallPoints` (§10.6) consumes. v1 of this contract is compatible with the D-0037 + D-0038 fail-loud-on-missing-keys discipline.
 - **Upstream scorer** (`docs/scorer_contract.md`): the analyzer reads `ScoreResult.components` whose first-release component identifiers are enumerated in §10 / `docs/domain_model.md` §11.2. v1 of this contract is compatible with scorer `contractVersion: 3`. Future scorer changes that alter the component-identifier set or break the `weighted / raw` correspondence MAY trigger an analyzer bump per §14.
 - **Upstream cloud_compute** (`docs/cloud_compute_contract.md`): unaffected; cloud-side FULL retention is `docs/future_work.md` FW-0030 and not in M5 scope.
-- **Downstream renderer** (`docs/analysis_renderer_contract.md`, M5 C2): consumes `AnalyzerOutput` per §10. The renderer's tab layout, formatting, target-spreadsheet behavior, collision policy, and comparison-tab UX live in `analysis_renderer_contract.md` §11 / §12 / §13. v1 of this contract is compatible with `analysis_renderer_contract.md` `contractVersion: 1`.
+- **Downstream renderer** (`docs/analysis_renderer_contract.md`, M5 C2): consumes `AnalyzerOutput` per §10. The renderer's tab layout, formatting, target-spreadsheet behavior, collision policy, and comparison-tab UX live in `analysis_renderer_contract.md` §11 / §12 / §13. v2 of this contract is compatible with `analysis_renderer_contract.md` `contractVersion: 2` (lockstep bump per D-0073).
 - **Downstream upload portal** (route on the launcher Web App per `docs/decision_log.md` D-0063, mirroring D-0046's writeback upload pattern; landed in M5 C2 implementation PR #115 — the originally-anticipated M5 C3 boundary was dropped at C2 closure when the route covered the portal scope): consumes a single `AnalyzerOutput` JSON file per §10, deserializes it, hands the `AnalyzerOutput` to `RMLib.renderAnalysis(...)` per `docs/analysis_renderer_contract.md` §11.3. The portal's form shape and operator UX are NOT governed by this contract.
 
 ## 18) Explicit deferrals
