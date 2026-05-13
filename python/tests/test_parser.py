@@ -749,7 +749,10 @@ def test_operator_component_weight_override_flows_through_overlay() -> None:
     assert result.consumability is Consumability.CONSUMABLE
     assert result.scoringConfig.weights["crReward"] == 7.5
     # Other components still use template defaults.
-    assert result.scoringConfig.weights["unfilledPenalty"] == -100.0
+    # Default updated 2026-05-13 from M2-era -100.0 placeholder to
+    # -10000.0 hard-rule floor (operator-tuned post-M7 closure; see
+    # `python/rostermonster/templates/icu_hd.py` componentWeights comment).
+    assert result.scoringConfig.weights["unfilledPenalty"] == -10000.0
 
 
 def test_blank_operator_weight_falls_back_to_template_default() -> None:

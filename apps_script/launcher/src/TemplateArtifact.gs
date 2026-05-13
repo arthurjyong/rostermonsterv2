@@ -163,18 +163,30 @@ var ICU_HD_TEMPLATE_ARTIFACT = Object.freeze({
     // at run time per `docs/parser_normalizer_contract.md` §9 overlay.
     // Sign orientation per `docs/scorer_contract.md` §10 / §15: penalties
     // contribute non-positively, rewards contribute non-negatively.
-    // Magnitudes here are placeholders; v1 reference-pass tuning lands
-    // separately per FW-0014.
+    //
+    // Magnitudes updated 2026-05-13 from M2-era placeholders to the
+    // operator-tuned values from a live ICU/HD cycle post-M7 closure (a
+    // sheet's `Scorer Config v0513050214` tab). This is a targeted
+    // defaults bump driven by accumulated operator feedback, NOT the full
+    // FW-0014 "v1 reference pass" (which would translate v1's effective
+    // weights) NOR FW-0033 "systematic weight elicitation" (which stays
+    // parked). The MUST-NEVER-HAPPEN hard-rule penalties
+    // (unfilledPenalty, preLeavePenalty) get the -10000 floor so any
+    // candidate that violates them craters below all soft-penalty
+    // gradients; point-balance + spacing + standby-count amplitudes
+    // strengthen to reflect the post-M6 LAHC operator-visible scoring-
+    // gradient calibration. Operators retain override authority via the
+    // Scorer Config tab per D-0037.
     componentWeights: Object.freeze({
-      unfilledPenalty: -100,
+      unfilledPenalty: -10000,
       pointBalanceWithinSection: -1,
-      pointBalanceGlobal: -1,
-      spacingPenalty: -2,
-      preLeavePenalty: -10,
+      pointBalanceGlobal: -25,
+      spacingPenalty: -10,
+      preLeavePenalty: -10000,
       crReward: 5,
-      dualEligibleIcuBonus: 0.5,
+      dualEligibleIcuBonus: 1,
       standbyAdjacencyPenalty: -3,
-      standbyCountFairnessPenalty: -1,
+      standbyCountFairnessPenalty: -10,
     }),
     templateKnobs: Object.freeze([]),
   }),
