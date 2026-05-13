@@ -131,6 +131,20 @@ For non-trivial changes:
 
 If a task does not clearly support the active milestone/checkpoint, treat it as suspect and say so.
 
+## PR → Codex review workflow (BLOCKING for any PR raised in this repo)
+
+For any PR you open in this repo, follow the 7-step loop in auto-memory `feedback_codex_loop_workflow.md`. The headline:
+
+1. **Pre-PR self-audit** — one Explore-agent pass spot-checking cross-doc consistency, verified test counts via `pytest --collect-only`, and verdict-vs-decision-item consistency.
+2. **Push + open PR** via `git push` + `gh pr create`.
+3. **Wait 90s, then poll ALL three Codex endpoints + reactions.** Single-endpoint checks are unreliable because Codex output splits across `issues/N/comments` + `pulls/N/comments` + `pulls/N/reviews` — full multi-endpoint command lives in the memory entry.
+4. **If empty after 90s** → post `@codex review`; repoll every 3 min.
+5. **Minor findings** (wording / consistency / typo / cross-doc flip / stale citation / closure-trail integrity) → fix + re-push autonomously, loop back to step 3.
+6. **Major findings** (new framing decision / scope change / decision required) → pause and surface to user with proposed framing.
+7. **Merge only on explicit 👍 reaction on PR body** (per `feedback_codex_wait_for_thumbs_up.md`).
+
+Every PR-merge response MUST end with a one-line self-check tail summarizing which steps were followed (`Workflow ✓: pre-PR audit ✓ / 90s-poll ✓ / @codex-trigger Nx / 3-min repolls N / N minor iterations / N major pauses / 👍 confirmed`). If any step was skipped, surface it as `Workflow ⚠: <step> ✗ (reason)` — don't hide drift.
+
 ## Validation expectations
 Run the smallest relevant validation that actually exists.
 
