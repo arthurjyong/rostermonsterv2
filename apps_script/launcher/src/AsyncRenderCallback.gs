@@ -340,6 +340,7 @@ function _dispatchOk_(body) {
   // `state: 'OK'` on success, `state: 'FAILED'` on any failure
   // (validation rejection or render-time exception).
   var _dispatch_t0 = Date.now();
+  var _prev_t = _dispatch_t0;
   console.log(
     '[timing] dispatch_ok_start ts_ms=' + _dispatch_t0 +
     ' run_id=' + (body.runId || 'unknown')
@@ -375,10 +376,13 @@ function _dispatchOk_(body) {
       runId: body.runId,
     });
   }
+  var _writeback_done_t = Date.now();
   console.log(
-    '[timing] dispatch_writeback_done delta_ms=' + (Date.now() - _dispatch_t0) +
+    '[timing] dispatch_writeback_done delta_ms=' + (_writeback_done_t - _prev_t) +
+    ' elapsed_ms=' + (_writeback_done_t - _dispatch_t0) +
     ' run_id=' + (body.runId || 'unknown')
   );
+  _prev_t = _writeback_done_t;
 
   try {
     // RMLib.renderAnalysis takes a single AnalyzerOutput arg per
@@ -402,15 +406,20 @@ function _dispatchOk_(body) {
       runId: body.runId,
     });
   }
+  var _analysis_done_t = Date.now();
   console.log(
-    '[timing] dispatch_analysis_done delta_ms=' + (Date.now() - _dispatch_t0) +
+    '[timing] dispatch_analysis_done delta_ms=' + (_analysis_done_t - _prev_t) +
+    ' elapsed_ms=' + (_analysis_done_t - _dispatch_t0) +
     ' run_id=' + (body.runId || 'unknown')
   );
+  _prev_t = _analysis_done_t;
 
   // Both succeeded — operator-facing success email + 2xx to finalizer.
   _sendSuccessEmail_(body);
+  var _email_sent_t = Date.now();
   console.log(
-    '[timing] dispatch_email_sent delta_ms=' + (Date.now() - _dispatch_t0) +
+    '[timing] dispatch_email_sent delta_ms=' + (_email_sent_t - _prev_t) +
+    ' elapsed_ms=' + (_email_sent_t - _dispatch_t0) +
     ' run_id=' + (body.runId || 'unknown')
   );
   return _buildJsonResponse_(200, {

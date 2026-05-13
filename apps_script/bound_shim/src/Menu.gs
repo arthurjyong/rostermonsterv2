@@ -72,7 +72,7 @@ function _solveRoster_() {
   // submit). console.log() writes to Cloud Logging when the Apps Script
   // project is linked to a GCP project (verify via Apps Script editor →
   // Project Settings → Google Cloud Platform). Format: `[timing] stage
-  // delta_ms=N total_ms=N` so the dry-run analysis script can parse it.
+  // delta_ms=N elapsed_ms=N` so the dry-run analysis script can parse it.
   var _timing_t0 = Date.now();
   console.log('[timing] solve_roster_start ts_ms=' + _timing_t0);
 
@@ -96,7 +96,7 @@ function _solveRoster_() {
   var _timing_t1 = Date.now();
   console.log(
     '[timing] config_resolved delta_ms=' + (_timing_t1 - _timing_t0) +
-    ' total_ms=' + (_timing_t1 - _timing_t0)
+    ' elapsed_ms=' + (_timing_t1 - _timing_t0)
   );
   var snapshot;
   try {
@@ -109,7 +109,7 @@ function _solveRoster_() {
   var _timing_t2 = Date.now();
   console.log(
     '[timing] snapshot_extracted delta_ms=' + (_timing_t2 - _timing_t1) +
-    ' total_ms=' + (_timing_t2 - _timing_t0)
+    ' elapsed_ms=' + (_timing_t2 - _timing_t0)
   );
 
   // Stage 2: acquire an OIDC token for Cloud Run IAM auth.
@@ -159,7 +159,7 @@ function _solveRoster_() {
   var _timing_t3 = Date.now();
   console.log(
     '[timing] request_prepared delta_ms=' + (_timing_t3 - _timing_t2) +
-    ' total_ms=' + (_timing_t3 - _timing_t0)
+    ' elapsed_ms=' + (_timing_t3 - _timing_t0)
   );
   var response;
   try {
@@ -186,7 +186,7 @@ function _solveRoster_() {
   var _timing_t4 = Date.now();
   console.log(
     '[timing] cloud_response_received delta_ms=' + (_timing_t4 - _timing_t3) +
-    ' total_ms=' + (_timing_t4 - _timing_t0) +
+    ' elapsed_ms=' + (_timing_t4 - _timing_t0) +
     ' http_status=' + response.getResponseCode()
   );
 
@@ -240,7 +240,7 @@ function _solveRoster_() {
     var _timing_t5 = Date.now();
     console.log(
       '[timing] submitted_state_returned delta_ms=' + (_timing_t5 - _timing_t4) +
-      ' total_ms=' + (_timing_t5 - _timing_t0) +
+      ' elapsed_ms=' + (_timing_t5 - _timing_t0) +
       ' run_id=' + ((body.submission || {}).runId || 'unknown')
     );
     return {
