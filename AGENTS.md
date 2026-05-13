@@ -131,6 +131,24 @@ For non-trivial changes:
 
 If a task does not clearly support the active milestone/checkpoint, treat it as suspect and say so.
 
+## PR → Codex review workflow (BLOCKING for any PR raised in this repo)
+
+For any PR you open in this repo, follow this 7-step loop. The full rule is self-contained below so contributors and fresh-checkout agents can act without external context; a longer maintainer working-doc with calibration examples is kept in Claude's auto-memory at `feedback_codex_loop_workflow.md` (not authoritative for this rule — only for cross-session context).
+
+1. **Pre-PR self-audit** — one Explore-agent pass spot-checking: (a) cross-doc consistency on milestone / checkpoint / FW status flips across roadmap.md + delivery_plan.md §5/§6/§11/§12/§15 + decision_log.md + AGENTS.md + README.md + blueprint.md + future_work.md; (b) test counts re-verified via `pytest --collect-only -q python/tests | tail -1` (never cite from a prior PR's snapshot); (c) verdict-vs-decision-item internal consistency.
+2. **Push + open PR** via `git push -u origin <branch>` + `gh pr create --title ... --body ...`.
+3. **Wait 90s** for the Codex auto-review window, then run the canonical multi-endpoint poll (single-endpoint checks miss findings — Codex output splits across `issues/N/comments` + `pulls/N/comments` + `pulls/N/reviews`, and reactions live separately):
+   ```
+   gh api repos/OWNER/REPO/issues/N/comments --paginate --jq '.[] | "[ISSUE-COMMENT] " + .user.login + " " + .created_at + "\n" + .body + "\n"' ; gh api repos/OWNER/REPO/pulls/N/comments --paginate --jq '.[] | "[LINE-COMMENT path=" + .path + "] " + .user.login + " " + .created_at + "\n" + .body + "\n"' ; gh api repos/OWNER/REPO/pulls/N/reviews --paginate --jq '.[] | "[REVIEW state=" + .state + "] " + .user.login + " " + (.submitted_at // "(no time)") + "\n" + (.body // "(no body)") + "\n"' ; gh api repos/OWNER/REPO/issues/N/reactions --jq '.[] | "[REACTION on PR body] " + .user.login + " " + .content'
+   ```
+   The four sources: `issues/N/comments` = `@codex review` triggers + Codex's "Didn't find any major issues" clean-signal text; `pulls/N/comments` = line-anchored P1/P2 findings; `pulls/N/reviews` = structured review object (sometimes findings live in `.body`); reactions on PR body = 👀 (reviewing) / 👍 (approved).
+4. **If poll empty after 90s** → post `@codex review` via `gh api repos/OWNER/REPO/issues/N/comments --method POST --field body='@codex review'`; repoll every **3 min** until a review lands. If 👀 already in reactions, do NOT re-trigger — Codex is already reviewing.
+5. **Minor findings** (wording / cross-doc consistency / typo / stale citation / closure-trail integrity / date arithmetic / file-path / FW status flip / test-count correction / single-sentence rephrase — most P2s and trivial P1s) → fix + re-push autonomously, loop back to step 3.
+6. **Major findings** (new framing decision / scope change / contract amendment / question requiring user judgment — e.g., "closure verdict contradicts live evidence", "this PR conflicts with a contract invariant", "should I draft a new D-XXXX") → pause and surface to user with finding + proposed framing.
+7. **Merge only on explicit 👍 reaction on PR body** — empty line-comments alone is NOT the clean signal; absence of 👍 means still-reviewing. Then `gh pr merge N --squash --delete-branch` → `git remote prune origin`.
+
+Every PR-merge response MUST end with a one-line self-check tail summarizing which steps were followed: `Workflow ✓: pre-PR audit ✓ / 90s-poll ✓ / @codex-trigger Nx / 3-min repolls N / N minor iterations / N major pauses / 👍 confirmed`. If any step was skipped, surface it as `Workflow ⚠: <step> ✗ (reason)` — don't hide drift.
+
 ## Validation expectations
 Run the smallest relevant validation that actually exists.
 
