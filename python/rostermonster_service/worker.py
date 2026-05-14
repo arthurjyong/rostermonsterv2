@@ -158,12 +158,23 @@ _LAUNCHER_CALLBACK_URL_ENV = "RM_LAUNCHER_CALLBACK_URL"
 _SUBMIT_TIMESTAMP_MS_ENV = "RM_SUBMIT_TIMESTAMP_MS"
 
 # §8.7 finalize-step self-check threshold (D-0071 sub-decision 7 + Codex
-# P1 round 10 + P2 round 12 amendments). 510s reserves ~90s for the
-# finalize step's aggregate + score + select + analyzer + callback POST +
-# email so OPERATOR-FACING total wall stays ≤ 600s / 10-min cap. Don't
-# raise to 600s without also rebudgeting the finalize step — pre-P2-12
-# was 600s and could blow operator wall to ~650-680s when Pool finished
-# at 590s.
+# P1 round 10 + P2 round 12 amendments). If the Pool finishes after this
+# point, the finalize step SKIPS aggregation and POSTs a timeout-failure
+# callback instead — so the threshold is the hard mechanism that bounds
+# the TASK. The original "~90s reserve → operator wall ≤ 600s" framing
+# is approximate, not a guarantee: on the SUCCESS path the operator
+# email lands at Pool-finish + finalize-work, where finalize-work is
+# ~50s aggregate/score/select/analyzer + ~56s of launcher-side
+# applyWriteback + renderAnalysis + sendEmail ≈ 106s — so a Pool
+# finishing near this 510s threshold yields an operator email modestly
+# past the 600s "10-min" target (~616s worst case). That overrun is a
+# pre-existing property of where this threshold sits relative to the
+# true finalize cost; it is independent of the callback-POST timeout,
+# which bounds the WORKER's patience, NOT the launcher's work (the
+# launcher emails the operator on its own schedule mid-POST regardless
+# of when the worker stops waiting). Don't raise this threshold without
+# rebudgeting — pre-P2-12 was 600s and could blow the task wall to
+# ~650-680s when the Pool finished at 590s.
 _FINALIZE_SELF_CHECK_THRESHOLD_MS = 510_000
 
 # §10A.7 callback POST policy: NO retry — terminal on the first
