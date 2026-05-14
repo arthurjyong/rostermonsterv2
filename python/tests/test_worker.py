@@ -62,6 +62,14 @@ _FIXTURE_PATH = (
 _BUCKET = "rostermonsterv2-lahc"
 _RUN_ID = "test-run-2026-05-12-001"
 _ATTEMPT_ID = "attempt-test-aaaa1111"
+# Source spreadsheet ID baked into the test fixture's snapshot metadata.
+# Derived from the fixture (not hardcoded) so it can't drift. Asserted on
+# the §10A.6 callback body's additive-optional `sourceSpreadsheetId` field
+# across every callback state — including COMPUTE_ERROR, where
+# writebackEnvelope is null and this is the only carrier of the ID.
+_SOURCE_SPREADSHEET_ID = json.loads(_FIXTURE_PATH.read_text())[
+    "metadata"
+]["sourceSpreadsheetId"]
 
 
 def _serial_executor(fn, args_iter):
@@ -713,7 +721,11 @@ def test_finalize_state_dispatch_OK_when_K_prime_positive(monkeypatch) -> None:
     assert "action=async-render-callback" in url
     assert "runId=" + _RUN_ID in url
     assert "attemptId=" + _ATTEMPT_ID in url
-    assert timeout == 30.0
+    # Callback POST per-attempt timeout — verifies the call site threads
+    # the module constant through rather than a hardcoded value (bumped
+    # 30s → 90s so the launcher's synchronous renderAnalysis fits under
+    # the timeout; see `_CALLBACK_POST_TIMEOUT_SECONDS`).
+    assert timeout == worker_mod._CALLBACK_POST_TIMEOUT_SECONDS
     # §10A.6 body shape
     assert body["schemaVersion"] == 1
     assert body["state"] == "OK"
@@ -727,6 +739,8 @@ def test_finalize_state_dispatch_OK_when_K_prime_positive(monkeypatch) -> None:
     assert body["diagnostics"]["kPrime"] == 2
     assert body["diagnostics"]["droppedCount"] == 0
     assert body["diagnostics"]["batchJobName"] == _BATCH_JOB_NAME
+    # §10A.6 additive-optional sourceSpreadsheetId — OK-state path.
+    assert body["sourceSpreadsheetId"] == _SOURCE_SPREADSHEET_ID
     # idToken populated via id_token_fn
     assert body["idToken"] == _fixed_id_token_fn(_CALLBACK_URL)
 
@@ -784,6 +798,8 @@ def test_finalize_state_dispatch_UNSATISFIED_when_K_prime_zero(monkeypatch) -> N
     assert body["diagnostics"]["kApproved"] == 2
     assert body["diagnostics"]["kPrime"] == 0
     assert body["diagnostics"]["droppedCount"] == 2
+    # §10A.6 additive-optional sourceSpreadsheetId — UNSATISFIED-state path.
+    assert body["sourceSpreadsheetId"] == _SOURCE_SPREADSHEET_ID
 
 
 def test_finalize_compute_error_when_K_prime_zero_via_exceptions(monkeypatch) -> None:
@@ -842,6 +858,11 @@ def test_finalize_compute_error_when_K_prime_zero_via_exceptions(monkeypatch) ->
     assert body["analyzerOutput"] is None
     assert body["diagnostics"]["kPrime"] == 0
     assert body["diagnostics"]["droppedCount"] == 2
+    # §10A.6 additive-optional sourceSpreadsheetId — the load-bearing
+    # case: writebackEnvelope is null on COMPUTE_ERROR, so this
+    # top-level field is the ONLY carrier of the spreadsheet ID for
+    # the operator's failure email.
+    assert body["sourceSpreadsheetId"] == _SOURCE_SPREADSHEET_ID
 
 
 def test_finalize_timeout_callback_carries_actual_K_prime(monkeypatch) -> None:
@@ -969,6 +990,10 @@ def test_finalize_self_check_trips_at_510s(monkeypatch) -> None:
     # writebackEnvelope + analyzerOutput null on COMPUTE_ERROR per §10A.6
     assert body["writebackEnvelope"] is None
     assert body["analyzerOutput"] is None
+    # §10A.6 additive-optional sourceSpreadsheetId — present even on the
+    # FINALIZE_TIMEOUT path, which builds the callback body BEFORE
+    # aggregation runs (the ID is read straight from snapshot metadata).
+    assert body["sourceSpreadsheetId"] == _SOURCE_SPREADSHEET_ID
 
 
 def test_finalize_self_check_passes_under_510s(monkeypatch) -> None:

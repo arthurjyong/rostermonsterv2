@@ -167,10 +167,25 @@ _SUBMIT_TIMESTAMP_MS_ENV = "RM_SUBMIT_TIMESTAMP_MS"
 _FINALIZE_SELF_CHECK_THRESHOLD_MS = 510_000
 
 # §10A.7 retry behavior for the callback POST. 3 retries with
-# exponential backoff (2s, 4s, 8s) per D-0071 sub-decision 10. Total
-# worst-case wall for the POST + retry chain: ~16s + 3 × HTTP timeout.
+# exponential backoff (2s, 4s, 8s) per D-0071 sub-decision 10.
 _CALLBACK_POST_RETRY_COUNT = 3
 _CALLBACK_POST_BACKOFF_SECONDS = (2.0, 4.0, 8.0)
+# Per-attempt HTTP timeout for the callback POST. Bumped 30s → 90s:
+# the launcher's callback handler runs `RMLib.applyWriteback` +
+# `RMLib.renderAnalysis` synchronously BEFORE returning 2xx, and
+# renderAnalysis alone has been measured at 37-42s on the live stack
+# (varies with Google Sheets backend load). A 30s timeout fired before
+# the launcher finished — the launcher still completed the work and
+# emailed the operator, but the worker saw a timeout, treated it as
+# 5xx-retryable, and re-POSTed; the retry hit the launcher's
+# idempotency guard and returned DUPLICATE_IGNORED. Net effect: the
+# operator got exactly one (correct) email, but every run logged a
+# spurious "Callback POST attempt N raised; treating as 5xx-retryable"
+# error and inflated wall time by a full retry cycle. 90s comfortably
+# covers the measured renderAnalysis range with headroom. Worst-case
+# POST+retry chain wall is now ~4 × 90s + (2+4+8)s backoff ≈ 374s —
+# still within the Cloud Batch task's 660s maxRunDuration safety net.
+_CALLBACK_POST_TIMEOUT_SECONDS = 90.0
 
 # §10A.6 callback envelope schemaVersion. Separate from §11 contract
 # version (governs §9 + §10 boundary) per the §10A.8 versioning note.
@@ -599,6 +614,23 @@ def _inline_finalize(
     http_post = http_post_fn or _default_http_post_fn
     id_token = id_token_fn or _default_id_token_fn
 
+    # Source spreadsheet ID for the operator-email link line (the §10A.6
+    # additive-optional `sourceSpreadsheetId` callback field). Read once
+    # here so every callback-body builder below — including the
+    # COMPUTE_ERROR / FINALIZE_TIMEOUT paths that run BEFORE aggregation
+    # builds a writebackEnvelope — can thread it through. The `.get()`
+    # chain with an empty-string fallback keeps `_inline_finalize`
+    # non-raising (its best-effort contract per the docstring) even if
+    # `snapshot_dict` is somehow malformed; the front door already
+    # validates `metadata.sourceSpreadsheetId` is a non-empty string
+    # before submitting the Batch job, so the fallback is belt-and-
+    # suspenders. The launcher omits the link line when the value is "".
+    source_spreadsheet_id = (
+        snapshot_dict.get("metadata", {}).get("sourceSpreadsheetId", "")
+        if isinstance(snapshot_dict, dict)
+        else ""
+    )
+
     # --- 510s self-check (§8.7 + Codex P2 round 12 fix) ---------------
     # Skip aggregation when elapsed > 510s; POST timeout failure
     # immediately so the launcher emails the operator within the 600s
@@ -637,6 +669,7 @@ def _inline_finalize(
                     "safety net but the finalize step would have "
                     "blown the 600s cap had it run."
                 ),
+                source_spreadsheet_id=source_spreadsheet_id,
             )
             _post_callback_with_retry(
                 callback_url=callback_url,
@@ -685,6 +718,7 @@ def _inline_finalize(
             error_message=(
                 type(e).__name__ + ": " + str(e)
             ),
+            source_spreadsheet_id=source_spreadsheet_id,
         )
         _post_callback_with_retry(
             callback_url=callback_url,
@@ -736,6 +770,7 @@ def _inline_finalize(
                 error_message=(
                     type(e).__name__ + ": " + str(e)
                 ),
+                source_spreadsheet_id=source_spreadsheet_id,
             )
             _post_callback_with_retry(
                 callback_url=callback_url,
@@ -791,6 +826,7 @@ def _inline_finalize(
                 batch_job_name=batch_job_name,
                 error_code="TRAJECTORY_EXCEPTIONS_ALL",
                 error_message=error_message,
+                source_spreadsheet_id=source_spreadsheet_id,
             )
             _post_callback_with_retry(
                 callback_url=callback_url,
@@ -828,6 +864,7 @@ def _inline_finalize(
         k_prime=k_prime,
         wall_time_seconds=wall_time_seconds,
         batch_job_name=batch_job_name,
+        source_spreadsheet_id=source_spreadsheet_id,
     )
 
     log.info(
@@ -957,10 +994,19 @@ def _build_success_or_unsatisfied_callback_body(
     k_prime: int,
     wall_time_seconds: float,
     batch_job_name: str,
+    source_spreadsheet_id: str,
 ) -> dict:
     """Build the §10A.6 callback body for OK / UNSATISFIED states.
     `idToken` is injected at POST time per §10A.5 (mint via metadata
-    server with audience = callback_url just before the request)."""
+    server with audience = callback_url just before the request).
+
+    `sourceSpreadsheetId` is an additive-optional top-level field
+    (§10A.6 / §10A.8 — does NOT bump schemaVersion) so the launcher's
+    callback handler can put a direct spreadsheet link in the operator
+    email without digging through the nested writebackEnvelope. Carried
+    on EVERY callback state — including the COMPUTE_ERROR path where
+    `writebackEnvelope` is null — so the failure email (the one where
+    the operator most needs a link back) can still surface it."""
     return {
         # idToken filled by _post_callback_with_retry before each send
         "idToken": "",
@@ -979,6 +1025,7 @@ def _build_success_or_unsatisfied_callback_body(
             "wallTimeSeconds": round(wall_time_seconds, 3),
             "batchJobName": batch_job_name,
         },
+        "sourceSpreadsheetId": source_spreadsheet_id,
     }
 
 
@@ -993,12 +1040,18 @@ def _build_compute_error_callback_body(
     batch_job_name: str,
     error_code: str,
     error_message: str,
+    source_spreadsheet_id: str,
 ) -> dict:
     """Build the §10A.6 callback body for COMPUTE_ERROR state.
     Codes per §10A.6 finding 9: AGGREGATION_EXCEPTION /
     ANALYZER_EXCEPTION / FINALIZER_EXCEPTION / FINALIZE_TIMEOUT (new at
     M7 C4 T2A.2 PR-A — surfaces the 510s self-check trip per §8.7 +
-    Codex P2 round 12 fix)."""
+    Codex P2 round 12 fix).
+
+    `sourceSpreadsheetId` is carried even though `writebackEnvelope` is
+    null on this path — it's an additive-optional §10A.6 field sourced
+    directly from the snapshot metadata, so the operator's failure
+    email can still link back to the spreadsheet to retry."""
     return {
         "idToken": "",
         "schemaVersion": _CALLBACK_SCHEMA_VERSION,
@@ -1019,6 +1072,7 @@ def _build_compute_error_callback_body(
             "wallTimeSeconds": round(wall_time_seconds, 3),
             "batchJobName": batch_job_name,
         },
+        "sourceSpreadsheetId": source_spreadsheet_id,
     }
 
 
@@ -1076,7 +1130,8 @@ def _post_callback_with_retry(
 
         body["idToken"] = id_token
         try:
-            status, response_body = http_post_fn(full_url, body, 30.0)
+            status, response_body = http_post_fn(
+                full_url, body, _CALLBACK_POST_TIMEOUT_SECONDS)
         except Exception as e:  # noqa: BLE001
             log.exception(
                 "Callback POST attempt %d raised; treating as 5xx-retryable",

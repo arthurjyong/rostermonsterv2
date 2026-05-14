@@ -541,6 +541,23 @@ function _resultToError_(result, surface) {
 }
 
 
+// Build the operator-facing edit URL for the source spreadsheet from
+// the callback body's top-level `sourceSpreadsheetId` field — the
+// §10A.6 additive-optional field the worker stamps on EVERY callback
+// state (OK / UNSATISFIED / COMPUTE_ERROR), including the COMPUTE_ERROR
+// path where `writebackEnvelope` is null and this is the only carrier
+// of the ID. Returns null if the field is absent / empty / non-string
+// so callers gracefully omit the link line rather than emit a broken
+// "https://docs.google.com/spreadsheets/d//edit" — e.g. a callback
+// from an older worker build mid-rolling-deploy that predates the
+// field.
+function _sourceSpreadsheetUrl_(body) {
+  var id = body && body.sourceSpreadsheetId;
+  if (!id || typeof id !== 'string') return null;
+  return 'https://docs.google.com/spreadsheets/d/' + id + '/edit';
+}
+
+
 function _sendSuccessEmail_(body) {
   // §10A.7 success-path email body. Attaches the full AnalyzerOutput
   // JSON for forensic recovery per D-0071 sub-decision 5 + Codex P2
@@ -552,6 +569,12 @@ function _sendSuccessEmail_(body) {
     '',
     'Your roster solve completed successfully.',
     '',
+  ];
+  var ssUrl = _sourceSpreadsheetUrl_(body);
+  if (ssUrl) {
+    lines.push('Spreadsheet: ' + ssUrl, '');
+  }
+  lines.push(
     'runId: ' + body.runId,
     'attemptId: ' + body.attemptId,
     'Trajectories: K\'=' + (body.diagnostics && body.diagnostics.kPrime)
@@ -565,8 +588,8 @@ function _sendSuccessEmail_(body) {
     'The writeback tab and analysis sheets have been written to the source spreadsheet.',
     '',
     'Cloud Batch job: '
-      + ((body.diagnostics && body.diagnostics.batchJobName) || '<unknown>'),
-  ];
+      + ((body.diagnostics && body.diagnostics.batchJobName) || '<unknown>')
+  );
   var options = {};
   if (body.analyzerOutput) {
     options.attachments = [_buildAnalyzerOutputBlob_(body, runIdShort)];
@@ -595,6 +618,12 @@ function _sendUnsatisfiedEmail_(body) {
     '',
     'No valid roster was found under the request constraints.',
     '',
+  ];
+  var ssUrl = _sourceSpreadsheetUrl_(body);
+  if (ssUrl) {
+    lines.push('Spreadsheet: ' + ssUrl, '');
+  }
+  lines.push(
     'runId: ' + body.runId,
     'attemptId: ' + body.attemptId,
     'Unfilled: ' + unfilledSummary,
@@ -606,8 +635,8 @@ function _sendUnsatisfiedEmail_(body) {
     'The failure-branch writeback tab has been written; check it for the unfilled-demand details.',
     '',
     'Cloud Batch job: '
-      + ((body.diagnostics && body.diagnostics.batchJobName) || '<unknown>'),
-  ];
+      + ((body.diagnostics && body.diagnostics.batchJobName) || '<unknown>')
+  );
   MailApp.sendEmail(body.operatorEmail, subject, lines.join('\n'));
 }
 
@@ -621,6 +650,12 @@ function _sendFailureEmail_(body, error) {
     '',
     'Your roster solve did not complete successfully.',
     '',
+  ];
+  var ssUrl = _sourceSpreadsheetUrl_(body);
+  if (ssUrl) {
+    lines.push('Spreadsheet: ' + ssUrl, '');
+  }
+  lines.push(
     'runId: ' + body.runId,
     'attemptId: ' + body.attemptId,
     'Error code: ' + (error && error.code ? error.code : '<unknown>'),
@@ -634,8 +669,8 @@ function _sendFailureEmail_(body, error) {
       + ((body.diagnostics && body.diagnostics.batchJobName) || '<unknown>'),
     '',
     'Please retry by clicking "Solve Roster" in the bound spreadsheet again. '
-      + 'If the error persists, contact the maintainer with the runId above.',
-  ];
+      + 'If the error persists, contact the maintainer with the runId above.'
+  );
   // Failure path may still carry an AnalyzerOutput if the defect
   // happened post-analyzer (rare; e.g., callback POST gymnastic).
   // Attach if present per §10A.7's failure-path attachment rule.
