@@ -193,6 +193,16 @@ function menuSolveRoster_() {
         _RM_ASYNC_LOCK_KEY, String(Date.now()));
     }
   } catch (e) {
+    // Clear the EXTRACT lock BEFORE showing the blocking error alert.
+    // ui.alert() suspends server-side execution until the operator
+    // clicks OK, and Apps Script's `finally` block runs AFTER the
+    // catch body completes (i.e., after the alert is dismissed).
+    // Without this early clear, other clicks on this spreadsheet
+    // would be hard-blocked as "still in extract" for the entire
+    // duration of operator dwell on the error dialog. The finally
+    // clear below remains as a no-op safety net (idempotent).
+    // Per Codex P2 round 6 finding on PR #170.
+    _clearExtractLockIfOwned_(ownExtractLockTs);
     ui.alert(
       'Solve Roster failed',
       _formatErrorForOperator_(e),
