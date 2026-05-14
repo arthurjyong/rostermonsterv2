@@ -166,10 +166,21 @@ _SUBMIT_TIMESTAMP_MS_ENV = "RM_SUBMIT_TIMESTAMP_MS"
 # at 590s.
 _FINALIZE_SELF_CHECK_THRESHOLD_MS = 510_000
 
-# §10A.7 retry behavior for the callback POST. 3 retries with
-# exponential backoff (2s, 4s, 8s) per D-0071 sub-decision 10.
-_CALLBACK_POST_RETRY_COUNT = 3
-_CALLBACK_POST_BACKOFF_SECONDS = (2.0, 4.0, 8.0)
+# §10A.7 retry behavior for the callback POST. 1 retry with a 2s
+# backoff. REDUCED from 3 retries (the original D-0071 sub-decision 10
+# value) as a budget-fit follow-up to the 90s timeout bump below — see
+# `_CALLBACK_POST_TIMEOUT_SECONDS`. The 3-retry budget was sized for
+# the old 30s timeout, where attempt 1 routinely timed out against a
+# healthy-but-slow launcher (renderAnalysis ~37-42s > 30s) so retries
+# were load-bearing just to get through. With a 90s timeout attempt 1
+# succeeds against any healthy launcher; a retry now only covers a
+# genuine transient 5xx blip, for which 1 is enough. Keeping 3 would
+# have made the worst-case POST chain ~4 × 90s + 14s ≈ 374s — long
+# enough to blow the finalize-step budget and risk a Batch kill before
+# the chain exhausts. 1 retry caps the worst case at ~2 × 90s + 2s
+# ≈ 182s.
+_CALLBACK_POST_RETRY_COUNT = 1
+_CALLBACK_POST_BACKOFF_SECONDS = (2.0,)
 # Per-attempt HTTP timeout for the callback POST. Bumped 30s → 90s:
 # the launcher's callback handler runs `RMLib.applyWriteback` +
 # `RMLib.renderAnalysis` synchronously BEFORE returning 2xx, and
@@ -183,8 +194,9 @@ _CALLBACK_POST_BACKOFF_SECONDS = (2.0, 4.0, 8.0)
 # spurious "Callback POST attempt N raised; treating as 5xx-retryable"
 # error and inflated wall time by a full retry cycle. 90s comfortably
 # covers the measured renderAnalysis range with headroom. Worst-case
-# POST+retry chain wall is now ~4 × 90s + (2+4+8)s backoff ≈ 374s —
-# still within the Cloud Batch task's 660s maxRunDuration safety net.
+# POST+retry chain wall is ~2 × 90s + 2s backoff ≈ 182s (1 retry per
+# `_CALLBACK_POST_RETRY_COUNT` above) — within the Cloud Batch task's
+# 660s maxRunDuration safety net.
 _CALLBACK_POST_TIMEOUT_SECONDS = 90.0
 
 # §10A.6 callback envelope schemaVersion. Separate from §11 contract

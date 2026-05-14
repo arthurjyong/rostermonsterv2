@@ -1111,8 +1111,9 @@ def test_finalize_skipped_on_parser_rejection(monkeypatch) -> None:
 
 
 def test_callback_post_retries_on_5xx(monkeypatch) -> None:
-    """§10A.7: 5xx response → retry up to 3 times with 2/4/8s backoff.
-    `time.sleep` patched so retries don't actually wait."""
+    """§10A.7: 5xx response → retried per `_CALLBACK_POST_RETRY_COUNT`
+    with exponential backoff, then succeeds. `time.sleep` patched so
+    retries don't actually wait."""
     monkeypatch.setattr(
         worker_mod, "analyze",
         lambda *args, **kw: type("FakeOutput", (), {})(),
@@ -1127,8 +1128,9 @@ def test_callback_post_retries_on_5xx(monkeypatch) -> None:
 
     def flaky_http_post(url: str, body: dict, timeout: float):
         call_count["n"] += 1
-        # First 2 calls 503, 3rd succeeds
-        if call_count["n"] <= 2:
+        # Fail every attempt up to the retry budget, then succeed on
+        # the last retry — verifies a transient 5xx is retried through.
+        if call_count["n"] <= worker_mod._CALLBACK_POST_RETRY_COUNT:
             return (503, None)
         return (200, {"state": "OK"})
 
@@ -1149,9 +1151,9 @@ def test_callback_post_retries_on_5xx(monkeypatch) -> None:
         id_token_fn=_fixed_id_token_fn,
     )
 
-    assert call_count["n"] == 3, (
-        "5xx → retry: expected 2 failures + 1 success; got "
-        + str(call_count["n"]) + " total calls"
+    assert call_count["n"] == worker_mod._CALLBACK_POST_RETRY_COUNT + 1, (
+        "5xx → retry: expected _CALLBACK_POST_RETRY_COUNT failures + 1 "
+        "success; got " + str(call_count["n"]) + " total calls"
     )
 
 
@@ -1199,8 +1201,9 @@ def test_callback_post_terminal_on_4xx(monkeypatch) -> None:
 
 
 def test_callback_post_retries_exhausted_on_persistent_5xx(monkeypatch) -> None:
-    """§10A.7: 5xx after retry exhaustion (3 retries = 4 attempts
-    total) → terminal, logged, no raise."""
+    """§10A.7: 5xx after retry exhaustion (initial attempt +
+    `_CALLBACK_POST_RETRY_COUNT` retries) → terminal, logged, no
+    raise."""
     monkeypatch.setattr(
         worker_mod, "analyze",
         lambda *args, **kw: type("FakeOutput", (), {})(),
@@ -1234,8 +1237,9 @@ def test_callback_post_retries_exhausted_on_persistent_5xx(monkeypatch) -> None:
         id_token_fn=_fixed_id_token_fn,
     )
 
-    assert call_count["n"] == 4, (
-        "initial + 3 retries = 4 total attempts; got " + str(call_count["n"])
+    assert call_count["n"] == worker_mod._CALLBACK_POST_RETRY_COUNT + 1, (
+        "initial attempt + _CALLBACK_POST_RETRY_COUNT retries; got "
+        + str(call_count["n"])
     )
 
 
@@ -1257,7 +1261,9 @@ def test_callback_post_treats_transport_exception_as_retryable(monkeypatch) -> N
 
     def flaky_transport(url: str, body: dict, timeout: float):
         call_count["n"] += 1
-        if call_count["n"] <= 2:
+        # Raise every attempt up to the retry budget, then succeed —
+        # verifies transport errors are retried like 5xx.
+        if call_count["n"] <= worker_mod._CALLBACK_POST_RETRY_COUNT:
             raise ConnectionError("simulated TCP RST")
         return (200, {"state": "OK"})
 
@@ -1278,7 +1284,7 @@ def test_callback_post_treats_transport_exception_as_retryable(monkeypatch) -> N
         id_token_fn=_fixed_id_token_fn,
     )
 
-    assert call_count["n"] == 3, (
+    assert call_count["n"] == worker_mod._CALLBACK_POST_RETRY_COUNT + 1, (
         "transport exception MUST be treated as 5xx-retryable"
     )
 
