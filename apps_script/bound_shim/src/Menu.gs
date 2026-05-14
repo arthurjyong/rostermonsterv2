@@ -33,23 +33,38 @@ function menuExtractSnapshot_() {
   SpreadsheetApp.getUi().showModalDialog(html, 'Snapshot ready');
 }
 
-// Multi-click guard: per-spreadsheet in-flight lock stored as a timestamp
-// (ms since epoch) on DocumentProperties. Set inside `_quickValidate_`
-// (under a LockService doc lock so check-and-set is atomic across racing
-// executions per Codex P2 round 1 finding); cleared in `menuSolveRoster_`'s
-// try/finally so the lock auto-releases on success, cloud-error, AND
-// uncaught exception. The TTL is a safety net for the Apps-Script-crashed-
-// mid-flow case where the finally block doesn't run (process killed); a
-// fresh click after the TTL clears the stale lock and proceeds. TTL is
-// set to 7 min — must exceed any plausible live `_solveRoster_` duration
-// (per Codex P2 round 2 finding: a too-short TTL would let a slow live
-// run be misidentified as stale by a racing second click). Apps Script
-// caps per-execution runtime at 6 min on consumer accounts, so 7 min
-// covers any live run with a 60s buffer for kill-timing edge cases. Cost
-// of a long TTL: after a rare Apps-Script-killed crash, the operator
-// must wait up to 7 min before a retry can clear the stale lock.
-var _RM_INFLIGHT_LOCK_KEY = 'rm_solve_inflight_ts_ms';
-var _RM_INFLIGHT_LOCK_TTL_MS = 7 * 60 * 1000;
+// Multi-click guard: TWO per-spreadsheet locks on DocumentProperties,
+// each storing a timestamp (ms since epoch). Different scopes,
+// different enforcement strengths.
+//
+// 1. EXTRACT lock (`_RM_EXTRACT_LOCK_KEY`) — set when a click commits
+//    to the slow path (~14s extract + ~1.5s POST). Set inside
+//    `_quickValidate_` under a LockService doc lock (atomic check-and-
+//    set across racing executions per Codex P2 round 1 finding);
+//    cleared in `menuSolveRoster_`'s try/finally so it auto-releases
+//    on success, cloud-error, AND uncaught exception. Acts as a HARD
+//    BLOCK on concurrent re-clicks during the slow path. TTL is 7 min
+//    — must exceed any plausible live `_solveRoster_` duration (per
+//    Codex P2 round 2 finding: too-short TTL lets a slow live run be
+//    misidentified as stale). Apps Script caps per-execution runtime
+//    at 6 min on consumer accounts, so 7 min = 6 min cap + 60s buffer
+//    for kill-timing edge cases. Cost: after a rare Apps-Script-killed
+//    crash, the operator waits up to 7 min for the lock to TTL out.
+//
+// 2. ASYNC lock (`_RM_ASYNC_LOCK_KEY`) — set when a click submits an
+//    async LAHC run (Cloud Run returned `SUBMITTED`). The actual solve
+//    runs on Cloud Batch for 5-10 min and the operator sees results
+//    via email; during that window, a re-click should not silently
+//    kick off a second extract that Cloud Run will reject ~15s later.
+//    Per Codex P2 round 3 finding + maintainer-confirmed warn-don't-
+//    block scope: ASYNC lock triggers a SOFT WARN (YES/NO confirm
+//    dialog) on the next click — operator can still override and
+//    start a new run. TTL is 11 min — covers the 10-min Cloud Batch
+//    operator-facing hard cap with a 1-min buffer.
+var _RM_EXTRACT_LOCK_KEY = 'rm_solve_extract_inflight_ts_ms';
+var _RM_EXTRACT_LOCK_TTL_MS = 7 * 60 * 1000;
+var _RM_ASYNC_LOCK_KEY = 'rm_solve_async_inflight_ts_ms';
+var _RM_ASYNC_LOCK_TTL_MS = 11 * 60 * 1000;
 // `LockService.getDocumentLock().tryLock(N)` waits up to N ms to acquire
 // the doc-scoped concurrency lock. The lock spans only the check-and-set
 // window inside `_quickValidate_` (typical ~50-200ms total — one metadata
@@ -67,20 +82,28 @@ var _RM_DOC_LOCK_ACQUIRE_TIMEOUT_MS = 500;
 //   1. Pre-flight validation (`_quickValidate_`) — cheap click-time
 //      checks that catch the most common operator mistakes (wrong tab,
 //      missing config, in-flight re-click) BEFORE the ~14s extract.
-//      On success, atomically sets the in-flight timestamp guard
-//      under a LockService doc lock; that guard stays set for the
-//      duration of the slow path and is cleared in the finally block.
-//   2. Show "Initializing snapshot" toast — narrates the slow extract
+//      On success, atomically sets the EXTRACT lock under a LockService
+//      doc lock; that lock stays set for the duration of the slow path
+//      and is cleared in the finally block. Also detects an active
+//      ASYNC lock (a previous run still in its 5-10 min Cloud Batch
+//      window) and returns a `warning` for the caller to surface.
+//   2. If a `warning` was returned, show a YES/NO confirm dialog. NO
+//      cancels (and releases the EXTRACT lock); YES clears the ASYNC
+//      lock and proceeds.
+//   3. Show "Initializing snapshot" toast — narrates the slow extract
 //      so the operator knows the click registered and roughly how long
 //      to expect. Toast stays visible until the terminal modal replaces
 //      it.
-//   3. Extract snapshot in-memory via RMLib (no file boundary).
-//   4. POST snapshot to Cloud Run /compute endpoint with an OIDC token
+//   4. Extract snapshot in-memory via RMLib (no file boundary).
+//   5. POST snapshot to Cloud Run /compute endpoint with an OIDC token
 //      from `ScriptApp.getIdentityToken()` per D-0051 sub-decision 2.
-//   5. Pass the returned writebackEnvelope to RMLib.applyWriteback()
+//   6. Pass the returned writebackEnvelope to RMLib.applyWriteback()
 //      per D-0052 to render the new writeback tab (sync path; the LAHC
-//      async path returns SUBMITTED at step 4 and the actual writeback
+//      async path returns SUBMITTED at step 5 and the actual writeback
 //      lands via the launcher's `async-render-callback` route).
+//   7. On SUBMITTED_ASYNC, set the ASYNC lock so future clicks during
+//      the 5-10 min Cloud Batch window get the soft-warn dialog at
+//      step 2.
 //
 // Wall-clock budget: preflight (<1s) + extract (~14s) + cloud (~1-2s) +
 // writeback (~3-5s on the deprecated sync path). Comfortably within
@@ -91,9 +114,9 @@ function menuSolveRoster_() {
   var t0 = Date.now();
   console.log('[timing] solve_roster_start ts_ms=' + t0);
 
-  // Step 1: cheap preflight. Returns `{ok, error}` — `ok=false` aborts
-  // immediately with a click-time alert (no toast, no lock acquired,
-  // no slow extract).
+  // Step 1: cheap preflight. Returns `{ok: false, error}` to abort with
+  // a click-time alert; `{ok: true, warning?}` to proceed (with optional
+  // soft-warn dialog if a previous async run is still pending).
   var pre = _quickValidate_();
   var tPreflight = Date.now();
   console.log('[timing] preflight_done delta_ms=' + (tPreflight - t0) +
@@ -103,7 +126,28 @@ function menuSolveRoster_() {
     return;
   }
 
-  // Step 2: show the "Initializing" toast. The in-flight lock has already
+  // Step 2: soft warn for active ASYNC lock per Codex P2 round 3
+  // finding + maintainer-confirmed warn-don't-block scope. EXTRACT
+  // lock has already been set inside _quickValidate_; release it if
+  // the operator cancels so a future click can proceed.
+  if (pre.warning) {
+    var response = ui.alert(
+      'Possible run in progress',
+      pre.warning,
+      ui.ButtonSet.YES_NO
+    );
+    if (response !== ui.Button.YES) {
+      PropertiesService.getDocumentProperties().deleteProperty(
+        _RM_EXTRACT_LOCK_KEY);
+      return;
+    }
+    // Operator confirmed they want to start fresh — clear the ASYNC
+    // lock so subsequent clicks in this run's window don't double-warn.
+    PropertiesService.getDocumentProperties().deleteProperty(
+      _RM_ASYNC_LOCK_KEY);
+  }
+
+  // Step 3: show the "Initializing" toast. The EXTRACT lock has already
   // been set inside `_quickValidate_` (atomically with the check, under a
   // LockService doc lock per Codex P2 round 1 finding); lock release
   // happens in the finally block below.
@@ -125,29 +169,50 @@ function menuSolveRoster_() {
     return;
   } finally {
     PropertiesService.getDocumentProperties().deleteProperty(
-      _RM_INFLIGHT_LOCK_KEY);
+      _RM_EXTRACT_LOCK_KEY);
   }
+
+  // Step 7: if we just submitted an async LAHC run, set the ASYNC lock
+  // so a re-click during the 5-10 min Cloud Batch window gets the
+  // soft-warn dialog at step 2 (per Codex P2 round 3 finding).
+  if (result && result.kind === 'SUBMITTED_ASYNC') {
+    PropertiesService.getDocumentProperties().setProperty(
+      _RM_ASYNC_LOCK_KEY, String(Date.now()));
+  }
+
   _showSolveRosterResult_(result);
 }
 
-// Cheap click-time validation. Returns `{ok: true}` on pass; `{ok: false,
-// error: <operator-facing message>}` on fail. Target latency: <1 second
-// total (one DeveloperMetadata finder call dominates at ~50-200ms; the
-// other checks are O(1) property reads). Intentionally does NOT duplicate
-// the snapshot extractor's structural validation — the extractor is the
-// authoritative validator for sheet structure, and we'd need the full
-// 14s metadata sweep to replicate it. This function only catches the
-// click-time mistakes that don't need the slow path:
-//   1. In-flight re-click (multi-click guard).
+// Cheap click-time validation. Returns one of:
+//   - `{ok: false, error: <msg>}` — abort immediately with click-time
+//     alert (no toast, no slow extract). Triggered by EXTRACT lock,
+//     missing config, OAuth issue, or wrong tab.
+//   - `{ok: true}` — proceed normally. EXTRACT lock has been set
+//     atomically; caller must clear it in finally.
+//   - `{ok: true, warning: <msg>}` — proceed BUT first show a YES/NO
+//     confirm dialog with the warning text. Triggered by ASYNC lock
+//     (a previous SUBMITTED run is still within its 5-10 min Cloud
+//     Batch window). Caller releases the EXTRACT lock if the operator
+//     declines; clears the ASYNC lock if the operator confirms.
+// Target latency: <1 second total (one DeveloperMetadata finder call
+// dominates at ~50-200ms; the other checks are O(1) property reads).
+// Intentionally does NOT duplicate the snapshot extractor's structural
+// validation — the extractor is the authoritative validator for sheet
+// structure, and we'd need the full 14s metadata sweep to replicate it.
+// This function only catches the click-time mistakes that don't need
+// the slow path:
+//   1. EXTRACT lock — concurrent click during slow path (HARD BLOCK).
 //   2. Cloud Run URL not configured.
 //   3. Operator email unavailable (OAuth scope issue).
 //   4. Active tab is not a request-entry tab (the most common operator
 //      mistake; currently surfaces ~14s late as `EXTRACTION_ERROR`).
+//   5. ASYNC lock — previous SUBMITTED still in Cloud Batch window
+//      (SOFT WARN — operator can override).
 // Anything more semantic (weird prefill names, malformed request cells,
 // scorer-config drift) requires the slow path's full sweep — the toast
 // covers the wait so the operator knows we're working.
 function _quickValidate_() {
-  // Acquire the doc-scoped LockService lock so the in-flight timestamp
+  // Acquire the doc-scoped LockService lock so the EXTRACT timestamp
   // check-and-set is atomic across racing executions (two operators on
   // the same sheet, or two rapid Apps Script invocations from the same
   // operator). Without this, the original implementation had a TOCTOU
@@ -157,7 +222,7 @@ function _quickValidate_() {
   // finding on PR #170. Lock spans only the check-and-set window inside
   // this function (typical ~50-200ms — one metadata finder dominates);
   // released via try/finally before this function returns. The much
-  // longer in-flight TIMESTAMP guard (held for the whole 14s extract)
+  // longer EXTRACT TIMESTAMP guard (held for the whole 14s extract)
   // is the actual multi-click block; the LockService lock just makes
   // its acquisition atomic.
   var docLock = LockService.getDocumentLock();
@@ -167,24 +232,24 @@ function _quickValidate_() {
       'another execution is racing this one. Wait a moment and try again.' };
   }
   try {
-    // Check 1: in-flight lock. If a previous click is still mid-flow on
-    // this spreadsheet (within the TTL), reject immediately so the
-    // operator doesn't kick off a duplicate extract.
     var props = PropertiesService.getDocumentProperties();
-    var inFlightTsStr = props.getProperty(_RM_INFLIGHT_LOCK_KEY);
-    if (inFlightTsStr) {
-      var elapsed = Date.now() - parseInt(inFlightTsStr, 10);
-      if (elapsed >= 0 && elapsed < _RM_INFLIGHT_LOCK_TTL_MS) {
+
+    // Check 1: EXTRACT lock (HARD BLOCK). If a previous click is still
+    // mid-extract on this spreadsheet (within the TTL), reject so the
+    // operator doesn't kick off a duplicate extract.
+    var extractTsStr = props.getProperty(_RM_EXTRACT_LOCK_KEY);
+    if (extractTsStr) {
+      var extractElapsed = Date.now() - parseInt(extractTsStr, 10);
+      if (extractElapsed >= 0 && extractElapsed < _RM_EXTRACT_LOCK_TTL_MS) {
         return { ok: false, error:
-          'A previous Solve Roster click is still in progress on this ' +
-          'spreadsheet (started ' + Math.ceil(elapsed / 1000) + 's ago). ' +
-          'Wait for the prompt — or, if you already saw the "Initializing ' +
-          'snapshot" toast and dismissed the result, wait for the email.' };
+          'A previous Solve Roster click is still in extract on this ' +
+          'spreadsheet (started ' + Math.ceil(extractElapsed / 1000) +
+          's ago). Wait for the prompt before clicking again.' };
       }
       // Stale lock (>TTL or clock-skew negative) — clear and proceed.
-      // Crash-recovery path: covers the case where a prior `menuSolveRoster_`
-      // was killed before its finally block ran.
-      props.deleteProperty(_RM_INFLIGHT_LOCK_KEY);
+      // Crash-recovery path: covers the case where a prior
+      // `menuSolveRoster_` was killed before its finally block ran.
+      props.deleteProperty(_RM_EXTRACT_LOCK_KEY);
     }
 
     // Check 2: Cloud Run URL configured on the central library. Same check
@@ -230,10 +295,37 @@ function _quickValidate_() {
         '"<Section> Requests <month>") and click Solve Roster from there.' };
     }
 
-    // All checks passed — atomically set the in-flight timestamp under
-    // the doc lock so a racing second click sees it on its check.
-    props.setProperty(_RM_INFLIGHT_LOCK_KEY, String(Date.now()));
-    return { ok: true };
+    // All hard checks passed — atomically set the EXTRACT lock under the
+    // doc lock so a racing second click sees it on its check.
+    props.setProperty(_RM_EXTRACT_LOCK_KEY, String(Date.now()));
+
+    // Check 5: ASYNC lock (SOFT WARN). If a previous SUBMITTED run is
+    // still within its Cloud Batch window, surface a warning string for
+    // the caller's YES/NO dialog. Maintainer-confirmed warn-don't-block
+    // scope per Codex P2 round 3 finding: operator can override and
+    // start a new run (e.g., if they suspect the previous run failed
+    // silently or its email got lost).
+    var asyncWarning = null;
+    var asyncTsStr = props.getProperty(_RM_ASYNC_LOCK_KEY);
+    if (asyncTsStr) {
+      var asyncElapsed = Date.now() - parseInt(asyncTsStr, 10);
+      if (asyncElapsed >= 0 && asyncElapsed < _RM_ASYNC_LOCK_TTL_MS) {
+        var asyncMins = Math.ceil(asyncElapsed / 60000);
+        asyncWarning =
+          'A previous Solve Roster run was submitted on this spreadsheet ' +
+          '~' + asyncMins + ' minute(s) ago and may still be processing ' +
+          '(typical wait: 5-10 minutes from submit). If the email hasn\'t ' +
+          'arrived, the run is likely still active and Cloud Run will ' +
+          'reject a new submission after the ~15-second snapshot extract.' +
+          '\n\nContinue anyway?';
+      } else {
+        // Stale ASYNC lock (>TTL) — the run window has lapsed; clear so
+        // future clicks aren't warned about it.
+        props.deleteProperty(_RM_ASYNC_LOCK_KEY);
+      }
+    }
+
+    return { ok: true, warning: asyncWarning };
   } finally {
     docLock.releaseLock();
   }
