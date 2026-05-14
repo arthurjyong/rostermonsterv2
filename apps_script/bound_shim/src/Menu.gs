@@ -126,10 +126,16 @@ function menuSolveRoster_() {
     return;
   }
 
+  // Track our own EXTRACT lock identifier (timestamp set by
+  // `_quickValidate_`) so cleanup paths only clear the lock when it's
+  // still ours — never accidentally delete a foreign execution's lock
+  // per Codex P2 round 5 finding (modal-dwell takeover defense).
+  var ownExtractLockTs = pre.ownExtractLockTs;
+
   // Step 2: soft warn for active ASYNC lock per Codex P2 round 3
   // finding + maintainer-confirmed warn-don't-block scope. EXTRACT
-  // lock has already been set inside _quickValidate_; release it if
-  // the operator cancels so a future click can proceed.
+  // lock has already been set inside _quickValidate_; release it
+  // (ownership-checked) if the operator cancels.
   if (pre.warning) {
     var response = ui.alert(
       'Possible run in progress',
@@ -137,10 +143,25 @@ function menuSolveRoster_() {
       ui.ButtonSet.YES_NO
     );
     if (response !== ui.Button.YES) {
-      PropertiesService.getDocumentProperties().deleteProperty(
-        _RM_EXTRACT_LOCK_KEY);
+      _clearExtractLockIfOwned_(ownExtractLockTs);
       return;
     }
+    // YES — refresh the EXTRACT lock atomically (verifies ownership +
+    // pushes the TTL window forward to cover the slow path). If
+    // another execution claimed the slot while the operator was on the
+    // dialog, refresh returns null → bail with a clear re-click prompt.
+    // Per Codex P2 round 5 finding.
+    var refreshed = _refreshExtractLockIfOwned_(ownExtractLockTs);
+    if (refreshed === null) {
+      ui.alert(
+        'Solve Roster — re-click required',
+        'Another execution claimed the slot while you were on the ' +
+        'confirmation dialog. Click Solve Roster again to retry.',
+        ui.ButtonSet.OK
+      );
+      return;
+    }
+    ownExtractLockTs = refreshed;
     // Operator confirmed they want to start fresh — clear the ASYNC
     // lock so subsequent clicks in this run's window don't double-warn.
     PropertiesService.getDocumentProperties().deleteProperty(
@@ -164,9 +185,9 @@ function menuSolveRoster_() {
     // here (BEFORE the finally clears EXTRACT) so the EXTRACT→ASYNC
     // handoff is gap-free — a concurrent click during the entire flow
     // always sees at least one of the two locks set, never both clear.
-    // Per Codex P2 round 3 finding: ASYNC lock causes future clicks
-    // during the 5-10 min Cloud Batch window to surface the soft-warn
-    // dialog at step 2.
+    // Per Codex P2 round 3 + round 4 findings: ASYNC lock causes future
+    // clicks during the 5-10 min Cloud Batch window to surface the
+    // soft-warn dialog at step 2.
     if (result && result.kind === 'SUBMITTED_ASYNC') {
       PropertiesService.getDocumentProperties().setProperty(
         _RM_ASYNC_LOCK_KEY, String(Date.now()));
@@ -179,8 +200,7 @@ function menuSolveRoster_() {
     );
     return;
   } finally {
-    PropertiesService.getDocumentProperties().deleteProperty(
-      _RM_EXTRACT_LOCK_KEY);
+    _clearExtractLockIfOwned_(ownExtractLockTs);
   }
 
   _showSolveRosterResult_(result);
@@ -299,8 +319,14 @@ function _quickValidate_() {
     }
 
     // All hard checks passed — atomically set the EXTRACT lock under the
-    // doc lock so a racing second click sees it on its check.
-    props.setProperty(_RM_EXTRACT_LOCK_KEY, String(Date.now()));
+    // doc lock so a racing second click sees it on its check. The
+    // timestamp we set is also returned to the caller as `ownExtractLockTs`
+    // so caller can verify ownership later (during the refresh after a
+    // YES on the warn dialog, and in the finally cleanup) per Codex P2
+    // round 5 finding — the timestamp acts as a per-execution lock
+    // identifier.
+    var ownExtractLockTs = String(Date.now());
+    props.setProperty(_RM_EXTRACT_LOCK_KEY, ownExtractLockTs);
 
     // Check 5: ASYNC lock (SOFT WARN). If a previous SUBMITTED run is
     // still within its Cloud Batch window, surface a warning string for
@@ -328,7 +354,54 @@ function _quickValidate_() {
       }
     }
 
-    return { ok: true, warning: asyncWarning };
+    return {
+      ok: true,
+      warning: asyncWarning,
+      ownExtractLockTs: ownExtractLockTs,
+    };
+  } finally {
+    docLock.releaseLock();
+  }
+}
+
+// Atomically refresh the EXTRACT lock if and only if it's still owned
+// by this execution (current value matches `ownTs`). Returns the new
+// timestamp on success; null if the lock has been overwritten by another
+// execution (e.g., a second operator's click took over while the first
+// operator was on the warn dialog). Per Codex P2 round 5 finding: closes
+// the modal-dwell race where the EXTRACT TTL could expire mid-dialog
+// and another execution could claim the slot. Apps Script's 6-min
+// per-execution limit bounds dwell to less than the 7-min TTL in
+// practice, but the ownership check makes the guard robust to TTL
+// changes and clock skew.
+function _refreshExtractLockIfOwned_(ownTs) {
+  var docLock = LockService.getDocumentLock();
+  if (!docLock.tryLock(_RM_DOC_LOCK_ACQUIRE_TIMEOUT_MS)) return null;
+  try {
+    var props = PropertiesService.getDocumentProperties();
+    if (props.getProperty(_RM_EXTRACT_LOCK_KEY) !== ownTs) return null;
+    var newTs = String(Date.now());
+    props.setProperty(_RM_EXTRACT_LOCK_KEY, newTs);
+    return newTs;
+  } finally {
+    docLock.releaseLock();
+  }
+}
+
+// Atomically clear the EXTRACT lock if and only if it's still owned by
+// this execution. Used by the cancel path on the warn dialog AND by the
+// finally block in `menuSolveRoster_` so we never accidentally delete
+// another execution's lock if a takeover happened. Silent on failure
+// (lock not ours) — the appropriate response is to leave the foreign
+// lock alone.
+function _clearExtractLockIfOwned_(ownTs) {
+  var docLock = LockService.getDocumentLock();
+  if (!docLock.tryLock(_RM_DOC_LOCK_ACQUIRE_TIMEOUT_MS)) return;
+  try {
+    var props = PropertiesService.getDocumentProperties();
+    if (props.getProperty(_RM_EXTRACT_LOCK_KEY) === ownTs) {
+      props.deleteProperty(_RM_EXTRACT_LOCK_KEY);
+    }
   } finally {
     docLock.releaseLock();
   }
