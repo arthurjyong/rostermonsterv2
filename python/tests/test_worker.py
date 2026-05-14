@@ -1110,53 +1110,6 @@ def test_finalize_skipped_on_parser_rejection(monkeypatch) -> None:
     )
 
 
-def test_callback_post_retries_on_5xx(monkeypatch) -> None:
-    """§10A.7: 5xx response → retried per `_CALLBACK_POST_RETRY_COUNT`
-    with exponential backoff, then succeeds. `time.sleep` patched so
-    retries don't actually wait."""
-    monkeypatch.setattr(
-        worker_mod, "analyze",
-        lambda *args, **kw: type("FakeOutput", (), {})(),
-    )
-    monkeypatch.setattr(
-        worker_mod, "render_analyzer_output_json",
-        lambda output: '{"schemaVersion": 1}',
-    )
-    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
-
-    call_count = {"n": 0}
-
-    def flaky_http_post(url: str, body: dict, timeout: float):
-        call_count["n"] += 1
-        # Fail every attempt up to the retry budget, then succeed on
-        # the last retry — verifies a transient 5xx is retried through.
-        if call_count["n"] <= worker_mod._CALLBACK_POST_RETRY_COUNT:
-            return (503, None)
-        return (200, {"state": "OK"})
-
-    read_json, write_json, _ = _make_inmem_gcs(_build_storage())
-
-    worker_mod.worker_main(
-        _RUN_ID,
-        master_seed=12345,
-        K_approved=1,
-        read_json=read_json,
-        write_json=write_json,
-        pool_executor=_stub_succeeded_executor,
-        bucket=_BUCKET,
-        callback_url=_CALLBACK_URL,
-        operator_email=_OPERATOR_EMAIL,
-        submit_timestamp_ms_str="",
-        http_post_fn=flaky_http_post,
-        id_token_fn=_fixed_id_token_fn,
-    )
-
-    assert call_count["n"] == worker_mod._CALLBACK_POST_RETRY_COUNT + 1, (
-        "5xx → retry: expected _CALLBACK_POST_RETRY_COUNT failures + 1 "
-        "success; got " + str(call_count["n"]) + " total calls"
-    )
-
-
 def test_callback_post_terminal_on_4xx(monkeypatch) -> None:
     """§10A.7: 4xx response → terminal, no retry. The finalize step
     surfaces the error in Cloud Logging + exits cleanly without
@@ -1200,10 +1153,11 @@ def test_callback_post_terminal_on_4xx(monkeypatch) -> None:
     )
 
 
-def test_callback_post_retries_exhausted_on_persistent_5xx(monkeypatch) -> None:
-    """§10A.7: 5xx after retry exhaustion (initial attempt +
-    `_CALLBACK_POST_RETRY_COUNT` retries) → terminal, logged, no
-    raise."""
+def test_callback_post_terminal_on_5xx(monkeypatch) -> None:
+    """§10A.7: 5xx response → terminal on the first attempt (no retry —
+    `_CALLBACK_POST_RETRY_COUNT == 0`). Logged, no raise — the finalize
+    step MUST NOT raise; operator falls into the FW-0039 silent-outcome
+    gap."""
     monkeypatch.setattr(
         worker_mod, "analyze",
         lambda *args, **kw: type("FakeOutput", (), {})(),
@@ -1212,7 +1166,6 @@ def test_callback_post_retries_exhausted_on_persistent_5xx(monkeypatch) -> None:
         worker_mod, "render_analyzer_output_json",
         lambda output: '{"schemaVersion": 1}',
     )
-    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
 
     call_count = {"n": 0}
 
@@ -1237,16 +1190,18 @@ def test_callback_post_retries_exhausted_on_persistent_5xx(monkeypatch) -> None:
         id_token_fn=_fixed_id_token_fn,
     )
 
-    assert call_count["n"] == worker_mod._CALLBACK_POST_RETRY_COUNT + 1, (
-        "initial attempt + _CALLBACK_POST_RETRY_COUNT retries; got "
-        + str(call_count["n"])
+    assert call_count["n"] == 1, (
+        "5xx → terminal on the first attempt, no retry; got "
+        + str(call_count["n"]) + " total calls"
     )
 
 
-def test_callback_post_treats_transport_exception_as_retryable(monkeypatch) -> None:
+def test_callback_post_terminal_on_transport_exception(monkeypatch) -> None:
     """§10A.7: transport / connection errors (e.g., DNS, TCP RST, TLS
-    handshake) raise from `http_post_fn`; treated the same as 5xx —
-    retried with exponential backoff."""
+    handshake) raise from `http_post_fn` — with no retry budget
+    (`_CALLBACK_POST_RETRY_COUNT == 0`) the raise is terminal on the
+    first attempt. The finalize step MUST still NOT raise; operator
+    falls into the FW-0039 silent-outcome gap."""
     monkeypatch.setattr(
         worker_mod, "analyze",
         lambda *args, **kw: type("FakeOutput", (), {})(),
@@ -1255,20 +1210,16 @@ def test_callback_post_treats_transport_exception_as_retryable(monkeypatch) -> N
         worker_mod, "render_analyzer_output_json",
         lambda output: '{"schemaVersion": 1}',
     )
-    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
 
     call_count = {"n": 0}
 
-    def flaky_transport(url: str, body: dict, timeout: float):
+    def raising_transport(url: str, body: dict, timeout: float):
         call_count["n"] += 1
-        # Raise every attempt up to the retry budget, then succeed —
-        # verifies transport errors are retried like 5xx.
-        if call_count["n"] <= worker_mod._CALLBACK_POST_RETRY_COUNT:
-            raise ConnectionError("simulated TCP RST")
-        return (200, {"state": "OK"})
+        raise ConnectionError("simulated TCP RST")
 
     read_json, write_json, _ = _make_inmem_gcs(_build_storage())
 
+    # Doesn't raise — finalize MUST NOT raise
     worker_mod.worker_main(
         _RUN_ID,
         master_seed=12345,
@@ -1280,12 +1231,12 @@ def test_callback_post_treats_transport_exception_as_retryable(monkeypatch) -> N
         callback_url=_CALLBACK_URL,
         operator_email=_OPERATOR_EMAIL,
         submit_timestamp_ms_str="",
-        http_post_fn=flaky_transport,
+        http_post_fn=raising_transport,
         id_token_fn=_fixed_id_token_fn,
     )
 
-    assert call_count["n"] == worker_mod._CALLBACK_POST_RETRY_COUNT + 1, (
-        "transport exception MUST be treated as 5xx-retryable"
+    assert call_count["n"] == 1, (
+        "transport exception → terminal on the first attempt, no retry"
     )
 
 

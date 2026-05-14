@@ -166,38 +166,54 @@ _SUBMIT_TIMESTAMP_MS_ENV = "RM_SUBMIT_TIMESTAMP_MS"
 # at 590s.
 _FINALIZE_SELF_CHECK_THRESHOLD_MS = 510_000
 
-# §10A.7 retry behavior for the callback POST. 1 retry with a 2s
-# backoff. REDUCED from 3 retries (the original D-0071 sub-decision 10
-# value) as a budget-fit follow-up to the 90s timeout bump below — see
-# `_CALLBACK_POST_TIMEOUT_SECONDS`. The 3-retry budget was sized for
-# the old 30s timeout, where attempt 1 routinely timed out against a
-# healthy-but-slow launcher (renderAnalysis ~37-42s > 30s) so retries
-# were load-bearing just to get through. With a 90s timeout attempt 1
-# succeeds against any healthy launcher; a retry now only covers a
-# genuine transient 5xx blip, for which 1 is enough. Keeping 3 would
-# have made the worst-case POST chain ~4 × 90s + 14s ≈ 374s — long
-# enough to blow the finalize-step budget and risk a Batch kill before
-# the chain exhausts. 1 retry caps the worst case at ~2 × 90s + 2s
-# ≈ 182s.
-_CALLBACK_POST_RETRY_COUNT = 1
-_CALLBACK_POST_BACKOFF_SECONDS = (2.0,)
-# Per-attempt HTTP timeout for the callback POST. Bumped 30s → 90s:
-# the launcher's callback handler runs `RMLib.applyWriteback` +
-# `RMLib.renderAnalysis` synchronously BEFORE returning 2xx, and
-# renderAnalysis alone has been measured at 37-42s on the live stack
-# (varies with Google Sheets backend load). A 30s timeout fired before
-# the launcher finished — the launcher still completed the work and
-# emailed the operator, but the worker saw a timeout, treated it as
-# 5xx-retryable, and re-POSTed; the retry hit the launcher's
-# idempotency guard and returned DUPLICATE_IGNORED. Net effect: the
-# operator got exactly one (correct) email, but every run logged a
-# spurious "Callback POST attempt N raised; treating as 5xx-retryable"
-# error and inflated wall time by a full retry cycle. 90s comfortably
-# covers the measured renderAnalysis range with headroom. Worst-case
-# POST+retry chain wall is ~2 × 90s + 2s backoff ≈ 182s (1 retry per
-# `_CALLBACK_POST_RETRY_COUNT` above) — within the Cloud Batch task's
-# 660s maxRunDuration safety net.
-_CALLBACK_POST_TIMEOUT_SECONDS = 90.0
+# §10A.7 callback POST policy: NO retry — terminal on the first
+# attempt. (Journey: 3 retries → 1 → 0 across the post-M7 callback-
+# budget rebalance.) Two reasons 0 is the right number:
+#
+# 1. The retry was effectively vestigial. The launcher's callback
+#    handler completes its work — applyWriteback + renderAnalysis —
+#    and sends the operator email synchronously DURING the first POST
+#    attempt. If the worker's POST times out, the launcher still
+#    finished; a retry just re-POSTs into the launcher's idempotency
+#    guard and gets DUPLICATE_IGNORED. The retry never changed the
+#    operator outcome — it only re-confirmed it for the worker's logs.
+#
+# 2. The worst-case retry chain has to fit the finalize window. The
+#    finalize step runs in the gap between the 510s self-check
+#    threshold and the 660s Batch maxRunDuration — ~150s, of which
+#    ~50s goes to aggregate + score + select + analyzer, leaving
+#    ~100s for the callback. Even ONE retry at the 60s timeout below
+#    is a ~122s chain (2 × 60 + 2s backoff) — it overruns. 0 retries
+#    caps the callback at a single 60s attempt, so the finalize step
+#    fits with margin.
+#
+# The original 3-retry value was D-0071 sub-decision 10, sized for the
+# old 30s timeout where attempt 1 routinely timed out against a
+# healthy-but-slow launcher and retries were load-bearing just to get
+# a callback through. That premise is gone with a timeout that exceeds
+# the launcher's real work time. `_CALLBACK_POST_BACKOFF_SECONDS` is
+# empty because there are no inter-retry gaps to configure.
+_CALLBACK_POST_RETRY_COUNT = 0
+_CALLBACK_POST_BACKOFF_SECONDS = ()
+# Per-attempt HTTP timeout for the callback POST — 60s. The launcher's
+# callback handler runs `RMLib.applyWriteback` + `RMLib.renderAnalysis`
+# synchronously BEFORE returning 2xx, and renderAnalysis alone has been
+# measured at 37-42s on the live stack (varies with Google Sheets
+# backend load). The original 30s timeout fired before the launcher
+# finished — the launcher still completed the work and emailed the
+# operator, but the worker saw a timeout, treated it as 5xx-retryable,
+# and re-POSTed; the retry hit the launcher's idempotency guard and
+# returned DUPLICATE_IGNORED. Net effect: the operator got exactly one
+# (correct) email, but every run logged a spurious "Callback POST
+# attempt N raised; treating as 5xx-retryable" error. 60s comfortably
+# exceeds the measured 37-42s renderAnalysis range (~18s headroom)
+# while staying short enough that a single attempt fits the ~100s
+# callback slice of the finalize window (see
+# `_CALLBACK_POST_RETRY_COUNT` above). A timeout that's still too short
+# on a pathologically slow launcher day costs only a spurious log line
+# — the launcher's email already went out — so budget margin is
+# weighted over timeout headroom.
+_CALLBACK_POST_TIMEOUT_SECONDS = 60.0
 
 # §10A.6 callback envelope schemaVersion. Separate from §11 contract
 # version (governs §9 + §10 boundary) per the §10A.8 versioning note.
