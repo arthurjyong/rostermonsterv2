@@ -66,14 +66,25 @@ var _RM_EXTRACT_LOCK_TTL_MS = 7 * 60 * 1000;
 var _RM_ASYNC_LOCK_KEY = 'rm_solve_async_inflight_ts_ms';
 var _RM_ASYNC_LOCK_TTL_MS = 11 * 60 * 1000;
 // `LockService.getDocumentLock().tryLock(N)` waits up to N ms to acquire
-// the doc-scoped concurrency lock. The lock spans only the check-and-set
-// window inside `_quickValidate_` (typical ~50-200ms total — one metadata
-// finder + a few property reads), so 500ms is comfortably above the
-// expected hold time but below the threshold where a racing user would
-// notice the wait. If acquisition fails, the racing click gets a clear
-// "another execution is racing this one" alert — fail fast rather than
-// stack arbitrary numbers of waiting executions.
+// the doc-scoped concurrency lock. TWO timeout values for two different
+// callers, because the two callers have opposite urgency profiles:
+//
+// - ACQUIRE timeout (500ms) — used by `_quickValidate_` + the YES-path
+//   `_refreshExtractLockIfOwned_`. The operator IS waiting on these, so
+//   fail fast: if the lock is contended, bail quickly with a clear
+//   "another execution is racing this one" alert rather than making the
+//   operator stare at a frozen menu.
+//
+// - CLEANUP timeout (5s) — used by `_clearExtractLockIfOwned_`. The
+//   operator is NOT waiting on cleanup (it runs in finally / cancel /
+//   error paths after the operator-facing outcome is already decided).
+//   Fail-fast here is actively harmful: a 500ms timeout that loses a
+//   race silently leaves the EXTRACT lock set, hard-blocking the next
+//   click for the full 7-min TTL. 5s is ~25-100× the expected lock
+//   hold time, so cleanup virtually always succeeds; the 7-min TTL is
+//   the last-resort backstop. Per Codex P2 round 8 finding on PR #170.
 var _RM_DOC_LOCK_ACQUIRE_TIMEOUT_MS = 500;
+var _RM_DOC_LOCK_CLEANUP_TIMEOUT_MS = 5 * 1000;
 
 // "Solve Roster" menu handler per `docs/decision_log.md` D-0049 +
 // `docs/cloud_compute_contract.md`. Synchronously orchestrates the
@@ -173,10 +184,18 @@ function menuSolveRoster_() {
       return;
     }
     ownExtractLockTs = refreshed;
-    // Operator confirmed they want to start fresh — clear the ASYNC
-    // lock so subsequent clicks in this run's window don't double-warn.
-    PropertiesService.getDocumentProperties().deleteProperty(
-      _RM_ASYNC_LOCK_KEY);
+    // NOTE: we intentionally do NOT clear the ASYNC lock here. The
+    // operator clicked YES, but their NEW run hasn't submitted yet —
+    // it could still fail (extract error, auth, network, Cloud HTTP
+    // error). If we cleared the ASYNC marker now and the new run then
+    // failed, we'd have forgotten about the PREVIOUS run that may
+    // still be processing on Cloud Batch — the next click would skip
+    // the warn dialog and waste a full extract before Cloud Run's
+    // concurrent-rejection responds. Instead, the ASYNC marker is
+    // OVERWRITTEN (not cleared-then-set) only when the new run
+    // actually returns SUBMITTED_ASYNC below; if the new run fails,
+    // the previous run's ASYNC marker correctly stays in place. Per
+    // Codex P2 round 8 finding on PR #170.
   }
 
   // Step 3: show the "Initializing" toast. The EXTRACT lock has already
@@ -198,7 +217,12 @@ function menuSolveRoster_() {
     // always sees at least one of the two locks set, never both clear.
     // Per Codex P2 round 3 + round 4 findings: ASYNC lock causes future
     // clicks during the 5-10 min Cloud Batch window to surface the
-    // soft-warn dialog at step 2.
+    // soft-warn dialog at step 2. This `setProperty` OVERWRITES any
+    // prior ASYNC marker (e.g., from a run the operator just overrode
+    // via the warn dialog) with the new run's fresh timestamp — which
+    // is exactly why the YES path above does NOT pre-clear it: only a
+    // genuinely-submitted replacement run should reset the marker (per
+    // Codex P2 round 8 finding).
     if (result && result.kind === 'SUBMITTED_ASYNC') {
       PropertiesService.getDocumentProperties().setProperty(
         _RM_ASYNC_LOCK_KEY, String(Date.now()));
@@ -410,14 +434,21 @@ function _refreshExtractLockIfOwned_(ownTs) {
 }
 
 // Atomically clear the EXTRACT lock if and only if it's still owned by
-// this execution. Used by the cancel path on the warn dialog AND by the
-// finally block in `menuSolveRoster_` so we never accidentally delete
-// another execution's lock if a takeover happened. Silent on failure
-// (lock not ours) — the appropriate response is to leave the foreign
-// lock alone.
+// this execution. Used by the cancel path on the warn dialog, the
+// catch block, the YES-refresh-failed path, AND the finally block in
+// `menuSolveRoster_` so we never accidentally delete another
+// execution's lock if a takeover happened. Silent on ownership
+// mismatch (lock not ours) — the appropriate response is to leave the
+// foreign lock alone.
+//
+// Uses the PATIENT cleanup timeout (5s), not the fast-fail acquire
+// timeout: the operator is not waiting on cleanup, and a fail-fast
+// timeout that loses a race would silently leak the EXTRACT lock and
+// hard-block the next click for the full 7-min TTL. Per Codex P2
+// round 8 finding on PR #170.
 function _clearExtractLockIfOwned_(ownTs) {
   var docLock = LockService.getDocumentLock();
-  if (!docLock.tryLock(_RM_DOC_LOCK_ACQUIRE_TIMEOUT_MS)) return;
+  if (!docLock.tryLock(_RM_DOC_LOCK_CLEANUP_TIMEOUT_MS)) return;
   try {
     var props = PropertiesService.getDocumentProperties();
     if (props.getProperty(_RM_EXTRACT_LOCK_KEY) === ownTs) {
