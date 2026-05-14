@@ -160,6 +160,17 @@ function menuSolveRoster_() {
   var result;
   try {
     result = _solveRoster_(t0, tPreflight);
+    // Step 7: if we just submitted an async LAHC run, set the ASYNC lock
+    // here (BEFORE the finally clears EXTRACT) so the EXTRACT→ASYNC
+    // handoff is gap-free — a concurrent click during the entire flow
+    // always sees at least one of the two locks set, never both clear.
+    // Per Codex P2 round 3 finding: ASYNC lock causes future clicks
+    // during the 5-10 min Cloud Batch window to surface the soft-warn
+    // dialog at step 2.
+    if (result && result.kind === 'SUBMITTED_ASYNC') {
+      PropertiesService.getDocumentProperties().setProperty(
+        _RM_ASYNC_LOCK_KEY, String(Date.now()));
+    }
   } catch (e) {
     ui.alert(
       'Solve Roster failed',
@@ -170,14 +181,6 @@ function menuSolveRoster_() {
   } finally {
     PropertiesService.getDocumentProperties().deleteProperty(
       _RM_EXTRACT_LOCK_KEY);
-  }
-
-  // Step 7: if we just submitted an async LAHC run, set the ASYNC lock
-  // so a re-click during the 5-10 min Cloud Batch window gets the
-  // soft-warn dialog at step 2 (per Codex P2 round 3 finding).
-  if (result && result.kind === 'SUBMITTED_ASYNC') {
-    PropertiesService.getDocumentProperties().setProperty(
-      _RM_ASYNC_LOCK_KEY, String(Date.now()));
   }
 
   _showSolveRosterResult_(result);
