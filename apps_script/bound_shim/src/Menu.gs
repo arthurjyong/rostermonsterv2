@@ -153,10 +153,21 @@ function menuSolveRoster_() {
     // Per Codex P2 round 5 finding.
     var refreshed = _refreshExtractLockIfOwned_(ownExtractLockTs);
     if (refreshed === null) {
+      // Refresh can return null because (a) another execution took the
+      // slot, or (b) `_refreshExtractLockIfOwned_`'s own LockService
+      // tryLock timed out under transient contention — and case (b)
+      // leaves OUR lock still set with our timestamp. Without this
+      // ownership-checked clear, the operator's re-click would be
+      // hard-blocked by their own phantom lock until the 7-min TTL.
+      // Per Codex P2 round 7 finding on PR #170. Cleanup is idempotent:
+      // no-op in case (a) where the lock isn't ours anymore.
+      _clearExtractLockIfOwned_(ownExtractLockTs);
       ui.alert(
         'Solve Roster — re-click required',
-        'Another execution claimed the slot while you were on the ' +
-        'confirmation dialog. Click Solve Roster again to retry.',
+        'Could not refresh the in-flight lock — another execution may ' +
+        'have claimed the slot while you were on the dialog, or the ' +
+        'lock service is temporarily contended. Click Solve Roster ' +
+        'again to retry.',
         ui.ButtonSet.OK
       );
       return;
