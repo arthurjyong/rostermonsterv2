@@ -18,13 +18,21 @@
 // D-0041 sub-decision 9.
 
 function onOpen(e) {
+  // "Extract Snapshot" (the local-mode download-JSON path) was dropped
+  // from the menu — operators only use the one-click cloud "Solve
+  // Roster" flow now, so the manual download/upload surface was just
+  // clutter. `menuExtractSnapshot_` below is intentionally retained
+  // (not menu-exposed) as a maintainer fallback.
   SpreadsheetApp.getUi()
     .createMenu('Roster Monster')
-    .addItem('Extract Snapshot', 'menuExtractSnapshot_')
     .addItem('Solve Roster', 'menuSolveRoster_')
     .addToUi();
 }
 
+// Local-mode snapshot download. NO LONGER ON THE "Roster Monster" menu
+// (removed in the UI-simplification pass). Retained as a maintainer
+// fallback — re-add to `onOpen` or invoke from the Apps Script editor
+// if the local Python-CLI debugging path is ever needed again.
 function menuExtractSnapshot_() {
   // Delegate to the central library. The library returns an HtmlOutput
   // payload that triggers a browser download of the snapshot JSON file
