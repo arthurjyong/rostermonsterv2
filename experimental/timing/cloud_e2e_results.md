@@ -51,7 +51,7 @@ But it means the 60s timeout is **exceeded on every healthy run** at this render
 
 ## How to reproduce
 
-The click-side (bound shim) `[timing]` markers only reach Cloud Logging if the operator copy's Apps Script project is GCP-linked: open the sheet → Extensions → Apps Script → Project Settings → Google Cloud Platform → Change project → `693837275969`. Cloud-side markers (worker, launcher, Cloud Run) flow unconditionally.
+The click-side (bound shim) `[timing]` markers only reach Cloud Logging if the operator copy's Apps Script project is GCP-linked: open the sheet → Extensions → Apps Script → Project Settings → Google Cloud Platform → Change project → `<GCP_PROJECT_NUMBER>`. Cloud-side markers (worker, launcher, Cloud Run) flow unconditionally.
 
 After a run, scrape the markers (replace `<start>` with a timestamp just before the click):
 

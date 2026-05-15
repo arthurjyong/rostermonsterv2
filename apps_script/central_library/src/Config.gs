@@ -20,7 +20,7 @@
 //   2. Project Settings → Script Properties → Add script property.
 //   3. Property name: `CLOUD_RUN_URL`
 //      Value: the Cloud Run service URL (e.g.,
-//             `https://roster-monster-compute-693837275969.asia-southeast1.run.app`)
+//             `https://roster-monster-compute-<GCP_PROJECT_NUMBER>.asia-southeast1.run.app`)
 //   4. Save.
 //
 // The bound shim's "Solve Roster" handler will throw a clear
