@@ -11,6 +11,7 @@ What are the best LAHC settings (history length L, idle cutoff, swap/reassign mi
 - **Real:** the archived months in `rostermonster-ops/gcs_archive/` (May 2026: 22 doctors × 29 days × 638 requests; June 2026: 18 × 27 × 486). Any further months that accrue simply join as extra instances.
 - **Perturbed (instance family):** deterministic variants generated from the real snapshots to simulate different request loads: request subsampling at 60/80/100% density, doctor-pool reduction (drop 2/4 doctors), and request reshuffles. Each variant generated from a fixed seed so the whole instance set is reproducible. Target: ~10-15 instances spanning light to heavy demand.
 - All scoring under one fixed reference config (committed `reference_scoring_config.json`) so results are comparable across instances and unaffected by the operators' live weight retuning.
+- **Train/test split, fixed before any experiment:** the instance family is split once into a tuning (train) set and a held-out evaluation (test) set, with all perturbed children of one parent month on the same side (parent-side discipline). Settings are selected on train instances only; all reported performance, robustness, and transfer claims come from test instances. This costs nothing (no waiting, just a partition) and is what makes the recommendations out-of-sample.
 
 ## 3. Experiments (high resolution; the old dev sweeps were 30 seeds and few grid points)
 
@@ -34,7 +35,7 @@ Same instances, same scorer, different search algorithms. Candidates: LAHC (ours
 
 - Response curves with bootstrap 95% CIs per instance, overlaid across the whole instance family.
 - Plateau identification via TOST equivalence (margin ±2 points, to be re-checked against observed seed variance before locking).
-- Recommended production setting = the tuple that stays on the plateau across ALL instances, plus a sensitivity statement (how far settings can stray before quality drops).
+- Recommended production setting = the tuple that stays on the plateau across the TRAIN instances, then evaluated on the held-out TEST instances (train/test rank correlation and an overtuning check), plus a sensitivity statement (how far settings can stray before quality drops).
 - Cheap-tuning recipe: minimum seeds needed for a reliable pick (redo the N=5 analysis on the richer data).
 - If the recommended setting differs from today's production tuple (L=50 / idle=3500 / swapP=0.5), we retune the software; that is an expected and welcome outcome.
 
@@ -44,4 +45,4 @@ The figures and tables in `PAPER_OUTLINE.md` (sweep curves, joint heatmap, best-
 
 ## 6. What this design trades away
 
-One honest line for the paper: settings are chosen and evaluated on the same instance family (this is standard practice in the field). Any months that accrue later serve as free held-out validation, but nothing waits for them.
+One honest line for the paper: all instances descend from a handful of real months at one ward under one scoring formulation, so claims are scoped to this deployment's workload family; the train/test split (§2) keeps the evaluation out-of-sample within that family, and any months that accrue later serve as additional fully-external test instances, but nothing waits for them.

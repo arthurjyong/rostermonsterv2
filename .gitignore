@@ -163,3 +163,7 @@ venv/
 # Claude <-> user exchange folders (local only)
 inbox/
 outbox/
+
+# Retired local scratch dir (contents moved to local ops storage 2026-07-04);
+# kept ignored because repo files still reference the path and stale copies must never be committed
+for_claude_code/
