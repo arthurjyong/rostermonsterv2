@@ -29,7 +29,7 @@ Roughly 10 h per instance at 8-way parallel on the Mac, so the full instance fam
 
 ## 3B. Algorithm comparison arm (added v0.3, 2026-07-04)
 
-Same instances, same scorer, different search algorithms. Candidates: LAHC (ours), simulated annealing, tabu search, step-counting hill climbing, random-restart hill climbing (SRB, already exists), and a CP-SAT exact model as the optimality yardstick where instance size permits. Fairness rules: every algorithm gets the same tuning budget (same sweep protocol, same seed counts) and the final comparison runs at matched wall-time; report tuned-vs-default performance for each so nobody can claim we under-tuned the losers. Deliverable: which search algorithm reaches the best score on real rostering instances, by how much, and at what optimality gap.
+Same instances, same scorer, different search algorithms. Candidates: LAHC (ours), simulated annealing, tabu search, step-counting hill climbing, random-restart hill climbing (obtained for free as best-of-K LAHC with L=1, which reduces to greedy HC per Burke & Bykov), the existing SEEDED_RANDOM_BLIND constructive baseline (SRB: CR seeding + most-constrained fill, scoring-blind per solver_contract §12, reported as a constructive baseline, not a search algorithm), and a CP-SAT exact model as the optimality yardstick where instance size permits. Fairness rules: every algorithm gets the same tuning budget (same sweep protocol, same seed counts) and the final comparison runs at matched wall-time; report tuned-vs-default performance for each so nobody can claim we under-tuned the losers. Deliverable: which search algorithm reaches the best score on real rostering instances, by how much, and at what optimality gap.
 
 ## 4. Analysis
 
