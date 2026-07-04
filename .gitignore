@@ -144,9 +144,6 @@ apps_script/launcher/.clasp.json
 # Apps Script local operator metadata (deployment IDs, execution URLs)
 apps_script/launcher/.ops.local.json
 
-# Local-only scratch folder for Claude Code context (screenshots, old-repo clones, papers)
-for_claude_code/
-
 # Claude Code worktrees and local agent state
 .claude/
 
@@ -162,3 +159,7 @@ build/
 dist/
 .venv/
 venv/
+
+# Claude <-> user exchange folders (local only)
+inbox/
+outbox/
