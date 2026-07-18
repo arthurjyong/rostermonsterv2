@@ -167,3 +167,8 @@ outbox/
 # Retired local scratch dir (contents moved to local ops storage 2026-07-04);
 # kept ignored because repo files still reference the path and stale copies must never be committed
 for_claude_code/
+
+# Scientific research work: never sync to git. This repo is PUBLIC, and studies/
+# holds unpublished protocol, novelty claims, literature survey and a library of
+# copyrighted PDFs. None of it should be visible before publication.
+studies/
